@@ -1,10 +1,10 @@
 import {
   createSignal,
+  createMemo,
   createResource,
   createEffect,
   Show,
   For,
-
 } from 'solid-js'
 import { useParams, useSearchParams, A } from '@solidjs/router'
 import { createVirtualizer } from '@tanstack/solid-virtual'
@@ -91,6 +91,22 @@ export default function RawLogView() {
   const [expandedLines, setExpandedLines] = createSignal<Set<number>>(new Set())
   const [highlightLine, setHighlightLine] = createSignal<number | null>(null)
   const [initialScrollDone, setInitialScrollDone] = createSignal(false)
+  const [searchInput, setSearchInput] = createSignal('')
+  const [searchQuery, setSearchQuery] = createSignal('')
+  const [allLoaded, setAllLoaded] = createSignal(false)
+  const [loadingAll, setLoadingAll] = createSignal(false)
+
+  let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+  function onSearchInput(value: string) {
+    setSearchInput(value)
+    clearTimeout(searchTimer)
+    if (value === '') {
+      setSearchQuery('')
+    } else {
+      searchTimer = setTimeout(() => setSearchQuery(value), 200)
+    }
+  }
 
   // Track in-flight fetches to avoid duplicates
   const fetchingRanges = new Set<string>()
@@ -193,10 +209,64 @@ export default function RawLogView() {
     }
   }
 
+  // Fetch all lines for search filtering
+  async function fetchAllLines() {
+    if (allLoaded()) return
+    setLoadingAll(true)
+    try {
+      const total = totalLines()
+      const cache = lineCache()
+      // Find missing ranges
+      const promises: Promise<void>[] = []
+      for (let offset = 0; offset < total; offset += PAGE_SIZE) {
+        const end = Math.min(offset + PAGE_SIZE, total)
+        let hasMissing = false
+        for (let i = offset; i < end; i++) {
+          if (!cache.has(i)) { hasMissing = true; break }
+        }
+        if (hasMissing) {
+          promises.push(fetchRange(offset, end))
+        }
+      }
+      await Promise.all(promises)
+      setAllLoaded(true)
+    } finally {
+      setLoadingAll(false)
+    }
+  }
+
+  // When search query becomes non-empty, ensure all lines are loaded
+  createEffect(() => {
+    if (searchQuery() && !allLoaded()) {
+      fetchAllLines()
+    }
+  })
+
+  // Compute filtered line indices
+  const filteredIndices = createMemo<number[] | null>(() => {
+    const q = searchQuery().toLowerCase()
+    if (!q) return null // null = no filter active
+    const cache = lineCache()
+    const indices: number[] = []
+    const total = totalLines()
+    for (let i = 0; i < total; i++) {
+      const content = cache.get(i)
+      if (content && content.toLowerCase().includes(q)) {
+        indices.push(i)
+      }
+    }
+    return indices
+  })
+
+  const displayCount = () => {
+    const fi = filteredIndices()
+    return fi !== null ? fi.length : totalLines()
+  }
+
   // Virtual scroll
   const virtualizer = createVirtualizer({
     get count() {
-      return totalLines()
+      return displayCount()
     },
     getScrollElement: () => scrollRef,
     estimateSize: () => 32,
@@ -287,6 +357,28 @@ export default function RawLogView() {
         </A>
         <h1>Raw Log &mdash; {params.id.slice(0, 8)}</h1>
         <Show when={totalLines() > 0}>
+          <div class={styles['search-box']}>
+            <input
+              class={styles['search-input']}
+              type="text"
+              placeholder="Filter lines..."
+              value={searchInput()}
+              onInput={(e) => onSearchInput(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  onSearchInput('')
+                  e.currentTarget.blur()
+                }
+              }}
+            />
+            <Show when={searchQuery()}>
+              <span class={styles['search-count']}>
+                {loadingAll() ? 'loading...' : `${filteredIndices()?.length ?? 0} / ${totalLines()}`}
+              </span>
+            </Show>
+          </div>
+        </Show>
+        <Show when={totalLines() > 0}>
           <span style={{ opacity: 0.5, 'font-size': '0.8rem' }}>
             {totalLines()} lines
           </span>
@@ -321,10 +413,13 @@ export default function RawLogView() {
         >
           <For each={virtualizer.getVirtualItems()}>
             {(vItem) => {
-              const lineNum = vItem.index
-              const raw = () => lineCache().get(lineNum)
-              const isExpanded = () => expandedLines().has(lineNum)
-              const isHighlight = () => highlightLine() === lineNum
+              const lineNum = () => {
+                const fi = filteredIndices()
+                return fi !== null ? fi[vItem.index] : vItem.index
+              }
+              const raw = () => lineCache().get(lineNum())
+              const isExpanded = () => expandedLines().has(lineNum())
+              const isHighlight = () => highlightLine() === lineNum()
 
               return (
                 <Show
@@ -338,7 +433,7 @@ export default function RawLogView() {
                         transform: `translateY(${vItem.start}px)`,
                       }}
                     >
-                      <span class={styles['line-num']}>{lineNum + 1}</span>
+                      <span class={styles['line-num']}>{lineNum() + 1}</span>
                       <span style={{ opacity: 0.3 }}>Loading...</span>
                     </div>
                   }
@@ -357,10 +452,10 @@ export default function RawLogView() {
                             style={{
                               transform: `translateY(${vItem.start}px)`,
                             }}
-                            onClick={() => toggleLine(lineNum)}
+                            onClick={() => toggleLine(lineNum())}
                           >
                             <span class={styles['line-num']}>
-                              {lineNum + 1}
+                              {lineNum() + 1}
                             </span>
                             <span
                               class={`${styles['type-badge']} ${badgeClass(summary().type)}`}
@@ -393,10 +488,10 @@ export default function RawLogView() {
                         >
                           <div
                             class={`${styles['line-expanded-header']} ${isHighlight() ? styles['highlight-line'] : ''}`}
-                            onClick={() => toggleLine(lineNum)}
+                            onClick={() => toggleLine(lineNum())}
                           >
                             <span class={styles['line-num']}>
-                              {lineNum + 1}
+                              {lineNum() + 1}
                             </span>
                             <span
                               class={`${styles['type-badge']} ${badgeClass(summary().type)}`}

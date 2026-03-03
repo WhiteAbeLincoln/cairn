@@ -38,6 +38,40 @@
   }
 }
 
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-input {
+  font-family: monospace;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  background: color-mix(in srgb, currentColor 4%, transparent);
+  color: inherit;
+  outline: none;
+  width: 14rem;
+}
+
+.search-input:focus {
+  border-color: color-mix(in srgb, currentColor 40%, transparent);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
+.search-input::placeholder {
+  color: color-mix(in srgb, currentColor 35%, transparent);
+}
+
+.search-count {
+  font-size: 0.75rem;
+  opacity: 0.5;
+  white-space: nowrap;
+  font-family: monospace;
+}
+
 .download-btn {
   white-space: nowrap;
 }
