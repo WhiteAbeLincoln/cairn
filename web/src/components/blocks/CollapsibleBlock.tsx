@@ -17,13 +17,14 @@ export default function CollapsibleBlock(props: ParentProps<{
   return (
     <div id={props.uuid} class={props.class} classList={{ ...props.classList, [styles['is-expanded']]: props.expanded }} data-role={props.role}>
       <button class={styles['internal-toggle']} onClick={() => props.toggle()}>
+        <a class={styles['link-icon']} href={`#${props.uuid}`} onClick={(e) => e.stopPropagation()} title="Link to this block">
+          &#x1F517;
+        </a>
         <span class={styles.caret}>
           {props.expanded ? '\u25BE' : '\u25B8'}
         </span>
         <span class={styles['internal-steps']}>
-          <a class={styles['label-link']} href={`#${props.uuid}`} onClick={(e) => e.stopPropagation()}>
-            {props.label}
-          </a>
+          {props.label}
         </span>
         <Show when={props.tokens != null && props.tokens! > 0}>
           <span class={styles['internal-tokens']}>

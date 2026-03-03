@@ -134,13 +134,19 @@
   text-overflow: ellipsis;
 }
 
-.label-link {
-  color: inherit;
+.link-icon {
+  font-size: 0.7em;
   text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s;
 }
 
-.label-link:hover {
-  text-decoration: underline;
+.internal-toggle:hover .link-icon {
+  opacity: 0.5;
+}
+
+.link-icon:hover {
+  opacity: 1 !important;
 }
 
 .step-dot {
