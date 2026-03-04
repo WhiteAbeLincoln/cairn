@@ -28,6 +28,45 @@ export type AgentMapping = {
   toolUseId: Scalars['String']['output'];
 };
 
+export type AssistantEvent = CoreEvent & Event & {
+  __typename?: 'AssistantEvent';
+  agentId: Maybe<Scalars['String']['output']>;
+  apiError: Maybe<Scalars['JSON']['output']>;
+  children: Array<Event>;
+  cwd: Scalars['String']['output'];
+  error: Maybe<Scalars['JSON']['output']>;
+  gitBranch: Maybe<Scalars['String']['output']>;
+  isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
+  isSidechain: Scalars['Boolean']['output'];
+  message: Scalars['JSON']['output'];
+  parent: Maybe<Event>;
+  parentUuid: Maybe<Scalars['String']['output']>;
+  raw: Scalars['JSON']['output'];
+  requestId: Maybe<Scalars['String']['output']>;
+  sessionId: Scalars['String']['output'];
+  slug: Maybe<Scalars['String']['output']>;
+  timestamp: Scalars['String']['output'];
+  type: Scalars['String']['output'];
+  userType: Scalars['String']['output'];
+  uuid: Scalars['String']['output'];
+  version: Scalars['String']['output'];
+};
+
+export type CoreEvent = {
+  children: Array<Event>;
+  cwd: Scalars['String']['output'];
+  gitBranch: Maybe<Scalars['String']['output']>;
+  isSidechain: Scalars['Boolean']['output'];
+  parent: Maybe<Event>;
+  parentUuid: Maybe<Scalars['String']['output']>;
+  sessionId: Scalars['String']['output'];
+  slug: Maybe<Scalars['String']['output']>;
+  timestamp: Scalars['String']['output'];
+  userType: Scalars['String']['output'];
+  uuid: Scalars['String']['output'];
+  version: Scalars['String']['output'];
+};
+
 export type Event = {
   apiError: Maybe<Scalars['JSON']['output']>;
   error: Maybe<Scalars['JSON']['output']>;
@@ -36,9 +75,46 @@ export type Event = {
   type: Scalars['String']['output'];
 };
 
+export type FileHistoryEvent = Event & {
+  __typename?: 'FileHistoryEvent';
+  apiError: Maybe<Scalars['JSON']['output']>;
+  error: Maybe<Scalars['JSON']['output']>;
+  isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
+  isSnapshotUpdate: Scalars['Boolean']['output'];
+  messageId: Scalars['String']['output'];
+  raw: Scalars['JSON']['output'];
+  snapshot: Scalars['JSON']['output'];
+  type: Scalars['String']['output'];
+};
+
 export type PageInput = {
   limit?: Scalars['Int']['input'];
   offset?: Scalars['Int']['input'];
+};
+
+export type ProgressEvent = CoreEvent & Event & {
+  __typename?: 'ProgressEvent';
+  agentId: Maybe<Scalars['String']['output']>;
+  apiError: Maybe<Scalars['JSON']['output']>;
+  children: Array<Event>;
+  cwd: Scalars['String']['output'];
+  data: Maybe<Scalars['JSON']['output']>;
+  error: Maybe<Scalars['JSON']['output']>;
+  gitBranch: Maybe<Scalars['String']['output']>;
+  isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
+  isSidechain: Scalars['Boolean']['output'];
+  parent: Maybe<Event>;
+  parentToolUseID: Maybe<Scalars['String']['output']>;
+  parentUuid: Maybe<Scalars['String']['output']>;
+  raw: Scalars['JSON']['output'];
+  sessionId: Scalars['String']['output'];
+  slug: Maybe<Scalars['String']['output']>;
+  timestamp: Scalars['String']['output'];
+  toolUseID: Maybe<Scalars['String']['output']>;
+  type: Scalars['String']['output'];
+  userType: Scalars['String']['output'];
+  uuid: Scalars['String']['output'];
+  version: Scalars['String']['output'];
 };
 
 export type Query = {
@@ -58,6 +134,19 @@ export type QuerySessionArgs = {
 export type QuerySessionsArgs = {
   page?: InputMaybe<PageInput>;
   project?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type QueueOperationEvent = Event & {
+  __typename?: 'QueueOperationEvent';
+  apiError: Maybe<Scalars['JSON']['output']>;
+  content: Maybe<Scalars['String']['output']>;
+  error: Maybe<Scalars['JSON']['output']>;
+  isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
+  operation: Scalars['String']['output'];
+  raw: Scalars['JSON']['output'];
+  sessionId: Scalars['String']['output'];
+  timestamp: Scalars['String']['output'];
+  type: Scalars['String']['output'];
 };
 
 export type Session = {
@@ -105,6 +194,39 @@ export type SessionsResult = {
   total: Scalars['Int']['output'];
 };
 
+export type SystemEvent = CoreEvent & Event & {
+  __typename?: 'SystemEvent';
+  apiError: Maybe<Scalars['JSON']['output']>;
+  cause: Maybe<Scalars['JSON']['output']>;
+  children: Array<Event>;
+  compactMetadata: Maybe<Scalars['JSON']['output']>;
+  content: Maybe<Scalars['String']['output']>;
+  cwd: Scalars['String']['output'];
+  durationMs: Maybe<Scalars['Int']['output']>;
+  error: Maybe<Scalars['JSON']['output']>;
+  gitBranch: Maybe<Scalars['String']['output']>;
+  isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
+  isMeta: Maybe<Scalars['Boolean']['output']>;
+  isSidechain: Scalars['Boolean']['output'];
+  level: Maybe<Scalars['String']['output']>;
+  logicalParentUuid: Maybe<Scalars['String']['output']>;
+  maxRetries: Maybe<Scalars['Int']['output']>;
+  parent: Maybe<Event>;
+  parentUuid: Maybe<Scalars['String']['output']>;
+  raw: Scalars['JSON']['output'];
+  retryAttempt: Maybe<Scalars['Int']['output']>;
+  retryInMs: Maybe<Scalars['Int']['output']>;
+  sessionId: Scalars['String']['output'];
+  slug: Maybe<Scalars['String']['output']>;
+  subtype: Maybe<Scalars['String']['output']>;
+  timestamp: Scalars['String']['output'];
+  type: Scalars['String']['output'];
+  url: Maybe<Scalars['String']['output']>;
+  userType: Scalars['String']['output'];
+  uuid: Scalars['String']['output'];
+  version: Scalars['String']['output'];
+};
+
 export type UnknownEvent = Event & {
   __typename?: 'UnknownEvent';
   apiError: Maybe<Scalars['JSON']['output']>;
@@ -112,4 +234,37 @@ export type UnknownEvent = Event & {
   isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
   raw: Scalars['JSON']['output'];
   type: Scalars['String']['output'];
+};
+
+export type UserEvent = CoreEvent & Event & {
+  __typename?: 'UserEvent';
+  agentId: Maybe<Scalars['String']['output']>;
+  apiError: Maybe<Scalars['JSON']['output']>;
+  children: Array<Event>;
+  cwd: Scalars['String']['output'];
+  error: Maybe<Scalars['JSON']['output']>;
+  gitBranch: Maybe<Scalars['String']['output']>;
+  imagePasteIds: Maybe<Array<Scalars['String']['output']>>;
+  isApiErrorMessage: Maybe<Scalars['Boolean']['output']>;
+  isCompactSummary: Maybe<Scalars['Boolean']['output']>;
+  isMeta: Maybe<Scalars['Boolean']['output']>;
+  isSidechain: Scalars['Boolean']['output'];
+  isVisibleInTranscriptOnly: Maybe<Scalars['Boolean']['output']>;
+  message: Scalars['JSON']['output'];
+  parent: Maybe<Event>;
+  parentUuid: Maybe<Scalars['String']['output']>;
+  permissionMode: Maybe<Scalars['String']['output']>;
+  planContent: Maybe<Scalars['String']['output']>;
+  raw: Scalars['JSON']['output'];
+  sessionId: Scalars['String']['output'];
+  slug: Maybe<Scalars['String']['output']>;
+  sourceToolAssistantUUID: Maybe<Scalars['String']['output']>;
+  thinkingMetadata: Maybe<Scalars['JSON']['output']>;
+  timestamp: Scalars['String']['output'];
+  todos: Maybe<Array<Scalars['JSON']['output']>>;
+  toolUseResult: Maybe<Scalars['JSON']['output']>;
+  type: Scalars['String']['output'];
+  userType: Scalars['String']['output'];
+  uuid: Scalars['String']['output'];
+  version: Scalars['String']['output'];
 };

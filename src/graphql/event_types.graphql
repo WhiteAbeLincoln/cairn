@@ -1,0 +1,266 @@
+# ISO-8601 formatted date-time string
+scalar DateTime
+# A UUID string, e.g. "123e4567-e89b-12d3-a456-426614174000"
+scalar UUID
+# An opaque string used for pagination, typically a base64-encoded cursor
+scalar Cursor
+# A json value, which can be an object, array, string, number, boolean, or null
+scalar JSON
+scalar JSONObject
+
+type Query {
+    session(id: UUID!): Session
+    sessions(projectPath: String, paging: PagingInput): SessionPage!
+}
+
+# --- Utility Types ---
+
+input PagingInput {
+    limit: Int
+    offset: Int
+}
+
+# --- Session Types ---
+
+type Session {
+    meta: SessionMeta!
+
+    "The raw JSONL content of the session file."
+    rawLog: String!
+
+    "Mapping from tool_use_id to agent_id for subagent calls."
+    agentMap: [AgentMapping!]!
+
+    "Load session events, optionally paginated."
+    events(page: PageInput): EventPage!
+}
+
+type SessionMeta {
+    id: UUID!
+    project: String!
+    projectPath: String!
+
+    "Absolute path to the session's .jsonl file on disk."
+    filePath: String!
+    createdAt: DateTime!
+    updatedAt: DateTime!
+
+    messageCount: Int!
+    slug: String
+
+    "The content of the first user message in the session, used for display purposes."
+    firstMessage: String
+    isSidechain: Boolean!
+    parentSessionId: UUID
+    agentId: UUID
+}
+
+type AgentMapping {
+    toolUseId: String!
+    agentId: String!
+}
+
+type SessionPage {
+    total: Int!
+    sessions: [Session!]!
+}
+
+# --- Event Types ---
+
+type EventPage {
+    total: Int!
+    events: [Event!]!
+}
+
+# all event types share these common fields
+interface Event {
+    "The type of the event, e.g. 'assistant', 'tool_use', 'user', etc."
+    type: String!
+
+    "The raw JSON content of the event, as stored in the session's .jsonl file"
+    raw: JSONObject!
+
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+}
+
+# used by 'assistant', 'progress', 'system', and 'user' events
+interface CoreEvent {
+    cwd: String!
+    gitBranch: String
+    isSidechain: Boolean!
+    parentUuid: UUID
+    sessionId: UUID!
+    slug: String
+    timestamp: DateTime!
+    userType: String!
+    uuid: UUID!
+    version: String!
+
+    parent: EventEdge
+    children(paging: PagingInput): EventPage
+}
+
+type QueueOperationEvent implements Event {
+    "type is always 'queue_operation'"
+    type: String!
+    raw: JSONObject!
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+
+    timestamp: DateTime!
+    sessionId: UUID!
+    operation: String!
+    content: String
+}
+
+type AssistantEvent implements Event & CoreEvent {
+    "type is always 'assistant'"
+    type: String!
+    raw: JSONObject!
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+
+    cwd: String!
+    gitBranch: String
+    isSidechain: Boolean!
+    parentUuid: UUID
+    sessionId: UUID!
+    slug: String
+    timestamp: DateTime!
+    userType: String!
+    uuid: UUID!
+    version: String!
+
+    parent: EventEdge
+    children(paging: PagingInput): EventPage
+
+    message: JSONObject!
+    requestId: String
+    slug: String
+    agentId: String
+}
+
+type UserEvent implements Event & CoreEvent {
+    "type is always 'user'"
+    type: String!
+    raw: JSONObject!
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+
+    cwd: String!
+    gitBranch: String
+    isSidechain: Boolean!
+    parentUuid: UUID
+    sessionId: UUID!
+    slug: String
+    timestamp: DateTime!
+    userType: String!
+    uuid: UUID!
+    version: String!
+
+    parent: EventEdge
+    children(paging: PagingInput): EventPage
+
+    message: JSONObject!
+    sourceToolAssistantUUID: UUID
+    toolUseResult: JSON
+    agentId: String
+    permissionMode: String
+    todos: [JSON!]
+    thinkingMetadata: JSONObject
+    isVisibleInTranscriptOnly: Boolean
+    isCompactSummary: Boolean
+    imagePasteIds: [String!]
+    isMeta: Boolean
+    planContent: String
+}
+
+type SystemEvent implements Event & CoreEvent {
+    "type is always 'system'"
+    type: String!
+    raw: JSONObject!
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+
+    cwd: String!
+    gitBranch: String
+    isSidechain: Boolean!
+    parentUuid: UUID
+    sessionId: UUID!
+    slug: String
+    timestamp: DateTime!
+    userType: String!
+    uuid: UUID!
+    version: String!
+
+    parent: EventEdge
+    children(paging: PagingInput): EventPage
+
+    durationMs: Int
+    level: String
+    content: String
+    compactMetadata: JSONObject
+    logicalParentUuid: UUID
+
+    url: String
+
+    retryInMs: Int
+    retryAttempt: Int
+    maxRetries: Int
+    cause: JSONObject
+}
+
+type ProgressEvent implements Event & CoreEvent {
+    "type is always 'progress'"
+    type: String!
+    raw: JSONObject!
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+
+    cwd: String!
+    gitBranch: String
+    isSidechain: Boolean!
+    parentUuid: UUID
+    sessionId: UUID!
+    slug: String
+    timestamp: DateTime!
+    userType: String!
+    uuid: UUID!
+    version: String!
+
+    parent: EventEdge
+    children(paging: PagingInput): EventPage
+
+    slug: String
+    agentId: String
+}
+
+type FileHistoryEvent implements Event {
+    "type is always 'file-history-snapshot'"
+    type: String!
+    raw: JSONObject!
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+
+    messageId: UUID!
+    snapshot: JSONObject!
+    isSnapshotUpdate: Boolean!
+}
+
+"A catch-all event type for any events that don't match the known types."
+type UnknownEvent implements Event {
+    type: String!
+    raw: JSONObject!
+
+    error: JSON
+    apiError: JSON
+    isApiErrorMessage: Boolean
+}

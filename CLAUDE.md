@@ -12,11 +12,10 @@ cd web && bun run check # typecheck frontend
 
 ## GraphQL Schema & TypeScript Codegen
 
-Rust types are the source of truth. After changing GraphQL types in `src/graphql/types.rs`:
+Rust types are the source of truth. After changing GraphQL types in `src/graphql/types.rs`, run from the project root:
 
 ```bash
-cargo run --bin export_schema > schema.graphql  # export SDL from Rust
-cd web && bun run codegen                       # generate web/src/lib/generated/schema.ts
+cargo run --bin export_schema > schema.graphql && bun run --cwd web codegen
 ```
 
 ## Browser Testing with Rodney

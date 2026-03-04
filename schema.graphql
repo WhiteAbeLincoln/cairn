@@ -3,6 +3,44 @@ type AgentMapping {
 	toolUseId: String!
 }
 
+type AssistantEvent implements Event & CoreEvent {
+	agentId: String
+	apiError: JSON
+	children: [Event!]!
+	cwd: String!
+	error: JSON
+	gitBranch: String
+	isApiErrorMessage: Boolean
+	isSidechain: Boolean!
+	message: JSON!
+	parent: Event
+	parentUuid: String
+	raw: JSON!
+	requestId: String
+	sessionId: String!
+	slug: String
+	timestamp: String!
+	type: String!
+	userType: String!
+	uuid: String!
+	version: String!
+}
+
+interface CoreEvent {
+	children: [Event!]!
+	cwd: String!
+	gitBranch: String
+	isSidechain: Boolean!
+	parent: Event
+	parentUuid: String
+	sessionId: String!
+	slug: String
+	timestamp: String!
+	userType: String!
+	uuid: String!
+	version: String!
+}
+
 """
 Implement the DateTime<Utc> scalar
 
@@ -18,6 +56,17 @@ interface Event {
 	type: String!
 }
 
+type FileHistoryEvent implements Event {
+	apiError: JSON
+	error: JSON
+	isApiErrorMessage: Boolean
+	isSnapshotUpdate: Boolean!
+	messageId: String!
+	raw: JSON!
+	snapshot: JSON!
+	type: String!
+}
+
 """
 A scalar that can represent any JSON value.
 """
@@ -26,6 +75,30 @@ scalar JSON
 input PageInput {
 	limit: Int! = 0
 	offset: Int! = 0
+}
+
+type ProgressEvent implements Event & CoreEvent {
+	agentId: String
+	apiError: JSON
+	children: [Event!]!
+	cwd: String!
+	data: JSON
+	error: JSON
+	gitBranch: String
+	isApiErrorMessage: Boolean
+	isSidechain: Boolean!
+	parent: Event
+	parentToolUseID: String
+	parentUuid: String
+	raw: JSON!
+	sessionId: String!
+	slug: String
+	timestamp: String!
+	toolUseID: String
+	type: String!
+	userType: String!
+	uuid: String!
+	version: String!
 }
 
 type Query {
@@ -37,6 +110,18 @@ type Query {
 	List discovered sessions, optionally filtered by project name and paginated.
 	"""
 	sessions(page: PageInput, project: String): SessionsResult!
+}
+
+type QueueOperationEvent implements Event {
+	apiError: JSON
+	content: String
+	error: JSON
+	isApiErrorMessage: Boolean
+	operation: String!
+	raw: JSON!
+	sessionId: String!
+	timestamp: String!
+	type: String!
 }
 
 type Session {
@@ -83,12 +168,76 @@ type SessionsResult {
 	total: Int!
 }
 
+type SystemEvent implements Event & CoreEvent {
+	apiError: JSON
+	cause: JSON
+	children: [Event!]!
+	compactMetadata: JSON
+	content: String
+	cwd: String!
+	durationMs: Int
+	error: JSON
+	gitBranch: String
+	isApiErrorMessage: Boolean
+	isMeta: Boolean
+	isSidechain: Boolean!
+	level: String
+	logicalParentUuid: String
+	maxRetries: Int
+	parent: Event
+	parentUuid: String
+	raw: JSON!
+	retryAttempt: Int
+	retryInMs: Int
+	sessionId: String!
+	slug: String
+	subtype: String
+	timestamp: String!
+	type: String!
+	url: String
+	userType: String!
+	uuid: String!
+	version: String!
+}
+
 type UnknownEvent implements Event {
 	apiError: JSON
 	error: JSON
 	isApiErrorMessage: Boolean
 	raw: JSON!
 	type: String!
+}
+
+type UserEvent implements Event & CoreEvent {
+	agentId: String
+	apiError: JSON
+	children: [Event!]!
+	cwd: String!
+	error: JSON
+	gitBranch: String
+	imagePasteIds: [String!]
+	isApiErrorMessage: Boolean
+	isCompactSummary: Boolean
+	isMeta: Boolean
+	isSidechain: Boolean!
+	isVisibleInTranscriptOnly: Boolean
+	message: JSON!
+	parent: Event
+	parentUuid: String
+	permissionMode: String
+	planContent: String
+	raw: JSON!
+	sessionId: String!
+	slug: String
+	sourceToolAssistantUUID: String
+	thinkingMetadata: JSON
+	timestamp: String!
+	todos: [JSON!]
+	toolUseResult: JSON
+	type: String!
+	userType: String!
+	uuid: String!
+	version: String!
 }
 
 """

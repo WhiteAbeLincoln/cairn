@@ -2,6 +2,7 @@
 name = "ccmux"
 version = "0.1.0"
 edition = "2024"
+default-run = "ccmux"
 
 [dependencies]
 async-graphql = { version = "7", features = ["chrono"] }

@@ -1,9 +1,13 @@
 import type { CodegenConfig } from '@graphql-codegen/cli'
+import { resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const config: CodegenConfig = {
-  schema: '../schema.graphql',
+  schema: resolve(__dirname, '../schema.graphql'),
   generates: {
-    './src/lib/generated/schema.ts': {
+    [resolve(__dirname, 'src/lib/generated/schema.ts')]: {
       plugins: ['typescript'],
       config: {
         scalars: {
