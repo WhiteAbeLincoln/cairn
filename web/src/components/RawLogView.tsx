@@ -16,15 +16,18 @@ import styles from './RawLogView.module.css'
 const PAGE_SIZE = 200
 
 const SESSION_PAGE_QUERY = `query ($id: String!, $page: PageInput) {
-  session(id: $id, page: $page) { events total }
+  session(id: $id) {
+    meta { id filePath }
+    events(page: $page) { events { raw } total }
+  }
 }`
 
-const SESSION_INFO_QUERY = `query ($id: String!) {
-  sessionInfo(id: $id) { id filePath }
+const SESSION_META_QUERY = `query ($id: String!) {
+  session(id: $id) { meta { id filePath } }
 }`
 
 const RAW_LOG_QUERY = `query ($id: String!) {
-  sessionRawLog(id: $id)
+  session(id: $id) { rawLog }
 }`
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,15 +98,15 @@ export default function RawLogView() {
   // Track in-flight fetches to avoid duplicates
   const fetchingRanges = new Set<string>()
 
-  // Fetch session info
+  // Fetch session metadata
   const [sessionInfo] = createResource(
     () => params.id,
     async (id) => {
-      const data = await query<{ sessionInfo: Session | null }>(
-        SESSION_INFO_QUERY,
+      const data = await query<{ session: { meta: Session } | null }>(
+        SESSION_META_QUERY,
         { id },
       )
-      return data.sessionInfo
+      return data.session?.meta ?? null
     },
   )
 
@@ -112,12 +115,13 @@ export default function RawLogView() {
     () => params.id,
     async (id) => {
       const data = await query<{
-        session: { events: RawEvent[]; total: number } | null
+        session: { meta: { id: string; filePath: string | null }; events: { events: { raw: RawEvent }[]; total: number } } | null
       }>(SESSION_PAGE_QUERY, { id, page: { offset: 0, limit: PAGE_SIZE } })
 
       if (!data.session) return null
 
-      const { events, total } = data.session
+      const { events: wrapped, total } = data.session.events
+      const events = wrapped.map(e => e.raw)
       setTotalLines(total)
 
       const cache = new Map<number, RawEvent>()
@@ -139,15 +143,16 @@ export default function RawLogView() {
         // Not in first page — fetch all remaining to find it
         if (total > PAGE_SIZE) {
           const rest = await query<{
-            session: { events: RawEvent[]; total: number } | null
+            session: { meta: { id: string; filePath: string | null }; events: { events: { raw: RawEvent }[]; total: number } } | null
           }>(SESSION_PAGE_QUERY, { id, page: { offset: PAGE_SIZE, limit: total - PAGE_SIZE } })
 
           if (rest.session) {
+            const restEvents = rest.session.events.events.map(e => e.raw)
             const newCache = new Map(cache)
-            for (let i = 0; i < rest.session.events.length; i++) {
+            for (let i = 0; i < restEvents.length; i++) {
               const idx = PAGE_SIZE + i
-              newCache.set(idx, rest.session.events[i])
-              if (rest.session.events[i].uuid === targetUuid) {
+              newCache.set(idx, restEvents[i])
+              if (restEvents[i].uuid === targetUuid) {
                 setHighlightLine(idx)
                 setExpandedLines(new Set([idx]))
               }
@@ -168,17 +173,18 @@ export default function RawLogView() {
 
     try {
       const data = await query<{
-        session: { events: RawEvent[]; total: number } | null
+        session: { meta: { id: string; filePath: string | null }; events: { events: { raw: RawEvent }[]; total: number } } | null
       }>(SESSION_PAGE_QUERY, {
         id: params.id,
         page: { offset: start, limit: end - start },
       })
 
       if (data.session) {
+        const fetched = data.session.events.events.map(e => e.raw)
         setLineCache((prev) => {
           const next = new Map(prev)
-          for (let i = 0; i < data.session!.events.length; i++) {
-            next.set(start + i, data.session!.events[i])
+          for (let i = 0; i < fetched.length; i++) {
+            next.set(start + i, fetched[i])
           }
           return next
         })
@@ -314,10 +320,10 @@ export default function RawLogView() {
 
   // Download using the full raw log query
   async function download() {
-    const data = await query<{ sessionRawLog: string | null }>(RAW_LOG_QUERY, {
+    const data = await query<{ session: { rawLog: string } | null }>(RAW_LOG_QUERY, {
       id: params.id,
     })
-    const content = data.sessionRawLog
+    const content = data.session?.rawLog ?? null
     if (!content) return
     const blob = new Blob([content], { type: 'application/jsonl' })
     const url = URL.createObjectURL(blob)

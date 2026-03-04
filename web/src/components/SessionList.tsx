@@ -12,14 +12,17 @@ interface ProjectGroup {
 
 const SESSIONS_QUERY = `{
   sessions {
-    id project slug createdAt updatedAt messageCount firstMessage projectPath
+    sessions {
+      meta { id project slug createdAt updatedAt messageCount firstMessage projectPath }
+    }
+    total
   }
 }`
 
 export default function SessionList() {
   const [sessions] = createResource(async () => {
-    const data = await query<{ sessions: Session[] }>(SESSIONS_QUERY)
-    return data.sessions
+    const data = await query<{ sessions: { sessions: { meta: Session }[]; total: number } }>(SESSIONS_QUERY)
+    return data.sessions.sessions.map(s => s.meta)
   })
 
   const groups = createMemo<ProjectGroup[]>(() => {

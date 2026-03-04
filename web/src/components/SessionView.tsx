@@ -16,18 +16,12 @@ import SystemMessageView from './blocks/SystemMessageView'
 import Prose from './Prose'
 import styles from './SessionView.module.css'
 
-const SESSION_INFO_QUERY = `query ($id: String!) {
-  sessionInfo(id: $id) {
-    id isSidechain parentSessionId agentId firstMessage
-  }
-}`
-
-const AGENT_MAP_QUERY = `query ($id: String!) {
-  sessionAgentMap(id: $id) { toolUseId agentId }
-}`
-
 const SESSION_QUERY = `query ($id: String!) {
-  session(id: $id) { events total }
+  session(id: $id) {
+    meta { id isSidechain parentSessionId agentId firstMessage }
+    events { events { raw } total }
+    agentMap { toolUseId agentId }
+  }
 }`
 
 type DisplayItem =
@@ -46,7 +40,7 @@ type DisplayItem =
 export default function SessionView() {
   const params = useParams<{ id: string }>()
 
-  interface SessionInfoData {
+  interface SessionMetaData {
     id: string
     isSidechain: boolean
     parentSessionId: string | null
@@ -54,35 +48,26 @@ export default function SessionView() {
     firstMessage: string | null
   }
 
-  const [sessionInfo] = createResource(
+  interface SessionQueryResult {
+    meta: SessionMetaData
+    events: { events: { raw: SessionEvent }[]; total: number }
+    agentMap: { toolUseId: string; agentId: string }[]
+  }
+
+  const [sessionData] = createResource(
     () => params.id,
     async (id) => {
-      const data = await query<{ sessionInfo: SessionInfoData | null }>(SESSION_INFO_QUERY, { id })
-      return data.sessionInfo
+      const data = await query<{ session: SessionQueryResult | null }>(SESSION_QUERY, { id })
+      return data.session
     },
   )
 
-  const [messages] = createResource(
-    () => params.id,
-    async (id) => {
-      const data = await query<{ session: { events: SessionEvent[]; total: number } | null }>(SESSION_QUERY, { id })
-      return data.session?.events ?? []
-    },
-  )
-
-  const [agentMapRaw] = createResource(
-    () => params.id,
-    async (id) => {
-      const data = await query<{
-        sessionAgentMap: { toolUseId: string; agentId: string }[]
-      }>(AGENT_MAP_QUERY, { id })
-      return data.sessionAgentMap ?? []
-    },
-  )
+  const sessionInfo = () => sessionData()?.meta ?? null
+  const messages = () => sessionData()?.events.events.map(e => e.raw) ?? []
 
   const agentMap = createMemo(() => {
     const map = new Map<string, string>()
-    for (const m of agentMapRaw() ?? []) {
+    for (const m of sessionData()?.agentMap ?? []) {
       map.set(m.toolUseId, m.agentId)
     }
     return map
@@ -302,12 +287,12 @@ export default function SessionView() {
       </Show>
 
       <Switch>
-        <Match when={messages.loading}>
+        <Match when={sessionData.loading}>
           <p class={styles.status}>Loading session...</p>
         </Match>
-        <Match when={messages.error}>
+        <Match when={sessionData.error}>
           <p class={`${styles.status} ${styles.error}`}>
-            Error: {(messages.error as Error).message}
+            Error: {(sessionData.error as Error).message}
           </p>
         </Match>
         <Match when={true}>
