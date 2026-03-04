@@ -1,7 +1,7 @@
 // Dispatcher that renders an individual ContentBlock (text, thinking, or tool use).
 // Used inside AssistantMessageView and InternalGroupView.
 
-import type { SessionMessage, ContentBlock } from '../../lib/types'
+import type { DisplayableEvent, ContentBlock, ToolResultEntry } from '../../lib/types'
 import Prose from '../Prose'
 import ThinkingBlockView from './ThinkingBlockView'
 import ToolUseBlockView from './ToolUseBlockView'
@@ -12,15 +12,15 @@ import styles from '../SessionView.module.css'
 
 export default function ContentBlockView(props: {
   block: ContentBlock
-  msg: SessionMessage
+  msg: DisplayableEvent
   index: number
   sessionId: string
   expanded: Set<string>
   toggle: (key: string) => void
-  toolResults: Map<string, { content: string; isError: boolean | null }>
+  toolResults: Map<string, ToolResultEntry>
   tokens?: number
 }) {
-  if (props.block.__typename === 'TextBlock') {
+  if (props.block.type === 'text') {
     return (
       <Prose
         text={props.block.text}
@@ -28,7 +28,7 @@ export default function ContentBlockView(props: {
       />
     )
   }
-  if (props.block.__typename === 'ThinkingBlock') {
+  if (props.block.type === 'thinking') {
     const key = `${props.msg.uuid}-think-${props.index}`
     return (
       <div class={styles.block}>
@@ -44,7 +44,7 @@ export default function ContentBlockView(props: {
       </div>
     )
   }
-  if (props.block.__typename === 'ToolUseBlock') {
+  if (props.block.type === 'tool_use') {
     const key = `${props.msg.uuid}-tool-${props.index}`
     const result = props.toolResults.get(props.block.id)
     if (props.block.name === 'Read') {

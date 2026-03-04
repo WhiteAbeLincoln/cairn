@@ -2,17 +2,17 @@
 // Top-level DisplayItem kind='exit-plan-mode'.
 
 import { Show } from 'solid-js'
-import type { SessionMessage } from '../../lib/types'
-import { getToolUseBlock, totalTokens } from '../../lib/session'
+import type { DisplayableEvent, ToolResultEntry } from '../../lib/types'
+import { getToolUseBlock, totalTokens, contentToString } from '../../lib/session'
 import MessageBlock from './MessageBlock'
 import Prose from '../Prose'
 import ep from './ExitPlanModeView.module.css'
 import styles from '../SessionView.module.css'
 
 export default function ExitPlanModeView(props: {
-  msg: SessionMessage
+  msg: DisplayableEvent
   sessionId: string
-  toolResults: Map<string, { content: string; isError: boolean | null }>
+  toolResults: Map<string, ToolResultEntry>
   expanded: Set<string>
   toggle: (key: string) => void
 }) {
@@ -32,22 +32,25 @@ export default function ExitPlanModeView(props: {
         class={ep['plan-content']}
       />
       <Show when={result}>
-        {(r) => (
-          <div class={ep['plan-output']}>
-            <button class={styles.toggle} onClick={() => props.toggle(outputKey)}>
-              {props.expanded.has(outputKey) ? '\u25BE' : '\u25B8'} Output
-              <Show when={r().content.includes('rejected')}>
-                <span class={styles['error-badge']}>rejected</span>
+        {(r) => {
+          const text = () => contentToString(r().content)
+          return (
+            <div class={ep['plan-output']}>
+              <button class={styles.toggle} onClick={() => props.toggle(outputKey)}>
+                {props.expanded.has(outputKey) ? '\u25BE' : '\u25B8'} Output
+                <Show when={text().includes('rejected')}>
+                  <span class={styles['error-badge']}>rejected</span>
+                </Show>
+                <Show when={!text().includes('rejected')}>
+                  <span class={styles['ok-badge']}>accepted</span>
+                </Show>
+              </button>
+              <Show when={props.expanded.has(outputKey)}>
+                <pre class={ep['plan-output-content']}>{text()}</pre>
               </Show>
-              <Show when={!r().content.includes('rejected')}>
-                <span class={styles['ok-badge']}>accepted</span>
-              </Show>
-            </button>
-            <Show when={props.expanded.has(outputKey)}>
-              <pre class={ep['plan-output-content']}>{r().content}</pre>
-            </Show>
-          </div>
-        )}
+            </div>
+          )
+        }}
       </Show>
     </MessageBlock>
   )

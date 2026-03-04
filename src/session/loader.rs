@@ -2,8 +2,6 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 
-use super::types::Event;
-
 /// Metadata about a discovered session, without loading all events.
 #[derive(Debug)]
 pub struct SessionInfo {
@@ -244,36 +242,6 @@ fn extract_json_string(line: &str, key: &str) -> Option<String> {
     Some(rest[..end].to_string())
 }
 
-/// Load a range of lines from a session JSONL file.
-/// Returns (vec of (line_number, content), total_line_count).
-pub fn load_session_lines(
-    path: &Path,
-    offset: usize,
-    limit: usize,
-) -> std::io::Result<(Vec<(usize, String)>, usize)> {
-    use std::io::BufRead;
-    let file = std::fs::File::open(path)?;
-    let reader = std::io::BufReader::new(file);
-
-    let mut lines_out = Vec::new();
-    let mut total = 0;
-
-    for (idx, line) in reader.lines().enumerate() {
-        let line = line?;
-        total = idx + 1;
-        if idx < offset {
-            continue;
-        }
-        if limit > 0 && lines_out.len() >= limit {
-            // Keep counting total lines
-            continue;
-        }
-        lines_out.push((idx, line));
-    }
-
-    Ok((lines_out, total))
-}
-
 /// Extract agent mappings (parentToolUseID -> agentId) from progress events.
 pub fn extract_agent_map(path: &Path) -> std::io::Result<Vec<(String, String)>> {
     use std::io::BufRead;
@@ -302,8 +270,8 @@ pub fn extract_agent_map(path: &Path) -> std::io::Result<Vec<(String, String)>> 
     Ok(mappings)
 }
 
-/// Load all events from a session JSONL file.
-pub fn load_session(path: &Path) -> std::io::Result<Vec<Event>> {
+/// Load all events from a session JSONL file as raw JSON values.
+pub fn load_session_raw(path: &Path) -> std::io::Result<Vec<serde_json::Value>> {
     use std::io::BufRead;
     let file = std::fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
@@ -314,8 +282,8 @@ pub fn load_session(path: &Path) -> std::io::Result<Vec<Event>> {
         if line.is_empty() {
             continue;
         }
-        match serde_json::from_str::<Event>(&line) {
-            Ok(event) => events.push(event),
+        match serde_json::from_str::<serde_json::Value>(&line) {
+            Ok(value) => events.push(value),
             Err(e) => {
                 eprintln!("Warning: failed to parse line {}: {e}", line_num + 1);
             }

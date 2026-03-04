@@ -3,8 +3,8 @@
 
 import { createResource, Show } from "solid-js";
 import { stripAnsi } from "../../lib/format";
-import type { SessionMessage } from "../../lib/types";
-import { getToolUseBlock, totalTokens } from "../../lib/session";
+import type { DisplayableEvent, ToolResultEntry } from "../../lib/types";
+import { getToolUseBlock, totalTokens, contentToString } from "../../lib/session";
 import { highlightBash } from "../../lib/highlight";
 import MessageBlock from "./MessageBlock";
 import bb from "./BashBlockView.module.css";
@@ -30,9 +30,9 @@ export function HighlightedBash(props: { code: string }) {
 }
 
 export default function BashBlockView(props: {
-  msg: SessionMessage;
+  msg: DisplayableEvent;
   sessionId: string;
-  toolResults: Map<string, { content: string; isError: boolean | null }>;
+  toolResults: Map<string, ToolResultEntry>;
   expanded: Set<string>;
   toggle: (key: string) => void;
 }) {
@@ -65,9 +65,9 @@ export default function BashBlockView(props: {
             <Show when={props.expanded.has(outputKey)}>
               <pre
                 class={bb["bash-output"]}
-                classList={{ [styles["is-error"]]: !!r().isError }}
+                classList={{ [styles["is-error"]]: !!r().is_error }}
               >
-                {stripAnsi(r().content)}
+                {stripAnsi(contentToString(r().content))}
               </pre>
             </Show>
           </div>

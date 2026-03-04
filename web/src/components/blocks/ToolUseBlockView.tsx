@@ -3,6 +3,8 @@
 
 import { Show } from 'solid-js'
 import { formatInput, truncate } from '../../lib/format'
+import { contentToString } from '../../lib/session'
+import type { ToolResultEntry } from '../../lib/types'
 import CollapsibleBlock from './CollapsibleBlock'
 import styles from '../SessionView.module.css'
 
@@ -10,7 +12,7 @@ export default function ToolUseBlockView(props: {
   blockKey: string
   name: string
   input: unknown
-  result: { content: string; isError: boolean | null } | undefined
+  result: ToolResultEntry | undefined
   sessionId: string
   uuid: string
   expanded: Set<string>
@@ -35,8 +37,8 @@ export default function ToolUseBlockView(props: {
           {(r) => (
             <div class={styles['tool-section']}>
               <div class={styles['tool-section-label']}>Output</div>
-              <pre classList={{ [styles['is-error']]: !!r().isError }}>
-                {truncate(r().content, 5000)}
+              <pre classList={{ [styles['is-error']]: !!r().is_error }}>
+                {truncate(contentToString(r().content), 5000)}
               </pre>
             </div>
           )}

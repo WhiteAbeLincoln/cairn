@@ -4,13 +4,15 @@
 import { createResource, Show } from "solid-js";
 import { fileExtToLang, highlight } from "../../lib/highlight";
 import { truncate } from "../../lib/format";
+import { contentToString } from "../../lib/session";
+import type { ToolResultEntry } from "../../lib/types";
 import CollapsibleBlock from "./CollapsibleBlock";
 import styles from "../SessionView.module.css";
 
 export default function GrepBlockView(props: {
   blockKey: string;
   input: unknown;
-  result: { content: string; isError: boolean | null } | undefined;
+  result: ToolResultEntry | undefined;
   sessionId: string;
   uuid: string;
   expanded: Set<string>;
@@ -62,12 +64,12 @@ export default function GrepBlockView(props: {
         >
           {(h) => <div class={styles["highlighted-code"]} innerHTML={h()} />}
         </Show>
-        <Show when={props.result?.isError}>
+        <Show when={props.result?.is_error}>
           {(_) => (
             <div class={styles["tool-section"]}>
               <div class={styles["tool-section-label"]}>Output</div>
               <pre class={styles["is-error"]}>
-                {truncate(props.result!.content, 5000)}
+                {truncate(contentToString(props.result!.content), 5000)}
               </pre>
             </div>
           )}

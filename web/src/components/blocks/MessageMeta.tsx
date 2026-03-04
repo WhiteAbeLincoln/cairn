@@ -4,7 +4,7 @@ import mb from "./MessageMeta.module.css";
 import styles from "../SessionView.module.css";
 
 export type MetaProps = {
-  result?: { isError?: boolean | null };
+  result?: { is_error?: boolean };
   sessionId: string;
   uuid: string;
   tokens?: number;
@@ -13,12 +13,9 @@ export type MetaProps = {
 export default function MessageMeta(props: MetaProps) {
   return (
     <span class={mb.meta}>
-      <Show when={props.result?.isError}>
+      <Show when={props.result?.is_error}>
         <span class={styles["error-badge"]}>error</span>
       </Show>
-      {/*<Show when={props.result && !props.result.isError}>
-        <span class={styles["ok-badge"]}>done</span>
-      </Show>*/}
       <Show when={props.tokens != null && props.tokens! > 0}>
         <span class={mb["tokens"]}>{props.tokens!.toLocaleString()} tok</span>
       </Show>

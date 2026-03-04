@@ -4,6 +4,8 @@
 import { createResource, Show, For } from 'solid-js'
 import { truncate, parseToolResultParts, stripReadLineNumbers } from '../../lib/format'
 import { fileExtToLang, highlight } from '../../lib/highlight'
+import { contentToString } from '../../lib/session'
+import type { ToolResultEntry } from '../../lib/types'
 import CollapsibleBlock from './CollapsibleBlock'
 import styles from '../SessionView.module.css'
 
@@ -12,7 +14,7 @@ const MAX_HIGHLIGHT_LENGTH = 50_000
 export default function ReadBlockView(props: {
   blockKey: string
   input: unknown
-  result: { content: string; isError: boolean | null } | undefined
+  result: ToolResultEntry | undefined
   sessionId: string
   uuid: string
   expanded: Set<string>
@@ -35,18 +37,19 @@ export default function ReadBlockView(props: {
     return parts.length > 0 ? parts.join(', ') : null
   }
 
-  const parsed = () => props.result ? parseToolResultParts(props.result.content) : null
+  const resultStr = () => props.result ? contentToString(props.result.content) : ''
+  const parsed = () => props.result ? parseToolResultParts(resultStr()) : null
 
   // For plain text results (non-image), strip line numbers and highlight
   const strippedText = () => {
-    if (!props.result || props.result.isError) return null
+    if (!props.result || props.result.is_error) return null
     const p = parsed()
     // Only handle simple text (no images, no multi-part)
     if (p && p.length === 1 && p[0].type === 'text') {
       return stripReadLineNumbers(p[0].text)
     }
     if (!p) {
-      return stripReadLineNumbers(props.result.content)
+      return stripReadLineNumbers(resultStr())
     }
     return null
   }
@@ -92,7 +95,7 @@ export default function ReadBlockView(props: {
             return (
               <div class={styles['tool-section']}>
                 {/* Highlighted text output */}
-                <Show when={st && !r().isError}>
+                <Show when={st && !r().is_error}>
                   {(_) => (
                     <Show
                       when={html()}
@@ -115,13 +118,13 @@ export default function ReadBlockView(props: {
                   )}
                 </Show>
                 {/* Error output */}
-                <Show when={r().isError}>
+                <Show when={r().is_error}>
                   <pre class={styles['is-error']}>
-                    {truncate(r().content, 5000)}
+                    {truncate(contentToString(r().content), 5000)}
                   </pre>
                 </Show>
                 {/* Multi-part output with images */}
-                <Show when={!st && parts && !r().isError}>
+                <Show when={!st && parts && !r().is_error}>
                   {(_) => (
                     <For each={parts!}>
                       {(part) => (

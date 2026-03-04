@@ -3,7 +3,7 @@
 // Top-level DisplayItem kind='internal-group'.
 
 import { For, Show } from 'solid-js'
-import type { SessionMessage } from '../../lib/types'
+import type { DisplayableEvent, AssistantEvent, ToolResultEntry } from '../../lib/types'
 import { compactSteps } from '../../lib/session'
 import ContentBlockView from './ContentBlockView'
 import CollapsibleBlock from './CollapsibleBlock'
@@ -14,17 +14,20 @@ export default function InternalGroupView(props: {
   groupKey: string
   steps: string[]
   tokens: number
-  msgs: SessionMessage[]
+  msgs: DisplayableEvent[]
   sessionId: string
   expanded: Set<string>
   toggle: (key: string) => void
-  toolResults: Map<string, { content: string; isError: boolean | null }>
+  toolResults: Map<string, ToolResultEntry>
 }) {
+  const blocks = (msg: DisplayableEvent) =>
+    msg.type === 'assistant' ? (msg as AssistantEvent).message.content : []
+
   if (props.steps.length === 1) {
     return (
       <For each={props.msgs}>
         {(msg) => (
-          <For each={msg.assistantContent?.blocks ?? []}>
+          <For each={blocks(msg)}>
             {(block, idx) => (
               <ContentBlockView
                 block={block}
@@ -73,7 +76,7 @@ export default function InternalGroupView(props: {
       <div class={cb['internal-expanded']}>
         <For each={props.msgs}>
           {(msg) => (
-            <For each={msg.assistantContent?.blocks ?? []}>
+            <For each={blocks(msg)}>
               {(block, idx) => (
                 <ContentBlockView
                   block={block}

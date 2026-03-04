@@ -15,11 +15,8 @@ import styles from './RawLogView.module.css'
 
 const PAGE_SIZE = 200
 
-const LOG_LINES_QUERY = `query ($id: String!, $offset: Int!, $limit: Int!) {
-  sessionLogLines(id: $id, offset: $offset, limit: $limit) {
-    lines { lineNumber content }
-    totalLines
-  }
+const SESSION_PAGE_QUERY = `query ($id: String!, $page: PageInput) {
+  session(id: $id, page: $page) { events total }
 }`
 
 const SESSION_INFO_QUERY = `query ($id: String!) {
@@ -30,28 +27,15 @@ const RAW_LOG_QUERY = `query ($id: String!) {
   sessionRawLog(id: $id)
 }`
 
-interface LogLine {
-  lineNumber: number
-  content: string
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type RawEvent = Record<string, any>
 
-/** Minimal parse to extract type, uuid, timestamp for the summary row */
-function parseSummary(raw: string): {
-  type: string
-  uuid: string
-  timestamp: string
-} {
-  let type = ''
-  let uuid = ''
-  let timestamp = ''
-  // Quick regex extractions — cheaper than JSON.parse for summary
-  const tm = raw.match(/"type"\s*:\s*"([^"]*)"/)
-  if (tm) type = tm[1]
-  const um = raw.match(/"uuid"\s*:\s*"([^"]*)"/)
-  if (um) uuid = um[1]
-  const tsm = raw.match(/"timestamp"\s*:\s*"([^"]*)"/)
-  if (tsm) timestamp = tsm[1]
-  return { type, uuid, timestamp }
+function getSummary(event: RawEvent): { type: string; uuid: string; timestamp: string } {
+  return {
+    type: (event?.type as string) ?? '',
+    uuid: (event?.uuid as string) ?? '',
+    timestamp: (event?.timestamp as string) ?? '',
+  }
 }
 
 function badgeClass(type: string): string {
@@ -85,8 +69,8 @@ export default function RawLogView() {
 
   let scrollRef!: HTMLDivElement
 
-  // Line cache: lineNumber -> raw content
-  const [lineCache, setLineCache] = createSignal<Map<number, string>>(new Map())
+  // Event cache: index -> parsed JSON event
+  const [lineCache, setLineCache] = createSignal<Map<number, RawEvent>>(new Map())
   const [totalLines, setTotalLines] = createSignal(0)
   const [expandedLines, setExpandedLines] = createSignal<Set<number>>(new Set())
   const [highlightLine, setHighlightLine] = createSignal<number | null>(null)
@@ -123,35 +107,31 @@ export default function RawLogView() {
     },
   )
 
-  // Initial load: get total line count and first page
+  // Initial load: get total event count and first page
   const [initialLoad] = createResource(
     () => params.id,
     async (id) => {
       const data = await query<{
-        sessionLogLines: { lines: LogLine[]; totalLines: number } | null
-      }>(LOG_LINES_QUERY, { id, offset: 0, limit: PAGE_SIZE })
+        session: { events: RawEvent[]; total: number } | null
+      }>(SESSION_PAGE_QUERY, { id, page: { offset: 0, limit: PAGE_SIZE } })
 
-      if (!data.sessionLogLines) return null
+      if (!data.session) return null
 
-      const { lines, totalLines: total } = data.sessionLogLines
+      const { events, total } = data.session
       setTotalLines(total)
 
-      const cache = new Map<number, string>()
-      for (const l of lines) {
-        cache.set(l.lineNumber, l.content)
+      const cache = new Map<number, RawEvent>()
+      for (let i = 0; i < events.length; i++) {
+        cache.set(i, events[i])
       }
       setLineCache(cache)
 
-      // If there's a uuid in the hash, find which line it's on
+      // If there's a uuid in the hash, find which event it's on
       if (targetUuid) {
-        // Match the uuid field specifically, not parentUuid or messageId
-        const needle = `"uuid":"${targetUuid}"`
-
-        // Check if it's in the first page
-        for (const l of lines) {
-          if (l.content.includes(needle)) {
-            setHighlightLine(l.lineNumber)
-            setExpandedLines(new Set([l.lineNumber]))
+        for (let i = 0; i < events.length; i++) {
+          if (events[i].uuid === targetUuid) {
+            setHighlightLine(i)
+            setExpandedLines(new Set([i]))
             return { total }
           }
         }
@@ -159,16 +139,17 @@ export default function RawLogView() {
         // Not in first page — fetch all remaining to find it
         if (total > PAGE_SIZE) {
           const rest = await query<{
-            sessionLogLines: { lines: LogLine[]; totalLines: number } | null
-          }>(LOG_LINES_QUERY, { id, offset: PAGE_SIZE, limit: total - PAGE_SIZE })
+            session: { events: RawEvent[]; total: number } | null
+          }>(SESSION_PAGE_QUERY, { id, page: { offset: PAGE_SIZE, limit: total - PAGE_SIZE } })
 
-          if (rest.sessionLogLines) {
+          if (rest.session) {
             const newCache = new Map(cache)
-            for (const l of rest.sessionLogLines.lines) {
-              newCache.set(l.lineNumber, l.content)
-              if (l.content.includes(needle)) {
-                setHighlightLine(l.lineNumber)
-                setExpandedLines(new Set([l.lineNumber]))
+            for (let i = 0; i < rest.session.events.length; i++) {
+              const idx = PAGE_SIZE + i
+              newCache.set(idx, rest.session.events[i])
+              if (rest.session.events[i].uuid === targetUuid) {
+                setHighlightLine(idx)
+                setExpandedLines(new Set([idx]))
               }
             }
             setLineCache(newCache)
@@ -187,18 +168,17 @@ export default function RawLogView() {
 
     try {
       const data = await query<{
-        sessionLogLines: { lines: LogLine[]; totalLines: number } | null
-      }>(LOG_LINES_QUERY, {
+        session: { events: RawEvent[]; total: number } | null
+      }>(SESSION_PAGE_QUERY, {
         id: params.id,
-        offset: start,
-        limit: end - start,
+        page: { offset: start, limit: end - start },
       })
 
-      if (data.sessionLogLines) {
+      if (data.session) {
         setLineCache((prev) => {
           const next = new Map(prev)
-          for (const l of data.sessionLogLines!.lines) {
-            next.set(l.lineNumber, l.content)
+          for (let i = 0; i < data.session!.events.length; i++) {
+            next.set(start + i, data.session!.events[i])
           }
           return next
         })
@@ -241,7 +221,7 @@ export default function RawLogView() {
     }
   })
 
-  // Compute filtered line indices
+  // Compute filtered event indices
   const filteredIndices = createMemo<number[] | null>(() => {
     const q = searchQuery().toLowerCase()
     if (!q) return null // null = no filter active
@@ -249,8 +229,8 @@ export default function RawLogView() {
     const indices: number[] = []
     const total = totalLines()
     for (let i = 0; i < total; i++) {
-      const content = cache.get(i)
-      if (content && content.toLowerCase().includes(q)) {
+      const event = cache.get(i)
+      if (event && JSON.stringify(event).toLowerCase().includes(q)) {
         indices.push(i)
       }
     }
@@ -437,8 +417,12 @@ export default function RawLogView() {
                     </div>
                   }
                 >
-                  {(content) => {
-                    const summary = () => parseSummary(content())
+                  {(event) => {
+                    const summary = () => getSummary(event())
+                    const preview = () => {
+                      const s = JSON.stringify(event())
+                      return s.length > 120 ? s.slice(0, 120) + '...' : s
+                    }
 
                     return (
                       <Show
@@ -468,9 +452,7 @@ export default function RawLogView() {
                                 : ''}
                             </span>
                             <span class={styles['line-preview']}>
-                              {content().length > 120
-                                ? content().slice(0, 120) + '...'
-                                : content()}
+                              {preview()}
                             </span>
                             <span class={styles['line-timestamp']}>
                               {formatTimestamp(summary().timestamp)}
@@ -509,7 +491,7 @@ export default function RawLogView() {
                             </span>
                           </div>
                           <div class={styles['line-expanded-body']}>
-                            <ExpandedJson raw={content()} />
+                            <JsonTree value={event()} defaultExpandDepth={1} />
                           </div>
                         </div>
                       </Show>
@@ -525,21 +507,3 @@ export default function RawLogView() {
   )
 }
 
-function ExpandedJson(props: { raw: string }) {
-  const parsed = () => {
-    try {
-      return JSON.parse(props.raw)
-    } catch {
-      return null
-    }
-  }
-
-  return (
-    <Show
-      when={parsed()}
-      fallback={<pre style={{ margin: 0, 'white-space': 'pre-wrap' }}>{props.raw}</pre>}
-    >
-      {(val) => <JsonTree value={val()} defaultExpandDepth={1} />}
-    </Show>
-  )
-}

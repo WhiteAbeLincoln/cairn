@@ -2,8 +2,8 @@ import { createSignal, createResource, createMemo, createEffect, For, Show, Swit
 import { useParams, A } from '@solidjs/router'
 import { query } from '../lib/graphql'
 import { truncate } from '../lib/format'
-import type { SessionMessage } from '../lib/types'
-import { getToolUseBlock, getAgentBlock, hasUserFacingText } from '../lib/session'
+import type { SessionEvent, DisplayableEvent, ToolResultContent, ToolResultEntry } from '../lib/types'
+import { getToolUseBlock, getAgentBlock, hasUserFacingText, contentToString } from '../lib/session'
 import UserMessageView from './blocks/UserMessageView'
 import AssistantMessageView from './blocks/AssistantMessageView'
 import { AskQuestionBlockView } from './blocks/AskUserQuestionView'
@@ -27,38 +27,19 @@ const AGENT_MAP_QUERY = `query ($id: String!) {
 }`
 
 const SESSION_QUERY = `query ($id: String!) {
-  session(id: $id) {
-    uuid parentUuid timestamp eventType
-    userContent {
-      __typename
-      ... on UserTextContent { text }
-      ... on UserToolResults { results { toolUseId content isError } }
-    }
-    assistantContent {
-      model stopReason
-      usage { inputTokens outputTokens cacheCreationInputTokens cacheReadInputTokens }
-      blocks {
-        __typename
-        ... on TextBlock { text }
-        ... on ThinkingBlock { thinking }
-        ... on ToolUseBlock { id name input }
-        ... on ToolResultBlock { toolUseId content isError }
-      }
-    }
-    systemInfo { subtype durationMs }
-  }
+  session(id: $id) { events total }
 }`
 
 type DisplayItem =
-  | { kind: 'user'; msg: SessionMessage }
-  | { kind: 'assistant'; msg: SessionMessage }
-  | { kind: 'ask-user-question'; msg: SessionMessage }
-  | { kind: 'exit-plan-mode'; msg: SessionMessage }
-  | { kind: 'bash'; msg: SessionMessage }
-  | { kind: 'agent'; msg: SessionMessage }
-  | { kind: 'internal-group'; key: string; steps: string[]; tokens: number; msgs: SessionMessage[] }
-  | { kind: 'task-list'; tasks: Map<string, { subject: string; status: string }>; msgs: SessionMessage[] }
-  | { kind: 'system'; msg: SessionMessage }
+  | { kind: 'user'; msg: DisplayableEvent }
+  | { kind: 'assistant'; msg: DisplayableEvent }
+  | { kind: 'ask-user-question'; msg: DisplayableEvent }
+  | { kind: 'exit-plan-mode'; msg: DisplayableEvent }
+  | { kind: 'bash'; msg: DisplayableEvent }
+  | { kind: 'agent'; msg: DisplayableEvent }
+  | { kind: 'internal-group'; key: string; steps: string[]; tokens: number; msgs: DisplayableEvent[] }
+  | { kind: 'task-list'; tasks: Map<string, { subject: string; status: string }>; msgs: DisplayableEvent[] }
+  | { kind: 'system'; msg: DisplayableEvent }
 
 // --- Main component ---
 
@@ -84,8 +65,8 @@ export default function SessionView() {
   const [messages] = createResource(
     () => params.id,
     async (id) => {
-      const data = await query<{ session: SessionMessage[] | null }>(SESSION_QUERY, { id })
-      return data.session ?? []
+      const data = await query<{ session: { events: SessionEvent[]; total: number } | null }>(SESSION_QUERY, { id })
+      return data.session?.events ?? []
     },
   )
 
@@ -108,11 +89,11 @@ export default function SessionView() {
   })
 
   const toolResults = createMemo(() => {
-    const map = new Map<string, { content: string; isError: boolean | null }>()
+    const map = new Map<string, ToolResultEntry>()
     for (const msg of messages() ?? []) {
-      if (msg.userContent?.__typename === 'UserToolResults') {
-        for (const r of msg.userContent.results) {
-          map.set(r.toolUseId, { content: r.content, isError: r.isError })
+      if (msg.type === 'user' && Array.isArray(msg.message.content)) {
+        for (const r of msg.message.content as ToolResultContent[]) {
+          map.set(r.tool_use_id, { content: r.content, is_error: r.is_error })
         }
       }
     }
@@ -121,9 +102,9 @@ export default function SessionView() {
 
   const displayItems = createMemo<DisplayItem[]>(() => {
     const items: DisplayItem[] = []
-    let internalAcc: SessionMessage[] = []
+    let internalAcc: DisplayableEvent[] = []
     const taskMap = new Map<string, { subject: string; status: string }>()
-    let taskAcc: SessionMessage[] = []
+    let taskAcc: DisplayableEvent[] = []
 
     function flushTasks() {
       if (taskAcc.length === 0) return
@@ -137,15 +118,16 @@ export default function SessionView() {
       if (internalAcc.length === 0) return
       const steps: string[] = []
       let tokens = 0
-      const key = `ig-${internalAcc[0].uuid}`
+      const first = internalAcc[0]
+      const key = `ig-${first.type === 'assistant' || first.type === 'user' || first.type === 'system' || first.type === 'progress' ? first.uuid : ''}`
       for (const m of internalAcc) {
-        if (m.assistantContent) {
-          for (const b of m.assistantContent.blocks) {
-            if (b.__typename === 'ThinkingBlock') steps.push('Thinking')
-            else if (b.__typename === 'ToolUseBlock') steps.push(b.name)
+        if (m.type === 'assistant') {
+          for (const b of m.message.content) {
+            if (b.type === 'thinking') steps.push('Thinking')
+            else if (b.type === 'tool_use') steps.push(b.name)
           }
-          const u = m.assistantContent.usage
-          if (u) tokens += (u.inputTokens ?? 0) + (u.outputTokens ?? 0)
+          const u = m.message.usage
+          if (u) tokens += (u.input_tokens ?? 0) + (u.output_tokens ?? 0)
         }
       }
       items.push({ kind: 'internal-group', key, steps, tokens, msgs: internalAcc })
@@ -153,11 +135,11 @@ export default function SessionView() {
     }
 
     for (const m of messages() ?? []) {
-      if (m.eventType === 'USER' && m.userContent?.__typename === 'UserTextContent') {
+      if (m.type === 'user' && typeof m.message.content === 'string') {
         flushInternal()
         flushTasks()
         items.push({ kind: 'user', msg: m })
-      } else if (m.eventType === 'ASSISTANT' && m.assistantContent) {
+      } else if (m.type === 'assistant') {
         if (hasUserFacingText(m)) {
           flushInternal()
           flushTasks()
@@ -178,16 +160,16 @@ export default function SessionView() {
           flushInternal()
           flushTasks()
           items.push({ kind: 'agent', msg: m })
-        } else if (m.assistantContent.blocks.some((b) => b.__typename === 'ToolUseBlock' && (b.name === 'TaskCreate' || b.name === 'TaskUpdate'))) {
+        } else if (m.message.content.some((b) => b.type === 'tool_use' && (b.name === 'TaskCreate' || b.name === 'TaskUpdate'))) {
           flushInternal()
-          for (const b of m.assistantContent.blocks) {
-            if (b.__typename === 'ToolUseBlock' && b.name === 'TaskCreate') {
+          for (const b of m.message.content) {
+            if (b.type === 'tool_use' && b.name === 'TaskCreate') {
               const input = b.input as { subject?: string }
               const result = toolResults().get(b.id)
-              const idMatch = result?.content.match(/Task #(\d+)/)
+              const idMatch = contentToString(result?.content).match(/Task #(\d+)/)
               const taskId = idMatch ? idMatch[1] : b.id
               taskMap.set(taskId, { subject: input.subject ?? '', status: 'pending' })
-            } else if (b.__typename === 'ToolUseBlock' && b.name === 'TaskUpdate') {
+            } else if (b.type === 'tool_use' && b.name === 'TaskUpdate') {
               const input = b.input as { taskId?: string; status?: string }
               if (input.taskId && input.status) {
                 const existing = taskMap.get(input.taskId)
@@ -204,7 +186,7 @@ export default function SessionView() {
           flushTasks()
           internalAcc.push(m)
         }
-      } else if (m.eventType === 'SYSTEM' && m.systemInfo?.subtype === 'turn_duration') {
+      } else if (m.type === 'system' && m.subtype === 'turn_duration') {
         flushInternal()
         flushTasks()
         items.push({ kind: 'system', msg: m })
@@ -221,7 +203,7 @@ export default function SessionView() {
     for (const item of displayItems()) {
       if (item.kind === 'internal-group') {
         for (const msg of item.msgs) {
-          map.set(msg.uuid, item.key)
+          if ('uuid' in msg) map.set(msg.uuid as string, item.key)
         }
       }
     }
@@ -289,9 +271,9 @@ export default function SessionView() {
             const msgs = messages() ?? []
             for (let j = msgs.length - 1; j >= 0; j--) {
               const m = msgs[j]
-              if (m.assistantContent) {
-                for (const b of m.assistantContent.blocks) {
-                  if (b.__typename === 'TextBlock') return b.text
+              if (m.type === 'assistant') {
+                for (const b of m.message.content) {
+                  if (b.type === 'text') return b.text
                 }
               }
             }
@@ -398,12 +380,14 @@ export default function SessionView() {
 
                   <Match when={item.kind === 'task-list' && (item as DisplayItem & { kind: 'task-list' })}>
                     {(i) => {
-                      const key = `task-list-${i().msgs[0].uuid}`
+                      const firstMsg = i().msgs[0]
+                      const uuid = 'uuid' in firstMsg ? (firstMsg.uuid as string) : ''
+                      const key = `task-list-${uuid}`
                       return (
                         <TaskListView
                           tasks={i().tasks}
                           sessionId={params.id}
-                          uuid={i().msgs[0].uuid}
+                          uuid={uuid}
                           expanded={expanded().has(key)}
                           toggle={() => toggle(key)}
                         />

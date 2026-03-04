@@ -1,86 +1,154 @@
+// Session metadata (from session list / info queries — unchanged)
 export interface Session {
-  id: string;
-  project: string;
-  slug: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  messageCount: number;
-  firstMessage: string | null;
-  projectPath: string | null;
-  filePath: string | null;
+  id: string
+  project: string
+  slug: string | null
+  createdAt: string | null
+  updatedAt: string | null
+  messageCount: number
+  firstMessage: string | null
+  projectPath: string | null
+  filePath: string | null
 }
 
-export interface SessionMessage {
-  uuid: string;
-  parentUuid: string | null;
-  timestamp: string;
-  eventType: 'USER' | 'ASSISTANT' | 'PROGRESS' | 'SYSTEM' | 'FILE_HISTORY_SNAPSHOT' | 'QUEUE_OPERATION';
-  cwd: string | null;
-  gitBranch: string | null;
-  isSidechain: boolean | null;
-  slug: string | null;
-  userContent: UserTextContent | UserToolResults | null;
-  assistantContent: AssistantContent | null;
-  systemInfo: SystemInfo | null;
+// --- Raw JSONL event types ---
+
+// Fields shared across user, assistant, progress, and system events
+interface CommonFields {
+  uuid: string
+  parentUuid: string | null
+  sessionId: string
+  timestamp: string
+  version?: string
+  cwd?: string
+  gitBranch?: string
+  isSidechain?: boolean
+  userType?: string
+  slug?: string
 }
 
-export interface UserTextContent {
-  __typename: 'UserTextContent';
-  text: string;
+export interface UserEvent extends CommonFields {
+  type: 'user'
+  message: {
+    role: string
+    content: string | ToolResultContent[]
+  }
+  toolUseResult?: unknown
+  sourceToolAssistantUuid?: string
+  permissionMode?: string
 }
 
-export interface UserToolResults {
-  __typename: 'UserToolResults';
-  results: ToolResult[];
+export interface ToolResultContent {
+  type: 'tool_result'
+  tool_use_id: string
+  content: unknown
+  is_error?: boolean
 }
 
-export interface ToolResult {
-  toolUseId: string;
-  content: string;
-  isError: boolean | null;
+export interface AssistantEvent extends CommonFields {
+  type: 'assistant'
+  message: {
+    role: string
+    type?: string
+    model?: string
+    id?: string
+    content: ContentBlock[]
+    stop_reason?: string | null
+    stop_sequence?: string | null
+    usage?: Usage
+  }
+  requestId?: string
 }
 
-export interface AssistantContent {
-  model: string | null;
-  stopReason: string | null;
-  usage: UsageInfo | null;
-  blocks: ContentBlock[];
-}
-
-export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock;
+export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
 
 export interface TextBlock {
-  __typename: 'TextBlock';
-  text: string;
+  type: 'text'
+  text: string
 }
 
 export interface ThinkingBlock {
-  __typename: 'ThinkingBlock';
-  thinking: string;
+  type: 'thinking'
+  thinking: string
+  signature?: string
 }
 
 export interface ToolUseBlock {
-  __typename: 'ToolUseBlock';
-  id: string;
-  name: string;
-  input: unknown;
+  type: 'tool_use'
+  id: string
+  name: string
+  input: unknown
 }
 
 export interface ToolResultBlock {
-  __typename: 'ToolResultBlock';
-  toolUseId: string;
-  content: string;
-  isError: boolean | null;
+  type: 'tool_result'
+  tool_use_id: string
+  content: unknown
 }
 
-export interface UsageInfo {
-  inputTokens: number | null;
-  outputTokens: number | null;
-  cacheCreationInputTokens: number | null;
-  cacheReadInputTokens: number | null;
+export interface Usage {
+  input_tokens?: number
+  output_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+  [key: string]: unknown
 }
 
-export interface SystemInfo {
-  subtype: string | null;
-  durationMs: number | null;
+export interface SystemEvent extends CommonFields {
+  type: 'system'
+  subtype?: string
+  durationMs?: number
+  isMeta?: boolean
+}
+
+export interface ProgressEvent extends CommonFields {
+  type: 'progress'
+  data: unknown
+  toolUseID?: string
+  parentToolUseID?: string
+}
+
+export interface FileHistorySnapshotEvent {
+  type: 'file-history-snapshot'
+  messageId: string
+  snapshot: unknown
+  isSnapshotUpdate?: boolean
+}
+
+export interface QueueOperationEvent {
+  type: 'queue-operation'
+  operation: string
+  sessionId: string
+  timestamp?: string
+  content?: string
+}
+
+export type SessionEvent =
+  | UserEvent
+  | AssistantEvent
+  | ProgressEvent
+  | SystemEvent
+  | FileHistorySnapshotEvent
+  | QueueOperationEvent
+
+// Events that have uuid/timestamp and can be rendered in the UI
+export type DisplayableEvent = UserEvent | AssistantEvent | SystemEvent | ProgressEvent
+
+// Type guards
+export function isUserEvent(e: SessionEvent): e is UserEvent {
+  return e.type === 'user'
+}
+
+export function isAssistantEvent(e: SessionEvent): e is AssistantEvent {
+  return e.type === 'assistant'
+}
+
+export function isSystemEvent(e: SessionEvent): e is SystemEvent {
+  return e.type === 'system'
+}
+
+// Tool result map entry (used across components)
+export interface ToolResultEntry {
+  content: unknown
+  is_error?: boolean
 }

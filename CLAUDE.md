@@ -7,6 +7,7 @@ Session log viewer for Claude Code. Rust/Axum GraphQL backend, SolidJS frontend.
 ```
 cargo run          # backend on :3001
 cd web && bun dev  # frontend on :5173
+cd web && bun run check # typecheck frontend
 ```
 
 ## Browser Testing with Rodney
@@ -23,6 +24,12 @@ rodney click 'a[href*="/raw"]'      # click an element
 rodney text '.some-selector'        # read text content
 rodney js 'document.title'          # run JS and get result
 rodney stop                         # shut down Chrome
+```
+
+Use an IIFE for a `js` command that needs to run multiple statements:
+
+```bash
+rodney js '(() => { const el = document.querySelector("[data-role=bash]"); el.scrollIntoView() })()'
 ```
 
 Use `rodney --help` for the full command reference. Key capabilities:

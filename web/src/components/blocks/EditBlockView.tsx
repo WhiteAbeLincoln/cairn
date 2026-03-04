@@ -3,6 +3,8 @@
 
 import { Show } from 'solid-js'
 import { formatInput, truncate } from '../../lib/format'
+import { contentToString } from '../../lib/session'
+import type { ToolResultEntry } from '../../lib/types'
 import CollapsibleBlock from './CollapsibleBlock'
 import eb from './EditBlockView.module.css'
 import styles from '../SessionView.module.css'
@@ -27,7 +29,7 @@ function buildDiffLines(oldStr: string, newStr: string): { type: 'remove' | 'add
 export default function EditBlockView(props: {
   blockKey: string
   input: unknown
-  result: { content: string; isError: boolean | null } | undefined
+  result: ToolResultEntry | undefined
   sessionId: string
   uuid: string
   expanded: Set<string>
@@ -89,12 +91,12 @@ export default function EditBlockView(props: {
             ))}
           </div>
         </Show>
-        <Show when={props.result?.isError}>
+        <Show when={props.result?.is_error}>
           {(_) => (
             <div class={styles['tool-section']}>
               <div class={styles['tool-section-label']}>Output</div>
               <pre class={styles['is-error']}>
-                {truncate(props.result!.content, 5000)}
+                {truncate(contentToString(props.result!.content), 5000)}
               </pre>
             </div>
           )}

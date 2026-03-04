@@ -1,10 +1,8 @@
 use std::path::PathBuf;
 
-use async_graphql::{Context, Object, Result};
+use async_graphql::{Context, Json, Object, Result};
 
-use super::types::{
-    event_to_message, AgentMapping, Session, SessionLogLine, SessionLogLines, SessionMessage,
-};
+use super::types::{AgentMapping, PageInput, Session, SessionEvents};
 use crate::session::loader;
 
 pub struct Query;
@@ -70,40 +68,6 @@ impl Query {
         Ok(Some(content))
     }
 
-    /// Fetch a range of raw JSONL lines from a session file.
-    async fn session_log_lines(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-        offset: i32,
-        limit: i32,
-    ) -> Result<Option<SessionLogLines>> {
-        let base_path = ctx.data::<PathBuf>()?;
-        let sessions = loader::discover_sessions(base_path)
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-
-        let Some(session_info) = sessions.iter().find(|s| s.id == id) else {
-            return Ok(None);
-        };
-
-        let (raw_lines, total) =
-            loader::load_session_lines(&session_info.path, offset as usize, limit as usize)
-                .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-
-        let lines = raw_lines
-            .into_iter()
-            .map(|(num, content)| SessionLogLine {
-                line_number: num as i32,
-                content,
-            })
-            .collect();
-
-        Ok(Some(SessionLogLines {
-            lines,
-            total_lines: total as i32,
-        }))
-    }
-
     /// Get the mapping from tool_use_id to agent_id for subagent calls in a session.
     async fn session_agent_map(
         &self,
@@ -130,27 +94,39 @@ impl Query {
             .collect())
     }
 
-    /// Load a full session by ID, returning all messages.
+    /// Load a session by ID, returning events as raw JSON.
+    /// When `page` is provided, returns a paginated slice; otherwise returns all events.
     async fn session(
         &self,
         ctx: &Context<'_>,
         id: String,
-    ) -> Result<Option<Vec<SessionMessage>>> {
+        page: Option<PageInput>,
+    ) -> Result<Option<SessionEvents>> {
         let base_path = ctx.data::<PathBuf>()?;
         let sessions = loader::discover_sessions(base_path)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
-        let session_info = sessions.iter().find(|s| s.id == id);
-        let Some(session_info) = session_info else {
+        let Some(session_info) = sessions.iter().find(|s| s.id == id) else {
             return Ok(None);
         };
 
-        let events = loader::load_session(&session_info.path)
+        let all_events = loader::load_session_raw(&session_info.path)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
 
-        let messages: Vec<SessionMessage> =
-            events.iter().filter_map(event_to_message).collect();
+        let total = all_events.len() as i32;
 
-        Ok(Some(messages))
+        let events = match page {
+            Some(p) => {
+                let start = (p.offset as usize).min(all_events.len());
+                let end = (start + p.limit as usize).min(all_events.len());
+                all_events[start..end].to_vec()
+            }
+            None => all_events,
+        };
+
+        Ok(Some(SessionEvents {
+            events: events.into_iter().map(Json).collect(),
+            total,
+        }))
     }
 }

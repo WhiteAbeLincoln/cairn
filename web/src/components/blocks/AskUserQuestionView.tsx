@@ -3,22 +3,22 @@
 // for reuse, plus the AskUserQuestion type and parseAskUserAnswers helper.
 
 import { For } from "solid-js";
-import type { SessionMessage } from "../../lib/types";
-import { getToolUseBlock, totalTokens } from "../../lib/session";
+import type { DisplayableEvent, ToolResultEntry } from "../../lib/types";
+import { getToolUseBlock, totalTokens, contentToString } from "../../lib/session";
 import MessageBlock from "./MessageBlock";
 import aq from "./AskUserQuestionView.module.css";
 
 export function AskQuestionBlockView(props: {
-  msg: SessionMessage;
+  msg: DisplayableEvent;
   sessionId: string;
-  toolResults: Map<string, { content: string; isError: boolean | null }>;
+  toolResults: Map<string, ToolResultEntry>;
 }) {
   const block = getToolUseBlock(props.msg, "AskUserQuestion")!;
   const input = block.input as { questions?: AskUserQuestion[] };
   const questions = input.questions ?? [];
   const result = props.toolResults.get(block.id);
   const answers = result
-    ? parseAskUserAnswers(result.content)
+    ? parseAskUserAnswers(contentToString(result.content))
     : new Map<string, string>();
   return (
     <MessageBlock

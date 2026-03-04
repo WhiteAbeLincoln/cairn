@@ -1,27 +1,30 @@
-import type { SessionMessage, ToolUseBlock } from './types'
+import type { DisplayableEvent, SessionEvent, ToolUseBlock } from './types'
 
-export function getToolUseBlock(msg: SessionMessage, name: string): ToolUseBlock | null {
-  if (!msg.assistantContent) return null
+type AnyEvent = DisplayableEvent | SessionEvent
+
+export function getToolUseBlock(msg: AnyEvent, name: string): ToolUseBlock | null {
+  if (msg.type !== 'assistant') return null
   return (
-    (msg.assistantContent.blocks.find(
-      (b): b is ToolUseBlock => b.__typename === 'ToolUseBlock' && b.name === name,
+    (msg.message.content.find(
+      (b): b is ToolUseBlock => b.type === 'tool_use' && b.name === name,
     ) as ToolUseBlock) ?? null
   )
 }
 
-export function getAgentBlock(msg: SessionMessage): ToolUseBlock | null {
+export function getAgentBlock(msg: AnyEvent): ToolUseBlock | null {
   return getToolUseBlock(msg, 'Task') ?? getToolUseBlock(msg, 'Agent')
 }
 
-export function hasUserFacingText(msg: SessionMessage): boolean {
-  if (!msg.assistantContent) return false
-  return msg.assistantContent.blocks.some((b) => b.__typename === 'TextBlock')
+export function hasUserFacingText(msg: AnyEvent): boolean {
+  if (msg.type !== 'assistant') return false
+  return msg.message.content.some((b) => b.type === 'text')
 }
 
-export function totalTokens(msg: SessionMessage): number | undefined {
-  const u = msg.assistantContent?.usage
+export function totalTokens(msg: AnyEvent): number | undefined {
+  if (msg.type !== 'assistant') return undefined
+  const u = msg.message.usage
   if (u) {
-    return (u.inputTokens ?? 0) + (u.outputTokens ?? 0)
+    return (u.input_tokens ?? 0) + (u.output_tokens ?? 0)
   }
 }
 
@@ -36,4 +39,11 @@ export function compactSteps(steps: string[]): { name: string; count: number }[]
     }
   }
   return result
+}
+
+/** Convert raw tool result content to a display string. */
+export function contentToString(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (v == null) return ''
+  return JSON.stringify(v)
 }

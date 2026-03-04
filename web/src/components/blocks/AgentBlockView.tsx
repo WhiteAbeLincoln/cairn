@@ -4,17 +4,17 @@
 import { Show } from 'solid-js'
 import { A } from '@solidjs/router'
 import { truncate } from '../../lib/format'
-import type { SessionMessage } from '../../lib/types'
-import { getAgentBlock, totalTokens } from '../../lib/session'
+import type { DisplayableEvent, ToolResultEntry } from '../../lib/types'
+import { getAgentBlock, totalTokens, contentToString } from '../../lib/session'
 import CollapsibleBlock from './CollapsibleBlock'
 import cb from './CollapsibleBlock.module.css'
 import ab from './AgentBlockView.module.css'
 import styles from '../SessionView.module.css'
 
 export default function AgentBlockView(props: {
-  msg: SessionMessage
+  msg: DisplayableEvent
   sessionId: string
-  toolResults: Map<string, { content: string; isError: boolean | null }>
+  toolResults: Map<string, ToolResultEntry>
   agentMap: Map<string, string>
   expanded: Set<string>
   toggle: (key: string) => void
@@ -72,7 +72,7 @@ export default function AgentBlockView(props: {
               </button>
               <Show when={props.expanded.has(outputKey)}>
                 <pre class={ab['agent-output']}>
-                  {truncate(r().content, 5000)}
+                  {truncate(contentToString(r().content), 5000)}
                 </pre>
               </Show>
             </div>
