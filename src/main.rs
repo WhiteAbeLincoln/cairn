@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use async_graphql::http::GraphiQLSource;
-use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
+use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
 use axum::{
     Extension,
     response::{Html, IntoResponse},
@@ -18,7 +18,12 @@ async fn graphql_handler(schema: Extension<AppSchema>, req: GraphQLRequest) -> G
 }
 
 async fn graphiql() -> impl IntoResponse {
-    Html(GraphiQLSource::build().endpoint("/graphql").finish())
+    Html(
+        GraphiQLSource::build()
+            .endpoint("/graphql")
+            .subscription_endpoint("ws://localhost:3001/graphql/ws")
+            .finish(),
+    )
 }
 
 #[tokio::main]
@@ -34,6 +39,7 @@ async fn main() {
 
     let app = axum::Router::new()
         .route("/graphql", get(graphiql).post(graphql_handler))
+        .route_service("/graphql/ws", GraphQLSubscription::new(schema.clone()))
         .layer(Extension(schema))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive());

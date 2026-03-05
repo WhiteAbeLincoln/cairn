@@ -168,6 +168,13 @@ type SessionsResult {
 	total: Int!
 }
 
+type SubscriptionRoot {
+	"""
+	Watch a session's log file and emit new events as they are appended.
+	"""
+	sessionEvents(id: String!): Event!
+}
+
 type SystemEvent implements Event & CoreEvent {
 	apiError: JSON
 	cause: JSON
@@ -254,4 +261,5 @@ Provides a scalar specification URL for specifying the behavior of custom scalar
 directive @specifiedBy(url: String!) on SCALAR
 schema {
 	query: Query
+	subscription: SubscriptionRoot
 }
