@@ -12,12 +12,14 @@
   color-scheme: dark;
   color: #d4cfc4;
   background-color: #1c1b18;
+  --bg: #1c1b18;
 }
 
 :root.light {
   color-scheme: light;
   color: #2c2a25;
   background-color: #f4f2ed;
+  --bg: #f4f2ed;
 }
 
 /* System mode: follow OS preference */
@@ -26,6 +28,7 @@
     color-scheme: light;
     color: #2c2a25;
     background-color: #f4f2ed;
+    --bg: #f4f2ed;
   }
 }
 

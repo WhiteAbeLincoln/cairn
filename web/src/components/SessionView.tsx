@@ -1,6 +1,6 @@
-import { createSignal, createResource, createMemo, createEffect, For, Show, Switch, Match } from 'solid-js'
+import { createSignal, createResource, createMemo, createEffect, For, Show, Switch, Match, onCleanup } from 'solid-js'
 import { useParams, A } from '@solidjs/router'
-import { query } from '../lib/graphql'
+import { query, subscribe } from '../lib/graphql'
 import { truncate } from '../lib/format'
 import type { SessionEvent, DisplayableEvent, ToolResultContent, ToolResultEntry } from '../lib/types'
 import { getToolUseBlock, getAgentBlock, hasUserFacingText, contentToString } from '../lib/session'
@@ -22,6 +22,10 @@ const SESSION_QUERY = `query ($id: String!) {
     events { events { raw } total }
     agentMap { toolUseId agentId }
   }
+}`
+
+const SUBSCRIPTION_QUERY = `subscription ($id: String!) {
+  sessionEvents(id: $id) { raw }
 }`
 
 type DisplayItem =
@@ -63,7 +67,46 @@ export default function SessionView() {
   )
 
   const sessionInfo = () => sessionData()?.meta ?? null
-  const messages = () => sessionData()?.events.events.map(e => e.raw) ?? []
+
+  // --- Live subscription ---
+
+  const [live, setLive] = createSignal(false)
+  const [liveEvents, setLiveEvents] = createSignal<SessionEvent[]>([])
+  const scrollContainer = () => document.querySelector('main')
+
+  createEffect(() => {
+    if (!live()) return
+
+    const unsub = subscribe<{ sessionEvents: { raw: SessionEvent } }>(
+      SUBSCRIPTION_QUERY,
+      { id: params.id },
+      (data) => {
+        setLiveEvents((prev) => [...prev, data.sessionEvents.raw])
+      },
+    )
+
+    onCleanup(unsub)
+  })
+
+  // Auto-scroll to bottom when new events arrive in live mode
+  createEffect(() => {
+    void liveEvents().length
+    const el = scrollContainer()
+    if (!live() || !el) return
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  })
+
+  // Reset live events when toggling off
+  createEffect(() => {
+    if (!live()) setLiveEvents([])
+  })
+
+  const messages = createMemo(() => {
+    const base = sessionData()?.events.events.map(e => e.raw) ?? []
+    return [...base, ...liveEvents()]
+  })
 
   const agentMap = createMemo(() => {
     const map = new Map<string, string>()
@@ -233,7 +276,7 @@ export default function SessionView() {
 
   return (
     <div class={styles['session-view']}>
-      <header>
+      <header class={styles['sticky-header']}>
         <Show when={sessionInfo()?.isSidechain && sessionInfo()?.parentSessionId}>
           <A class={styles['back-link']} href={`/session/${sessionInfo()!.parentSessionId}`}>&larr; Parent</A>
         </Show>
@@ -247,6 +290,13 @@ export default function SessionView() {
             </Show>
           </A>
         </h1>
+        <div class={styles['header-spacer']} />
+        <button
+          class={`${styles['live-toggle']} ${live() ? styles['live-active'] : ''}`}
+          onClick={() => setLive((v) => !v)}
+        >
+          {live() ? 'Live' : 'Live'}
+        </button>
       </header>
 
       <Show when={sessionInfo()?.isSidechain}>
