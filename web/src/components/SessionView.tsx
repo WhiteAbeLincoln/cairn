@@ -1,6 +1,8 @@
 import { createSignal, createResource, createMemo, createEffect, For, Show, Switch, Match, onCleanup } from 'solid-js'
 import { useParams, A } from '@solidjs/router'
 import { query, subscribe } from '../lib/graphql'
+import { SessionQuery, SessionEventsSubscription } from '../lib/queries'
+import type { SessionQuery as SessionQueryType } from '../lib/generated/graphql'
 import { truncate } from '../lib/format'
 import type { SessionEvent, DisplayableEvent, ToolResultContent, ToolResultEntry } from '../lib/types'
 import { getToolUseBlock, getAgentBlock, hasUserFacingText, contentToString } from '../lib/session'
@@ -16,17 +18,8 @@ import SystemMessageView from './blocks/SystemMessageView'
 import Prose from './Prose'
 import styles from './SessionView.module.css'
 
-const SESSION_QUERY = `query ($id: String!) {
-  session(id: $id) {
-    meta { id isSidechain parentSessionId agentId firstMessage }
-    events { events { raw } total }
-    agentMap { toolUseId agentId }
-  }
-}`
-
-const SUBSCRIPTION_QUERY = `subscription ($id: String!) {
-  sessionEvents(id: $id) { raw }
-}`
+type SessionData = NonNullable<SessionQueryType['session']>
+type SessionMetaData = SessionData['meta']
 
 type DisplayItem =
   | { kind: 'user'; msg: DisplayableEvent }
@@ -44,29 +37,15 @@ type DisplayItem =
 export default function SessionView() {
   const params = useParams<{ id: string }>()
 
-  interface SessionMetaData {
-    id: string
-    isSidechain: boolean
-    parentSessionId: string | null
-    agentId: string | null
-    firstMessage: string | null
-  }
-
-  interface SessionQueryResult {
-    meta: SessionMetaData
-    events: { events: { raw: SessionEvent }[]; total: number }
-    agentMap: { toolUseId: string; agentId: string }[]
-  }
-
   const [sessionData] = createResource(
     () => params.id,
     async (id) => {
-      const data = await query<{ session: SessionQueryResult | null }>(SESSION_QUERY, { id })
+      const data = await query(SessionQuery, { id })
       return data.session
     },
   )
 
-  const sessionInfo = () => sessionData()?.meta ?? null
+  const sessionInfo = (): SessionMetaData | null => sessionData()?.meta ?? null
 
   // --- Live subscription ---
 
@@ -77,11 +56,11 @@ export default function SessionView() {
   createEffect(() => {
     if (!live()) return
 
-    const unsub = subscribe<{ sessionEvents: { raw: SessionEvent } }>(
-      SUBSCRIPTION_QUERY,
+    const unsub = subscribe(
+      SessionEventsSubscription,
       { id: params.id },
       (data) => {
-        setLiveEvents((prev) => [...prev, data.sessionEvents.raw])
+        setLiveEvents((prev) => [...prev, data.sessionEvents.raw as SessionEvent])
       },
     )
 
@@ -104,7 +83,7 @@ export default function SessionView() {
   })
 
   const messages = createMemo(() => {
-    const base = sessionData()?.events.events.map(e => e.raw) ?? []
+    const base = (sessionData()?.events.events.map(e => e.raw) ?? []) as SessionEvent[]
     return [...base, ...liveEvents()]
   })
 

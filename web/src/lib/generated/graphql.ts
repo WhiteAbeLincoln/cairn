@@ -1,5 +1,7 @@
+/* eslint-disable */
+import type { DocumentTypeDecoration } from '@graphql-typed-document-node/core';
 export type Maybe<T> = T | null;
-export type InputMaybe<T> = Maybe<T>;
+export type InputMaybe<T> = T | null | undefined;
 export type Exact<T extends { [key: string]: unknown }> = { [K in keyof T]: T[K] };
 export type MakeOptional<T, K extends keyof T> = Omit<T, K> & { [SubKey in K]?: Maybe<T[SubKey]> };
 export type MakeMaybe<T, K extends keyof T> = Omit<T, K> & { [SubKey in K]: Maybe<T[SubKey]> };
@@ -194,6 +196,17 @@ export type SessionsResult = {
   total: Scalars['Int']['output'];
 };
 
+export type SubscriptionRoot = {
+  __typename?: 'SubscriptionRoot';
+  /** Watch a session's log file and emit new events as they are appended. */
+  sessionEvents: Event;
+};
+
+
+export type SubscriptionRootSessionEventsArgs = {
+  id: Scalars['String']['input'];
+};
+
 export type SystemEvent = CoreEvent & Event & {
   __typename?: 'SystemEvent';
   apiError: Maybe<Scalars['JSON']['output']>;
@@ -268,3 +281,170 @@ export type UserEvent = CoreEvent & Event & {
   uuid: Scalars['String']['output'];
   version: Scalars['String']['output'];
 };
+
+export type SessionsQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type SessionsQuery = { __typename?: 'Query', sessions: { __typename?: 'SessionsResult', total: number, sessions: Array<{ __typename?: 'Session', meta: { __typename?: 'SessionMeta', id: string, project: string, slug: string | null, createdAt: string | null, updatedAt: string | null, messageCount: number, firstMessage: string | null, projectPath: string | null } }> } };
+
+export type SessionQueryVariables = Exact<{
+  id: Scalars['String']['input'];
+}>;
+
+
+export type SessionQuery = { __typename?: 'Query', session: { __typename?: 'Session', meta: { __typename?: 'SessionMeta', id: string, isSidechain: boolean, parentSessionId: string | null, agentId: string | null, firstMessage: string | null }, events: { __typename?: 'SessionEventsData', total: number, events: Array<
+        | { __typename?: 'AssistantEvent', raw: unknown }
+        | { __typename?: 'FileHistoryEvent', raw: unknown }
+        | { __typename?: 'ProgressEvent', raw: unknown }
+        | { __typename?: 'QueueOperationEvent', raw: unknown }
+        | { __typename?: 'SystemEvent', raw: unknown }
+        | { __typename?: 'UnknownEvent', raw: unknown }
+        | { __typename?: 'UserEvent', raw: unknown }
+      > }, agentMap: Array<{ __typename?: 'AgentMapping', toolUseId: string, agentId: string }> } | null };
+
+export type SessionEventsSubscriptionVariables = Exact<{
+  id: Scalars['String']['input'];
+}>;
+
+
+export type SessionEventsSubscription = { __typename?: 'SubscriptionRoot', sessionEvents:
+    | { __typename?: 'AssistantEvent', raw: unknown }
+    | { __typename?: 'FileHistoryEvent', raw: unknown }
+    | { __typename?: 'ProgressEvent', raw: unknown }
+    | { __typename?: 'QueueOperationEvent', raw: unknown }
+    | { __typename?: 'SystemEvent', raw: unknown }
+    | { __typename?: 'UnknownEvent', raw: unknown }
+    | { __typename?: 'UserEvent', raw: unknown }
+   };
+
+export type SessionPageQueryVariables = Exact<{
+  id: Scalars['String']['input'];
+  page?: InputMaybe<PageInput>;
+}>;
+
+
+export type SessionPageQuery = { __typename?: 'Query', session: { __typename?: 'Session', meta: { __typename?: 'SessionMeta', id: string, filePath: string | null }, events: { __typename?: 'SessionEventsData', total: number, events: Array<
+        | { __typename?: 'AssistantEvent', raw: unknown }
+        | { __typename?: 'FileHistoryEvent', raw: unknown }
+        | { __typename?: 'ProgressEvent', raw: unknown }
+        | { __typename?: 'QueueOperationEvent', raw: unknown }
+        | { __typename?: 'SystemEvent', raw: unknown }
+        | { __typename?: 'UnknownEvent', raw: unknown }
+        | { __typename?: 'UserEvent', raw: unknown }
+      > } } | null };
+
+export type SessionMetaQueryVariables = Exact<{
+  id: Scalars['String']['input'];
+}>;
+
+
+export type SessionMetaQuery = { __typename?: 'Query', session: { __typename?: 'Session', meta: { __typename?: 'SessionMeta', id: string, filePath: string | null } } | null };
+
+export type RawLogQueryVariables = Exact<{
+  id: Scalars['String']['input'];
+}>;
+
+
+export type RawLogQuery = { __typename?: 'Query', session: { __typename?: 'Session', rawLog: string } | null };
+
+export class TypedDocumentString<TResult, TVariables>
+  extends String
+  implements DocumentTypeDecoration<TResult, TVariables>
+{
+  __apiType?: NonNullable<DocumentTypeDecoration<TResult, TVariables>['__apiType']>;
+  private value: string;
+  public __meta__?: Record<string, any> | undefined;
+
+  constructor(value: string, __meta__?: Record<string, any> | undefined) {
+    super(value);
+    this.value = value;
+    this.__meta__ = __meta__;
+  }
+
+  override toString(): string & DocumentTypeDecoration<TResult, TVariables> {
+    return this.value;
+  }
+}
+
+export const SessionsDocument = new TypedDocumentString(`
+    query Sessions {
+  sessions {
+    sessions {
+      meta {
+        id
+        project
+        slug
+        createdAt
+        updatedAt
+        messageCount
+        firstMessage
+        projectPath
+      }
+    }
+    total
+  }
+}
+    `) as unknown as TypedDocumentString<SessionsQuery, SessionsQueryVariables>;
+export const SessionDocument = new TypedDocumentString(`
+    query Session($id: String!) {
+  session(id: $id) {
+    meta {
+      id
+      isSidechain
+      parentSessionId
+      agentId
+      firstMessage
+    }
+    events {
+      events {
+        raw
+      }
+      total
+    }
+    agentMap {
+      toolUseId
+      agentId
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<SessionQuery, SessionQueryVariables>;
+export const SessionEventsDocument = new TypedDocumentString(`
+    subscription SessionEvents($id: String!) {
+  sessionEvents(id: $id) {
+    raw
+  }
+}
+    `) as unknown as TypedDocumentString<SessionEventsSubscription, SessionEventsSubscriptionVariables>;
+export const SessionPageDocument = new TypedDocumentString(`
+    query SessionPage($id: String!, $page: PageInput) {
+  session(id: $id) {
+    meta {
+      id
+      filePath
+    }
+    events(page: $page) {
+      events {
+        raw
+      }
+      total
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<SessionPageQuery, SessionPageQueryVariables>;
+export const SessionMetaDocument = new TypedDocumentString(`
+    query SessionMeta($id: String!) {
+  session(id: $id) {
+    meta {
+      id
+      filePath
+    }
+  }
+}
+    `) as unknown as TypedDocumentString<SessionMetaQuery, SessionMetaQueryVariables>;
+export const RawLogDocument = new TypedDocumentString(`
+    query RawLog($id: String!) {
+  session(id: $id) {
+    rawLog
+  }
+}
+    `) as unknown as TypedDocumentString<RawLogQuery, RawLogQueryVariables>;

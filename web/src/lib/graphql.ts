@@ -1,10 +1,16 @@
+import type { TypedDocumentString } from './generated/graphql'
+
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 
-export async function query<T>(q: string, variables?: Record<string, unknown>): Promise<T> {
+export async function query<TResult, TVars>(
+  doc: TypedDocumentString<TResult, TVars>,
+  ...args: TVars extends Record<string, never> ? [] : [variables: TVars]
+): Promise<TResult> {
+  const variables = args[0]
   const res = await fetch(`${API_BASE}/graphql`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: q, variables }),
+    body: JSON.stringify({ query: doc.toString(), variables }),
   });
 
   if (!res.ok) {
@@ -16,14 +22,14 @@ export async function query<T>(q: string, variables?: Record<string, unknown>): 
     throw new Error(json.errors.map((e: { message: string }) => e.message).join(', '));
   }
 
-  return json.data as T;
+  return json.data as TResult;
 }
 
 /** Open a GraphQL subscription over WebSocket (graphql-transport-ws protocol). */
-export function subscribe<T>(
-  q: string,
-  variables: Record<string, unknown>,
-  onData: (data: T) => void,
+export function subscribe<TResult, TVars>(
+  doc: TypedDocumentString<TResult, TVars>,
+  variables: TVars,
+  onData: (data: TResult) => void,
   onError?: (err: unknown) => void,
 ): () => void {
   const wsUrl = API_BASE
@@ -42,10 +48,10 @@ export function subscribe<T>(
       ws.send(JSON.stringify({
         id: '1',
         type: 'subscribe',
-        payload: { query: q, variables },
+        payload: { query: doc.toString(), variables },
       }))
     } else if (msg.type === 'next') {
-      onData(msg.payload.data as T)
+      onData(msg.payload.data as TResult)
     } else if (msg.type === 'error') {
       onError?.(msg.payload)
     }

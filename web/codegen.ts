@@ -6,9 +6,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 
 const config: CodegenConfig = {
   schema: resolve(__dirname, '../schema.graphql'),
+  documents: ['src/**/*.graphql'],
   generates: {
-    [resolve(__dirname, 'src/lib/generated/schema.ts')]: {
-      plugins: ['typescript'],
+    [`${resolve(__dirname, 'src/lib/generated')}/`]: {
+      preset: 'client',
       config: {
         scalars: {
           DateTime: 'string',
@@ -18,6 +19,7 @@ const config: CodegenConfig = {
         strictScalars: true,
         useTypeImports: true,
         enumsAsTypes: true,
+        documentMode: 'string',
         avoidOptionals: {
           field: true,
         },

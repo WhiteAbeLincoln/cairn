@@ -1,33 +1,27 @@
 import { createResource, createSignal, createMemo, For, Show, Switch, Match } from 'solid-js'
 import { A } from '@solidjs/router'
 import { query } from '../lib/graphql'
-import type { Session } from '../lib/types'
+import { SessionsQuery } from '../lib/queries'
+import type { SessionsQuery as SessionsQueryType } from '../lib/generated/graphql'
 import styles from './SessionList.module.css'
+
+type SessionMeta = SessionsQueryType['sessions']['sessions'][0]['meta']
 
 interface ProjectGroup {
   project: string
   displayName: string
-  sessions: Session[]
+  sessions: SessionMeta[]
 }
-
-const SESSIONS_QUERY = `{
-  sessions {
-    sessions {
-      meta { id project slug createdAt updatedAt messageCount firstMessage projectPath }
-    }
-    total
-  }
-}`
 
 export default function SessionList() {
   const [sessions] = createResource(async () => {
-    const data = await query<{ sessions: { sessions: { meta: Session }[]; total: number } }>(SESSIONS_QUERY)
+    const data = await query(SessionsQuery)
     return data.sessions.sessions.map(s => s.meta)
   })
 
   const groups = createMemo<ProjectGroup[]>(() => {
     const list = sessions() ?? []
-    const map = new Map<string, Session[]>()
+    const map = new Map<string, SessionMeta[]>()
     for (const s of list) {
       let arr = map.get(s.project)
       if (!arr) {

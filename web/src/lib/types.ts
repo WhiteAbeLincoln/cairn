@@ -1,17 +1,4 @@
-// Session metadata (from session list / info queries — unchanged)
-export interface Session {
-  id: string
-  project: string
-  slug: string | null
-  createdAt: string | null
-  updatedAt: string | null
-  messageCount: number
-  firstMessage: string | null
-  projectPath: string | null
-  filePath: string | null
-}
-
-// --- Raw JSONL event types ---
+// --- Raw JSONL event types (from session log files, not GraphQL) ---
 
 // Fields shared across user, assistant, progress, and system events
 interface CommonFields {
