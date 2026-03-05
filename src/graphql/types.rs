@@ -1,8 +1,11 @@
+// clippy gets confused by the #[graphql(...)] attributes on both the interface and concrete types
+#![allow(clippy::duplicated_attributes)]
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_graphql::{InputObject, Interface, Json, Object, SimpleObject};
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use serde_json::Value;
 
 // --- Pagination ---
@@ -15,42 +18,210 @@ pub struct PageInput {
     pub limit: i32,
 }
 
+// --- Serde data structs ---
+
+/// Fields present on the Event GraphQL interface (shared across all event types).
+#[derive(Deserialize, Default)]
+pub(crate) struct EventBaseData {
+    #[serde(default)]
+    pub error: Option<Value>,
+    #[serde(default, rename = "apiError")]
+    pub api_error: Option<Value>,
+    #[serde(default, rename = "isApiErrorMessage")]
+    pub is_api_error_message: Option<bool>,
+}
+
+/// Fields present on the CoreEvent GraphQL interface.
+#[derive(Deserialize)]
+pub(crate) struct CoreEventData {
+    pub cwd: String,
+    #[serde(default, rename = "gitBranch")]
+    pub git_branch: Option<String>,
+    #[serde(rename = "isSidechain")]
+    pub is_sidechain: bool,
+    #[serde(default, rename = "parentUuid")]
+    pub parent_uuid: Option<String>,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(default)]
+    pub slug: Option<String>,
+    pub timestamp: String,
+    #[serde(rename = "userType")]
+    pub user_type: String,
+    pub uuid: String,
+    pub version: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct FileHistoryEventData {
+    #[serde(flatten)]
+    pub base: EventBaseData,
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    pub snapshot: Value,
+    #[serde(rename = "isSnapshotUpdate")]
+    pub is_snapshot_update: bool,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct QueueOperationEventData {
+    #[serde(flatten)]
+    pub base: EventBaseData,
+    pub timestamp: String,
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    pub operation: String,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ProgressEventData {
+    #[serde(flatten)]
+    pub base: EventBaseData,
+    #[serde(flatten)]
+    pub core: CoreEventData,
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub data: Option<Value>,
+    #[serde(default, rename = "parentToolUseID")]
+    pub parent_tool_use_id: Option<String>,
+    #[serde(default, rename = "toolUseID")]
+    pub tool_use_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct AssistantEventData {
+    #[serde(flatten)]
+    pub base: EventBaseData,
+    #[serde(flatten)]
+    pub core: CoreEventData,
+    pub message: Value,
+    #[serde(default, rename = "requestId")]
+    pub request_id: Option<String>,
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct UserEventData {
+    #[serde(flatten)]
+    pub base: EventBaseData,
+    #[serde(flatten)]
+    pub core: CoreEventData,
+    pub message: Value,
+    #[serde(default, rename = "sourceToolAssistantUUID")]
+    pub source_tool_assistant_uuid: Option<String>,
+    #[serde(default, rename = "toolUseResult")]
+    pub tool_use_result: Option<Value>,
+    #[serde(default, rename = "agentId")]
+    pub agent_id: Option<String>,
+    #[serde(default, rename = "permissionMode")]
+    pub permission_mode: Option<String>,
+    #[serde(default)]
+    pub todos: Option<Vec<Value>>,
+    #[serde(default, rename = "thinkingMetadata")]
+    pub thinking_metadata: Option<Value>,
+    #[serde(default, rename = "isVisibleInTranscriptOnly")]
+    pub is_visible_in_transcript_only: Option<bool>,
+    #[serde(default, rename = "isCompactSummary")]
+    pub is_compact_summary: Option<bool>,
+    #[serde(default, rename = "imagePasteIds")]
+    pub image_paste_ids: Option<Vec<String>>,
+    #[serde(default, rename = "isMeta")]
+    pub is_meta: Option<bool>,
+    #[serde(default, rename = "planContent")]
+    pub plan_content: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SystemEventData {
+    #[serde(flatten)]
+    pub base: EventBaseData,
+    #[serde(flatten)]
+    pub core: CoreEventData,
+    #[serde(default, rename = "durationMs")]
+    pub duration_ms: Option<i64>,
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default, rename = "compactMetadata")]
+    pub compact_metadata: Option<Value>,
+    #[serde(default, rename = "logicalParentUuid")]
+    pub logical_parent_uuid: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default, rename = "retryInMs")]
+    pub retry_in_ms: Option<i64>,
+    #[serde(default, rename = "retryAttempt")]
+    pub retry_attempt: Option<i64>,
+    #[serde(default, rename = "maxRetries")]
+    pub max_retries: Option<i64>,
+    #[serde(default)]
+    pub cause: Option<Value>,
+    #[serde(default, rename = "isMeta")]
+    pub is_meta: Option<bool>,
+    #[serde(default)]
+    pub subtype: Option<String>,
+}
+
+/// Pre-parsed event data. Stored once in SessionData, referenced by index.
+pub(crate) enum ParsedEvent {
+    Unknown,
+    FileHistory(FileHistoryEventData),
+    QueueOperation(QueueOperationEventData),
+    Progress(ProgressEventData),
+    Assistant(AssistantEventData),
+    User(UserEventData),
+    System(SystemEventData),
+}
+
 // --- Session events ---
 
 /// Pre-indexed session data shared across all events in a query response.
 pub struct SessionData {
-    pub events: Vec<Value>,
+    pub raw: Vec<Value>,
+    pub(crate) parsed: Vec<ParsedEvent>,
     pub uuid_to_idx: HashMap<String, usize>,
     pub parent_to_children: HashMap<String, Vec<usize>>,
     pub file_path: String,
 }
 
 impl SessionData {
-    pub fn new(events: Vec<Value>, file_path: String) -> Self {
+    pub fn new(raw: Vec<Value>, file_path: String) -> Self {
         let mut uuid_to_idx = HashMap::new();
         let mut parent_to_children: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i, ev) in events.iter().enumerate() {
-            if let Some(uuid) = ev.get("uuid").and_then(|v| v.as_str()) {
-                uuid_to_idx.insert(uuid.to_string(), i);
-            }
-            if let Some(parent) = ev.get("parentUuid").and_then(|v| v.as_str()) {
-                parent_to_children
-                    .entry(parent.to_string())
-                    .or_default()
-                    .push(i);
-            }
-        }
+
+        let parsed: Vec<ParsedEvent> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, ev)| {
+                if let Some(uuid) = ev.get("uuid").and_then(|v| v.as_str()) {
+                    uuid_to_idx.insert(uuid.to_string(), i);
+                }
+                if let Some(parent) = ev.get("parentUuid").and_then(|v| v.as_str()) {
+                    parent_to_children
+                        .entry(parent.to_string())
+                        .or_default()
+                        .push(i);
+                }
+                Self::parse_event(ev, i, &file_path)
+            })
+            .collect();
+
         SessionData {
-            events,
+            raw,
+            parsed,
             uuid_to_idx,
             parent_to_children,
             file_path,
         }
     }
 
-    /// Construct a typed Event from the event at the given index.
-    pub fn make_event(self: &Arc<Self>, i: usize) -> Event {
-        let ev = &self.events[i];
+    /// Parse a single raw event into a typed ParsedEvent.
+    fn parse_event(ev: &Value, i: usize, file_path: &str) -> ParsedEvent {
         let event_type = ev.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let event_uuid = ev.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
         let line = i + 1;
@@ -59,204 +230,51 @@ impl SessionData {
             event_type,
             line,
             uuid = event_uuid,
-            file = %self.file_path,
+            file = %file_path,
         )
         .entered();
 
-        let d = Arc::clone(self);
-        match event_type {
-            "file-history-snapshot" => {
-                if !validate_event(
-                    ev,
-                    &[
-                        ("messageId", JsonType::String),
-                        ("snapshot", JsonType::Object),
-                        ("isSnapshotUpdate", JsonType::Bool),
-                    ],
-                    &["messageId", "snapshot", "isSnapshotUpdate"],
-                ) {
-                    return Event::UnknownEvent(UnknownEvent { data: d, index: i });
+        macro_rules! try_parse {
+            ($variant:ident, $data_type:ty) => {
+                match <$data_type>::deserialize(ev) {
+                    Ok(data) => ParsedEvent::$variant(data),
+                    Err(e) => {
+                        tracing::warn!(%e, "failed to parse, falling back to UnknownEvent");
+                        ParsedEvent::Unknown
+                    }
                 }
+            };
+        }
+
+        match event_type {
+            "file-history-snapshot" => try_parse!(FileHistory, FileHistoryEventData),
+            "queue_operation" => try_parse!(QueueOperation, QueueOperationEventData),
+            "progress" => try_parse!(Progress, ProgressEventData),
+            "assistant" => try_parse!(Assistant, AssistantEventData),
+            "user" => try_parse!(User, UserEventData),
+            "system" => try_parse!(System, SystemEventData),
+            _ => ParsedEvent::Unknown,
+        }
+    }
+
+    /// Construct a typed Event from the event at the given index.
+    pub fn make_event(self: &Arc<Self>, i: usize) -> Event {
+        let d = Arc::clone(self);
+        match &self.parsed[i] {
+            ParsedEvent::Unknown => Event::UnknownEvent(UnknownEvent { data: d, index: i }),
+            ParsedEvent::FileHistory(_) => {
                 Event::FileHistoryEvent(FileHistoryEvent { data: d, index: i })
             }
-            "queue_operation" => {
-                if !validate_event(
-                    ev,
-                    &[
-                        ("timestamp", JsonType::String),
-                        ("sessionId", JsonType::String),
-                        ("operation", JsonType::String),
-                    ],
-                    &["timestamp", "sessionId", "operation", "content"],
-                ) {
-                    return Event::UnknownEvent(UnknownEvent { data: d, index: i });
-                }
+            ParsedEvent::QueueOperation(_) => {
                 Event::QueueOperationEvent(QueueOperationEvent { data: d, index: i })
             }
-            "progress" => {
-                if !validate_event(
-                    ev,
-                    CORE_EVENT_REQUIRED,
-                    &[CORE_EVENT_FIELDS, &["agentId", "data", "parentToolUseID", "toolUseID"]].concat(),
-                ) {
-                    return Event::UnknownEvent(UnknownEvent { data: d, index: i });
-                }
-                Event::ProgressEvent(ProgressEvent { data: d, index: i })
-            }
-            "assistant" => {
-                if !validate_event(
-                    ev,
-                    &[CORE_EVENT_REQUIRED, &[("message", JsonType::Object)]].concat(),
-                    &[CORE_EVENT_FIELDS, &["message", "requestId", "agentId"]].concat(),
-                ) {
-                    return Event::UnknownEvent(UnknownEvent { data: d, index: i });
-                }
+            ParsedEvent::Progress(_) => Event::ProgressEvent(ProgressEvent { data: d, index: i }),
+            ParsedEvent::Assistant(_) => {
                 Event::AssistantEvent(AssistantEvent { data: d, index: i })
             }
-            "user" => {
-                if !validate_event(
-                    ev,
-                    &[CORE_EVENT_REQUIRED, &[("message", JsonType::Object)]].concat(),
-                    &[
-                        CORE_EVENT_FIELDS,
-                        &[
-                            "message",
-                            "sourceToolAssistantUUID",
-                            "toolUseResult",
-                            "agentId",
-                            "permissionMode",
-                            "todos",
-                            "thinkingMetadata",
-                            "isVisibleInTranscriptOnly",
-                            "isCompactSummary",
-                            "imagePasteIds",
-                            "isMeta",
-                            "planContent",
-                        ],
-                    ]
-                    .concat(),
-                ) {
-                    return Event::UnknownEvent(UnknownEvent { data: d, index: i });
-                }
-                Event::UserEvent(UserEvent { data: d, index: i })
-            }
-            "system" => {
-                if !validate_event(
-                    ev,
-                    CORE_EVENT_REQUIRED,
-                    &[
-                        CORE_EVENT_FIELDS,
-                        &[
-                            "durationMs",
-                            "level",
-                            "content",
-                            "compactMetadata",
-                            "logicalParentUuid",
-                            "url",
-                            "retryInMs",
-                            "retryAttempt",
-                            "maxRetries",
-                            "cause",
-                            "isMeta",
-                            "subtype",
-                        ],
-                    ]
-                    .concat(),
-                ) {
-                    return Event::UnknownEvent(UnknownEvent { data: d, index: i });
-                }
-                Event::SystemEvent(SystemEvent { data: d, index: i })
-            }
-            _ => Event::UnknownEvent(UnknownEvent { data: d, index: i }),
+            ParsedEvent::User(_) => Event::UserEvent(UserEvent { data: d, index: i }),
+            ParsedEvent::System(_) => Event::SystemEvent(SystemEvent { data: d, index: i }),
         }
-    }
-}
-
-// --- Event field validation ---
-
-#[derive(Clone)]
-enum JsonType {
-    String,
-    Bool,
-    Number,
-    Object,
-    Array,
-}
-
-impl JsonType {
-    fn matches(&self, v: &Value) -> bool {
-        match self {
-            JsonType::String => v.is_string(),
-            JsonType::Bool => v.is_boolean(),
-            JsonType::Number => v.is_number(),
-            JsonType::Object => v.is_object(),
-            JsonType::Array => v.is_array(),
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            JsonType::String => "string",
-            JsonType::Bool => "bool",
-            JsonType::Number => "number",
-            JsonType::Object => "object",
-            JsonType::Array => "array",
-        }
-    }
-}
-
-
-/// Event interface fields present on every event type.
-const EVENT_INTERFACE_FIELDS: &[&str] = &["type", "error", "apiError", "isApiErrorMessage"];
-
-/// Validate an event's required fields and warn about unexpected fields.
-/// `required` lists (field_name, expected_type) pairs that must be present and correctly typed.
-/// `known` lists type-specific field names (Event interface fields are included automatically).
-/// Returns `true` if all required fields are valid.
-/// Validate an event's fields within an already-entered tracing span.
-/// Returns `true` if all required fields are valid.
-fn validate_event(ev: &Value, required: &[(&str, JsonType)], known: &[&str]) -> bool {
-    let invalid: Vec<String> = required
-        .iter()
-        .filter_map(|(key, expected)| match ev.get(*key) {
-            None | Some(Value::Null) => Some(format!("{key}: missing")),
-            Some(v) if !expected.matches(v) => Some(format!(
-                "{key}: expected {}, got {}",
-                expected.label(),
-                json_type_name(v),
-            )),
-            _ => None,
-        })
-        .collect();
-
-    if !invalid.is_empty() {
-        tracing::warn!(?invalid, "invalid fields, falling back to UnknownEvent");
-        return false;
-    }
-
-    if let Some(obj) = ev.as_object() {
-        let excess: Vec<&String> = obj
-            .keys()
-            .filter(|k| {
-                !known.contains(&k.as_str()) && !EVENT_INTERFACE_FIELDS.contains(&k.as_str())
-            })
-            .collect();
-        if !excess.is_empty() {
-            tracing::warn!(?excess, "unexpected fields on event");
-        }
-    }
-
-    true
-}
-
-fn json_type_name(v: &Value) -> &'static str {
-    match v {
-        Value::Null => "null",
-        Value::Bool(_) => "bool",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
-        Value::Array(_) => "array",
-        Value::Object(_) => "object",
     }
 }
 
@@ -264,11 +282,15 @@ fn json_type_name(v: &Value) -> &'static str {
 
 #[derive(Interface)]
 #[graphql(
-    field(name = "type", method = "event_type", ty = "String"),
-    field(name = "raw", ty = "Json<Value>"),
-    field(name = "error", ty = "Option<Json<Value>>"),
-    field(name = "apiError", method = "api_error", ty = "Option<Json<Value>>"),
-    field(name = "isApiErrorMessage", method = "is_api_error_message", ty = "Option<bool>")
+    field(name = "type", method = "event_type", ty = "&str"),
+    field(name = "raw", ty = "Json<&Value>"),
+    field(name = "error", ty = "Option<Json<&Value>>"),
+    field(name = "apiError", method = "api_error", ty = "Option<Json<&Value>>"),
+    field(
+        name = "isApiErrorMessage",
+        method = "is_api_error_message",
+        ty = "Option<bool>"
+    )
 )]
 pub enum Event {
     UnknownEvent(UnknownEvent),
@@ -284,16 +306,16 @@ pub enum Event {
 
 #[derive(Interface)]
 #[graphql(
-    field(name = "cwd", ty = "String"),
-    field(name = "gitBranch", method = "git_branch", ty = "Option<String>"),
+    field(name = "cwd", ty = "&str"),
+    field(name = "gitBranch", method = "git_branch", ty = "Option<&str>"),
     field(name = "isSidechain", method = "is_sidechain", ty = "bool"),
-    field(name = "parentUuid", method = "parent_uuid", ty = "Option<String>"),
-    field(name = "sessionId", method = "session_id", ty = "String"),
-    field(name = "slug", ty = "Option<String>"),
-    field(name = "timestamp", ty = "String"),
-    field(name = "userType", method = "user_type", ty = "String"),
-    field(name = "uuid", ty = "String"),
-    field(name = "version", ty = "String"),
+    field(name = "parentUuid", method = "parent_uuid", ty = "Option<&str>"),
+    field(name = "sessionId", method = "session_id", ty = "&str"),
+    field(name = "slug", ty = "Option<&str>"),
+    field(name = "timestamp", ty = "&str"),
+    field(name = "userType", method = "user_type", ty = "&str"),
+    field(name = "uuid", ty = "&str"),
+    field(name = "version", ty = "&str"),
     field(name = "parent", ty = "Option<Event>"),
     field(name = "children", ty = "Vec<Event>")
 )]
@@ -304,357 +326,593 @@ pub enum CoreEvent {
     SystemEvent(SystemEvent),
 }
 
-// --- CoreEvent shared fields ---
+// --- Helpers for accessing parsed data from Arc<SessionData> ---
 
-/// Required fields for CoreEvent types.
-const CORE_EVENT_REQUIRED: &[(&str, JsonType)] = &[
-    ("cwd", JsonType::String),
-    ("isSidechain", JsonType::Bool),
-    ("sessionId", JsonType::String),
-    ("timestamp", JsonType::String),
-    ("userType", JsonType::String),
-    ("uuid", JsonType::String),
-    ("version", JsonType::String),
-];
+/// Helper to resolve parent/children from CoreEventData.
+trait CoreEventResolvers {
+    fn session_data(&self) -> &Arc<SessionData>;
+    fn core(&self) -> &CoreEventData;
 
-/// All known CoreEvent field names.
-const CORE_EVENT_FIELDS: &[&str] = &[
-    "cwd",
-    "gitBranch",
-    "isSidechain",
-    "parentUuid",
-    "sessionId",
-    "slug",
-    "timestamp",
-    "userType",
-    "uuid",
-    "version",
-];
-
-/// Helper trait for reading common fields from Arc<SessionData> + index.
-trait EventValue {
-    fn data(&self) -> &Arc<SessionData>;
-    fn index(&self) -> usize;
-
-    fn value(&self) -> &Value {
-        &self.data().events[self.index()]
-    }
-
-    fn str_field(&self, key: &str) -> Option<String> {
-        self.value()
-            .get(key)
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-    }
-
-    fn bool_field(&self, key: &str) -> Option<bool> {
-        self.value().get(key).and_then(|v| v.as_bool())
-    }
-
-    fn int_field(&self, key: &str) -> Option<i32> {
-        self.value()
-            .get(key)
-            .and_then(|v| v.as_i64())
-            .map(|n| n as i32)
-    }
-
-    fn json_field(&self, key: &str) -> Option<Json<Value>> {
-        self.value().get(key).map(|v| Json(v.clone()))
-    }
-
-    // Event interface helpers
-    fn raw_value(&self) -> Json<Value> {
-        Json(self.value().clone())
-    }
-
-    fn error_value(&self) -> Option<Json<Value>> {
-        self.json_field("error")
-    }
-
-    fn api_error_value(&self) -> Option<Json<Value>> {
-        self.json_field("apiError")
-    }
-
-    fn is_api_error_message_value(&self) -> Option<bool> {
-        self.bool_field("isApiErrorMessage")
-    }
-
-    // Relational helpers
     fn parent_event(&self) -> Option<Event> {
-        let parent_uuid = self.value().get("parentUuid").and_then(|v| v.as_str())?;
-        let &idx = self.data().uuid_to_idx.get(parent_uuid)?;
-        Some(self.data().make_event(idx))
+        let parent_uuid = self.core().parent_uuid.as_deref()?;
+        let &idx = self.session_data().uuid_to_idx.get(parent_uuid)?;
+        Some(self.session_data().make_event(idx))
     }
 
     fn children_events(&self) -> Vec<Event> {
-        let uuid = match self.value().get("uuid").and_then(|v| v.as_str()) {
-            Some(u) => u,
-            None => return vec![],
-        };
-        self.data()
+        self.session_data()
             .parent_to_children
-            .get(uuid)
-            .map(|indices| indices.iter().map(|&idx| self.data().make_event(idx)).collect())
+            .get(&self.core().uuid)
+            .map(|indices| {
+                indices
+                    .iter()
+                    .map(|&idx| self.session_data().make_event(idx))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }
 
-/// Macro to define a concrete event struct with EventValue impl.
-macro_rules! define_event_struct {
-    ($(#[$meta:meta])* $name:ident) => {
-        $(#[$meta])*
-        pub struct $name {
-            pub data: Arc<SessionData>,
-            pub index: usize,
-        }
+// --- Concrete event types ---
 
-        impl EventValue for $name {
-            fn data(&self) -> &Arc<SessionData> {
-                &self.data
-            }
-            fn index(&self) -> usize {
-                self.index
-            }
-        }
-    };
+pub struct UnknownEvent {
+    pub data: Arc<SessionData>,
+    pub index: usize,
 }
-
-// --- Concrete event types ---
-
-// --- Concrete event types ---
-
-define_event_struct!(
-    /// A catch-all event type for any events that don't match the known types.
-    UnknownEvent
-);
 
 #[Object]
 impl UnknownEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { self.str_field("type").unwrap_or_default() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
+    async fn event_type(&self) -> &str {
+        self.data.raw[self.index]
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.data.raw[self.index].get("error").map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.data.raw[self.index].get("apiError").map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.data.raw[self.index]
+            .get("isApiErrorMessage")
+            .and_then(|v| v.as_bool())
+    }
 }
 
-define_event_struct!(
-    /// File history snapshot event.
-    FileHistoryEvent
-);
+pub struct FileHistoryEvent {
+    data: Arc<SessionData>,
+    index: usize,
+}
+
+impl FileHistoryEvent {
+    fn inner(&self) -> &FileHistoryEventData {
+        match &self.data.parsed[self.index] {
+            ParsedEvent::FileHistory(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
 
 #[Object]
 impl FileHistoryEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { "file-history-snapshot".into() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
-
-    async fn message_id(&self) -> String { self.str_field("messageId").unwrap_or_default() }
-    async fn snapshot(&self) -> Json<Value> {
-        Json(self.value().get("snapshot").cloned().unwrap_or(Value::Object(Default::default())))
+    async fn event_type(&self) -> &str {
+        "file-history-snapshot"
     }
-    async fn is_snapshot_update(&self) -> bool { self.bool_field("isSnapshotUpdate").unwrap_or(false) }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.inner().base.error.as_ref().map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.inner().base.api_error.as_ref().map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.inner().base.is_api_error_message
+    }
+
+    async fn message_id(&self) -> &str {
+        &self.inner().message_id
+    }
+    async fn snapshot(&self) -> Json<&Value> {
+        Json(&self.inner().snapshot)
+    }
+    async fn is_snapshot_update(&self) -> bool {
+        self.inner().is_snapshot_update
+    }
 }
 
-define_event_struct!(
-    /// Queue operation event.
-    QueueOperationEvent
-);
+pub struct QueueOperationEvent {
+    data: Arc<SessionData>,
+    index: usize,
+}
+
+impl QueueOperationEvent {
+    fn inner(&self) -> &QueueOperationEventData {
+        match &self.data.parsed[self.index] {
+            ParsedEvent::QueueOperation(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
 
 #[Object]
 impl QueueOperationEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { "queue_operation".into() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
+    async fn event_type(&self) -> &str {
+        "queue_operation"
+    }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.inner().base.error.as_ref().map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.inner().base.api_error.as_ref().map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.inner().base.is_api_error_message
+    }
 
-    async fn timestamp(&self) -> String { self.str_field("timestamp").unwrap_or_default() }
-    async fn session_id(&self) -> String { self.str_field("sessionId").unwrap_or_default() }
-    async fn operation(&self) -> String { self.str_field("operation").unwrap_or_default() }
-    async fn content(&self) -> Option<String> { self.str_field("content") }
+    async fn timestamp(&self) -> &str {
+        &self.inner().timestamp
+    }
+    async fn session_id(&self) -> &str {
+        &self.inner().session_id
+    }
+    async fn operation(&self) -> &str {
+        &self.inner().operation
+    }
+    async fn content(&self) -> Option<&str> {
+        self.inner().content.as_deref()
+    }
 }
 
-define_event_struct!(
-    /// Progress event.
-    ProgressEvent
-);
+pub struct ProgressEvent {
+    data: Arc<SessionData>,
+    index: usize,
+}
+
+impl ProgressEvent {
+    fn inner(&self) -> &ProgressEventData {
+        match &self.data.parsed[self.index] {
+            ParsedEvent::Progress(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl CoreEventResolvers for ProgressEvent {
+    fn session_data(&self) -> &Arc<SessionData> {
+        &self.data
+    }
+    fn core(&self) -> &CoreEventData {
+        &self.inner().core
+    }
+}
 
 #[Object]
 impl ProgressEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { "progress".into() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
+    async fn event_type(&self) -> &str {
+        "progress"
+    }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.inner().base.error.as_ref().map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.inner().base.api_error.as_ref().map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.inner().base.is_api_error_message
+    }
 
     // CoreEvent fields
-    async fn cwd(&self) -> String { self.str_field("cwd").unwrap_or_default() }
-    async fn git_branch(&self) -> Option<String> { self.str_field("gitBranch") }
-    async fn is_sidechain(&self) -> bool { self.bool_field("isSidechain").unwrap_or(false) }
-    async fn parent_uuid(&self) -> Option<String> { self.str_field("parentUuid") }
-    async fn session_id(&self) -> String { self.str_field("sessionId").unwrap_or_default() }
-    async fn slug(&self) -> Option<String> { self.str_field("slug") }
-    async fn timestamp(&self) -> String { self.str_field("timestamp").unwrap_or_default() }
-    async fn user_type(&self) -> String { self.str_field("userType").unwrap_or_default() }
-    async fn uuid(&self) -> String { self.str_field("uuid").unwrap_or_default() }
-    async fn version(&self) -> String { self.str_field("version").unwrap_or_default() }
+    async fn cwd(&self) -> &str {
+        &self.inner().core.cwd
+    }
+    async fn git_branch(&self) -> Option<&str> {
+        self.inner().core.git_branch.as_deref()
+    }
+    async fn is_sidechain(&self) -> bool {
+        self.inner().core.is_sidechain
+    }
+    async fn parent_uuid(&self) -> Option<&str> {
+        self.inner().core.parent_uuid.as_deref()
+    }
+    async fn session_id(&self) -> &str {
+        &self.inner().core.session_id
+    }
+    async fn slug(&self) -> Option<&str> {
+        self.inner().core.slug.as_deref()
+    }
+    async fn timestamp(&self) -> &str {
+        &self.inner().core.timestamp
+    }
+    async fn user_type(&self) -> &str {
+        &self.inner().core.user_type
+    }
+    async fn uuid(&self) -> &str {
+        &self.inner().core.uuid
+    }
+    async fn version(&self) -> &str {
+        &self.inner().core.version
+    }
 
     // Relational
-    async fn parent(&self) -> Option<Event> { self.parent_event() }
-    async fn children(&self) -> Vec<Event> { self.children_events() }
+    async fn parent(&self) -> Option<Event> {
+        self.parent_event()
+    }
+    async fn children(&self) -> Vec<Event> {
+        self.children_events()
+    }
 
     // ProgressEvent-specific
-    async fn agent_id(&self) -> Option<String> { self.str_field("agentId") }
-    async fn data(&self) -> Option<Json<Value>> { self.json_field("data") }
+    async fn agent_id(&self) -> Option<&str> {
+        self.inner().agent_id.as_deref()
+    }
+    async fn data(&self) -> Option<Json<&Value>> {
+        self.inner().data.as_ref().map(Json)
+    }
     #[graphql(name = "parentToolUseID")]
-    async fn parent_tool_use_id(&self) -> Option<String> { self.str_field("parentToolUseID") }
+    async fn parent_tool_use_id(&self) -> Option<&str> {
+        self.inner().parent_tool_use_id.as_deref()
+    }
     #[graphql(name = "toolUseID")]
-    async fn tool_use_id(&self) -> Option<String> { self.str_field("toolUseID") }
+    async fn tool_use_id(&self) -> Option<&str> {
+        self.inner().tool_use_id.as_deref()
+    }
 }
 
-define_event_struct!(
-    /// Assistant message event.
-    AssistantEvent
-);
+pub struct AssistantEvent {
+    data: Arc<SessionData>,
+    index: usize,
+}
+
+impl AssistantEvent {
+    fn inner(&self) -> &AssistantEventData {
+        match &self.data.parsed[self.index] {
+            ParsedEvent::Assistant(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl CoreEventResolvers for AssistantEvent {
+    fn session_data(&self) -> &Arc<SessionData> {
+        &self.data
+    }
+    fn core(&self) -> &CoreEventData {
+        &self.inner().core
+    }
+}
 
 #[Object]
 impl AssistantEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { "assistant".into() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
+    async fn event_type(&self) -> &str {
+        "assistant"
+    }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.inner().base.error.as_ref().map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.inner().base.api_error.as_ref().map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.inner().base.is_api_error_message
+    }
 
     // CoreEvent fields
-    async fn cwd(&self) -> String { self.str_field("cwd").unwrap_or_default() }
-    async fn git_branch(&self) -> Option<String> { self.str_field("gitBranch") }
-    async fn is_sidechain(&self) -> bool { self.bool_field("isSidechain").unwrap_or(false) }
-    async fn parent_uuid(&self) -> Option<String> { self.str_field("parentUuid") }
-    async fn session_id(&self) -> String { self.str_field("sessionId").unwrap_or_default() }
-    async fn slug(&self) -> Option<String> { self.str_field("slug") }
-    async fn timestamp(&self) -> String { self.str_field("timestamp").unwrap_or_default() }
-    async fn user_type(&self) -> String { self.str_field("userType").unwrap_or_default() }
-    async fn uuid(&self) -> String { self.str_field("uuid").unwrap_or_default() }
-    async fn version(&self) -> String { self.str_field("version").unwrap_or_default() }
+    async fn cwd(&self) -> &str {
+        &self.inner().core.cwd
+    }
+    async fn git_branch(&self) -> Option<&str> {
+        self.inner().core.git_branch.as_deref()
+    }
+    async fn is_sidechain(&self) -> bool {
+        self.inner().core.is_sidechain
+    }
+    async fn parent_uuid(&self) -> Option<&str> {
+        self.inner().core.parent_uuid.as_deref()
+    }
+    async fn session_id(&self) -> &str {
+        &self.inner().core.session_id
+    }
+    async fn slug(&self) -> Option<&str> {
+        self.inner().core.slug.as_deref()
+    }
+    async fn timestamp(&self) -> &str {
+        &self.inner().core.timestamp
+    }
+    async fn user_type(&self) -> &str {
+        &self.inner().core.user_type
+    }
+    async fn uuid(&self) -> &str {
+        &self.inner().core.uuid
+    }
+    async fn version(&self) -> &str {
+        &self.inner().core.version
+    }
 
     // Relational
-    async fn parent(&self) -> Option<Event> { self.parent_event() }
-    async fn children(&self) -> Vec<Event> { self.children_events() }
+    async fn parent(&self) -> Option<Event> {
+        self.parent_event()
+    }
+    async fn children(&self) -> Vec<Event> {
+        self.children_events()
+    }
 
     // AssistantEvent-specific
-    async fn message(&self) -> Json<Value> {
-        Json(self.value().get("message").cloned().unwrap_or(Value::Object(Default::default())))
+    async fn message(&self) -> Json<&Value> {
+        Json(&self.inner().message)
     }
-    async fn request_id(&self) -> Option<String> { self.str_field("requestId") }
-    async fn agent_id(&self) -> Option<String> { self.str_field("agentId") }
+    async fn request_id(&self) -> Option<&str> {
+        self.inner().request_id.as_deref()
+    }
+    async fn agent_id(&self) -> Option<&str> {
+        self.inner().agent_id.as_deref()
+    }
 }
 
-define_event_struct!(
-    /// User message event.
-    UserEvent
-);
+pub struct UserEvent {
+    data: Arc<SessionData>,
+    index: usize,
+}
+
+impl UserEvent {
+    fn inner(&self) -> &UserEventData {
+        match &self.data.parsed[self.index] {
+            ParsedEvent::User(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl CoreEventResolvers for UserEvent {
+    fn session_data(&self) -> &Arc<SessionData> {
+        &self.data
+    }
+    fn core(&self) -> &CoreEventData {
+        &self.inner().core
+    }
+}
 
 #[Object]
 impl UserEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { "user".into() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
+    async fn event_type(&self) -> &str {
+        "user"
+    }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.inner().base.error.as_ref().map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.inner().base.api_error.as_ref().map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.inner().base.is_api_error_message
+    }
 
     // CoreEvent fields
-    async fn cwd(&self) -> String { self.str_field("cwd").unwrap_or_default() }
-    async fn git_branch(&self) -> Option<String> { self.str_field("gitBranch") }
-    async fn is_sidechain(&self) -> bool { self.bool_field("isSidechain").unwrap_or(false) }
-    async fn parent_uuid(&self) -> Option<String> { self.str_field("parentUuid") }
-    async fn session_id(&self) -> String { self.str_field("sessionId").unwrap_or_default() }
-    async fn slug(&self) -> Option<String> { self.str_field("slug") }
-    async fn timestamp(&self) -> String { self.str_field("timestamp").unwrap_or_default() }
-    async fn user_type(&self) -> String { self.str_field("userType").unwrap_or_default() }
-    async fn uuid(&self) -> String { self.str_field("uuid").unwrap_or_default() }
-    async fn version(&self) -> String { self.str_field("version").unwrap_or_default() }
+    async fn cwd(&self) -> &str {
+        &self.inner().core.cwd
+    }
+    async fn git_branch(&self) -> Option<&str> {
+        self.inner().core.git_branch.as_deref()
+    }
+    async fn is_sidechain(&self) -> bool {
+        self.inner().core.is_sidechain
+    }
+    async fn parent_uuid(&self) -> Option<&str> {
+        self.inner().core.parent_uuid.as_deref()
+    }
+    async fn session_id(&self) -> &str {
+        &self.inner().core.session_id
+    }
+    async fn slug(&self) -> Option<&str> {
+        self.inner().core.slug.as_deref()
+    }
+    async fn timestamp(&self) -> &str {
+        &self.inner().core.timestamp
+    }
+    async fn user_type(&self) -> &str {
+        &self.inner().core.user_type
+    }
+    async fn uuid(&self) -> &str {
+        &self.inner().core.uuid
+    }
+    async fn version(&self) -> &str {
+        &self.inner().core.version
+    }
 
     // Relational
-    async fn parent(&self) -> Option<Event> { self.parent_event() }
-    async fn children(&self) -> Vec<Event> { self.children_events() }
+    async fn parent(&self) -> Option<Event> {
+        self.parent_event()
+    }
+    async fn children(&self) -> Vec<Event> {
+        self.children_events()
+    }
 
     // UserEvent-specific
-    async fn message(&self) -> Json<Value> {
-        Json(self.value().get("message").cloned().unwrap_or(Value::Object(Default::default())))
+    async fn message(&self) -> Json<&Value> {
+        Json(&self.inner().message)
     }
     #[graphql(name = "sourceToolAssistantUUID")]
-    async fn source_tool_assistant_uuid(&self) -> Option<String> {
-        self.str_field("sourceToolAssistantUUID")
+    async fn source_tool_assistant_uuid(&self) -> Option<&str> {
+        self.inner().source_tool_assistant_uuid.as_deref()
     }
-    async fn tool_use_result(&self) -> Option<Json<Value>> { self.json_field("toolUseResult") }
-    async fn agent_id(&self) -> Option<String> { self.str_field("agentId") }
-    async fn permission_mode(&self) -> Option<String> { self.str_field("permissionMode") }
-    async fn todos(&self) -> Option<Vec<Json<Value>>> {
-        self.value().get("todos").and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(|v| Json(v.clone())).collect())
+    async fn tool_use_result(&self) -> Option<Json<&Value>> {
+        self.inner().tool_use_result.as_ref().map(Json)
     }
-    async fn thinking_metadata(&self) -> Option<Json<Value>> { self.json_field("thinkingMetadata") }
-    async fn is_visible_in_transcript_only(&self) -> Option<bool> { self.bool_field("isVisibleInTranscriptOnly") }
-    async fn is_compact_summary(&self) -> Option<bool> { self.bool_field("isCompactSummary") }
-    async fn image_paste_ids(&self) -> Option<Vec<String>> {
-        self.value().get("imagePasteIds").and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+    async fn agent_id(&self) -> Option<&str> {
+        self.inner().agent_id.as_deref()
     }
-    async fn is_meta(&self) -> Option<bool> { self.bool_field("isMeta") }
-    async fn plan_content(&self) -> Option<String> { self.str_field("planContent") }
+    async fn permission_mode(&self) -> Option<&str> {
+        self.inner().permission_mode.as_deref()
+    }
+    async fn todos(&self) -> Option<Vec<Json<&Value>>> {
+        self.inner()
+            .todos
+            .as_ref()
+            .map(|arr| arr.iter().map(Json).collect())
+    }
+    async fn thinking_metadata(&self) -> Option<Json<&Value>> {
+        self.inner().thinking_metadata.as_ref().map(Json)
+    }
+    async fn is_visible_in_transcript_only(&self) -> Option<bool> {
+        self.inner().is_visible_in_transcript_only
+    }
+    async fn is_compact_summary(&self) -> Option<bool> {
+        self.inner().is_compact_summary
+    }
+    async fn image_paste_ids(&self) -> Option<&[String]> {
+        self.inner().image_paste_ids.as_deref()
+    }
+    async fn is_meta(&self) -> Option<bool> {
+        self.inner().is_meta
+    }
+    async fn plan_content(&self) -> Option<&str> {
+        self.inner().plan_content.as_deref()
+    }
 }
 
-define_event_struct!(
-    /// System event.
-    SystemEvent
-);
+pub struct SystemEvent {
+    data: Arc<SessionData>,
+    index: usize,
+}
+
+impl SystemEvent {
+    fn inner(&self) -> &SystemEventData {
+        match &self.data.parsed[self.index] {
+            ParsedEvent::System(d) => d,
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl CoreEventResolvers for SystemEvent {
+    fn session_data(&self) -> &Arc<SessionData> {
+        &self.data
+    }
+    fn core(&self) -> &CoreEventData {
+        &self.inner().core
+    }
+}
 
 #[Object]
 impl SystemEvent {
     #[graphql(name = "type")]
-    async fn event_type(&self) -> String { "system".into() }
-    async fn raw(&self) -> Json<Value> { self.raw_value() }
-    async fn error(&self) -> Option<Json<Value>> { self.error_value() }
-    async fn api_error(&self) -> Option<Json<Value>> { self.api_error_value() }
-    async fn is_api_error_message(&self) -> Option<bool> { self.is_api_error_message_value() }
+    async fn event_type(&self) -> &str {
+        "system"
+    }
+    async fn raw(&self) -> Json<&Value> {
+        Json(&self.data.raw[self.index])
+    }
+    async fn error(&self) -> Option<Json<&Value>> {
+        self.inner().base.error.as_ref().map(Json)
+    }
+    async fn api_error(&self) -> Option<Json<&Value>> {
+        self.inner().base.api_error.as_ref().map(Json)
+    }
+    async fn is_api_error_message(&self) -> Option<bool> {
+        self.inner().base.is_api_error_message
+    }
 
     // CoreEvent fields
-    async fn cwd(&self) -> String { self.str_field("cwd").unwrap_or_default() }
-    async fn git_branch(&self) -> Option<String> { self.str_field("gitBranch") }
-    async fn is_sidechain(&self) -> bool { self.bool_field("isSidechain").unwrap_or(false) }
-    async fn parent_uuid(&self) -> Option<String> { self.str_field("parentUuid") }
-    async fn session_id(&self) -> String { self.str_field("sessionId").unwrap_or_default() }
-    async fn slug(&self) -> Option<String> { self.str_field("slug") }
-    async fn timestamp(&self) -> String { self.str_field("timestamp").unwrap_or_default() }
-    async fn user_type(&self) -> String { self.str_field("userType").unwrap_or_default() }
-    async fn uuid(&self) -> String { self.str_field("uuid").unwrap_or_default() }
-    async fn version(&self) -> String { self.str_field("version").unwrap_or_default() }
+    async fn cwd(&self) -> &str {
+        &self.inner().core.cwd
+    }
+    async fn git_branch(&self) -> Option<&str> {
+        self.inner().core.git_branch.as_deref()
+    }
+    async fn is_sidechain(&self) -> bool {
+        self.inner().core.is_sidechain
+    }
+    async fn parent_uuid(&self) -> Option<&str> {
+        self.inner().core.parent_uuid.as_deref()
+    }
+    async fn session_id(&self) -> &str {
+        &self.inner().core.session_id
+    }
+    async fn slug(&self) -> Option<&str> {
+        self.inner().core.slug.as_deref()
+    }
+    async fn timestamp(&self) -> &str {
+        &self.inner().core.timestamp
+    }
+    async fn user_type(&self) -> &str {
+        &self.inner().core.user_type
+    }
+    async fn uuid(&self) -> &str {
+        &self.inner().core.uuid
+    }
+    async fn version(&self) -> &str {
+        &self.inner().core.version
+    }
 
     // Relational
-    async fn parent(&self) -> Option<Event> { self.parent_event() }
-    async fn children(&self) -> Vec<Event> { self.children_events() }
+    async fn parent(&self) -> Option<Event> {
+        self.parent_event()
+    }
+    async fn children(&self) -> Vec<Event> {
+        self.children_events()
+    }
 
     // SystemEvent-specific
-    async fn duration_ms(&self) -> Option<i32> { self.int_field("durationMs") }
-    async fn level(&self) -> Option<String> { self.str_field("level") }
-    async fn content(&self) -> Option<String> { self.str_field("content") }
-    async fn compact_metadata(&self) -> Option<Json<Value>> { self.json_field("compactMetadata") }
-    async fn logical_parent_uuid(&self) -> Option<String> { self.str_field("logicalParentUuid") }
-    async fn url(&self) -> Option<String> { self.str_field("url") }
-    async fn retry_in_ms(&self) -> Option<i32> { self.int_field("retryInMs") }
-    async fn retry_attempt(&self) -> Option<i32> { self.int_field("retryAttempt") }
-    async fn max_retries(&self) -> Option<i32> { self.int_field("maxRetries") }
-    async fn cause(&self) -> Option<Json<Value>> { self.json_field("cause") }
-    async fn is_meta(&self) -> Option<bool> { self.bool_field("isMeta") }
-    async fn subtype(&self) -> Option<String> { self.str_field("subtype") }
+    async fn duration_ms(&self) -> Option<i32> {
+        self.inner().duration_ms.map(|v| v as i32)
+    }
+    async fn level(&self) -> Option<&str> {
+        self.inner().level.as_deref()
+    }
+    async fn content(&self) -> Option<&str> {
+        self.inner().content.as_deref()
+    }
+    async fn compact_metadata(&self) -> Option<Json<&Value>> {
+        self.inner().compact_metadata.as_ref().map(Json)
+    }
+    async fn logical_parent_uuid(&self) -> Option<&str> {
+        self.inner().logical_parent_uuid.as_deref()
+    }
+    async fn url(&self) -> Option<&str> {
+        self.inner().url.as_deref()
+    }
+    async fn retry_in_ms(&self) -> Option<i32> {
+        self.inner().retry_in_ms.map(|v| v as i32)
+    }
+    async fn retry_attempt(&self) -> Option<i32> {
+        self.inner().retry_attempt.map(|v| v as i32)
+    }
+    async fn max_retries(&self) -> Option<i32> {
+        self.inner().max_retries.map(|v| v as i32)
+    }
+    async fn cause(&self) -> Option<Json<&Value>> {
+        self.inner().cause.as_ref().map(Json)
+    }
+    async fn is_meta(&self) -> Option<bool> {
+        self.inner().is_meta
+    }
+    async fn subtype(&self) -> Option<&str> {
+        self.inner().subtype.as_deref()
+    }
 }
 
 /// Paginated session events result.
@@ -707,8 +965,7 @@ impl Session {
 
     /// The raw JSONL content of the session file.
     async fn raw_log(&self) -> async_graphql::Result<String> {
-        std::fs::read_to_string(&self.path)
-            .map_err(|e| async_graphql::Error::new(e.to_string()))
+        std::fs::read_to_string(&self.path).map_err(|e| async_graphql::Error::new(e.to_string()))
     }
 
     /// Mapping from tool_use_id to agent_id for subagent calls.
@@ -737,15 +994,15 @@ impl Session {
 
         let events = match page {
             Some(p) => {
-                let start = (p.offset as usize).min(data.events.len());
+                let start = (p.offset as usize).min(data.raw.len());
                 let end = if p.limit > 0 {
-                    (start + p.limit as usize).min(data.events.len())
+                    (start + p.limit as usize).min(data.raw.len())
                 } else {
-                    data.events.len()
+                    data.raw.len()
                 };
                 (start..end).map(|i| data.make_event(i)).collect()
             }
-            None => (0..data.events.len()).map(|i| data.make_event(i)).collect(),
+            None => (0..data.raw.len()).map(|i| data.make_event(i)).collect(),
         };
 
         Ok(SessionEventsData { events, total })

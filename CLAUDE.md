@@ -10,6 +10,9 @@ cd web && bun dev  # frontend on :5173
 cd web && bun run check # typecheck frontend
 ```
 
+Run `cargo clippy` and `cargo fmt` to lint and format Rust code after every change.
+Fix any warnings or errors before committing.
+
 ## GraphQL Schema & TypeScript Codegen
 
 Rust types are the source of truth. After changing GraphQL types in `src/graphql/types.rs`, run from the project root:

@@ -77,44 +77,44 @@ pub fn discover_sessions(base_path: &Path) -> std::io::Result<Vec<SessionInfo>> 
 
                     // Scan for subagent sessions in <session-id>/subagents/
                     let subagents_dir = project_path.join(&sid).join("subagents");
-                    if subagents_dir.is_dir() {
-                        if let Ok(entries) = std::fs::read_dir(&subagents_dir) {
-                            for entry in entries.flatten() {
-                                let path = entry.path();
-                                if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-                                    continue;
+                    if subagents_dir.is_dir()
+                        && let Ok(entries) = std::fs::read_dir(&subagents_dir)
+                    {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                                continue;
+                            }
+                            let stem = path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("")
+                                .to_string();
+                            // Extract agentId from filename: "agent-<agentId>"
+                            let agent_id = stem.strip_prefix("agent-").map(|s| s.to_string());
+                            match scan_session_metadata(&path) {
+                                Ok(sub_meta) => {
+                                    sessions.push(SessionInfo {
+                                        id: stem.clone(),
+                                        project: project_name.clone(),
+                                        path,
+                                        slug: sub_meta.slug,
+                                        created_at: sub_meta.first_timestamp,
+                                        updated_at: sub_meta.last_timestamp,
+                                        message_count: sub_meta.line_count,
+                                        first_message: sub_meta.first_message,
+                                        project_path: sub_meta.project_path,
+                                        is_sidechain: true,
+                                        parent_session_id: Some(sid.clone()),
+                                        agent_id,
+                                    });
                                 }
-                                let stem = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                // Extract agentId from filename: "agent-<agentId>"
-                                let agent_id = stem.strip_prefix("agent-").map(|s| s.to_string());
-                                match scan_session_metadata(&path) {
-                                    Ok(sub_meta) => {
-                                        sessions.push(SessionInfo {
-                                            id: stem.clone(),
-                                            project: project_name.clone(),
-                                            path,
-                                            slug: sub_meta.slug,
-                                            created_at: sub_meta.first_timestamp,
-                                            updated_at: sub_meta.last_timestamp,
-                                            message_count: sub_meta.line_count,
-                                            first_message: sub_meta.first_message,
-                                            project_path: sub_meta.project_path,
-                                            is_sidechain: true,
-                                            parent_session_id: Some(sid.clone()),
-                                            agent_id,
-                                        });
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            subagent = %stem,
-                                            error = %e,
-                                            "Failed to scan subagent",
-                                        );
-                                    }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        subagent = %stem,
+                                        error = %e,
+                                        "Failed to scan subagent",
+                                    );
                                 }
                             }
                         }
@@ -164,32 +164,31 @@ fn scan_session_metadata(path: &Path) -> std::io::Result<SessionMeta> {
         line_count += 1;
 
         // Lightweight JSON field extraction without full deserialization
-        if slug.is_none() {
-            if let Some(s) = extract_json_string(&line, "slug") {
-                slug = Some(s);
-            }
+        if slug.is_none()
+            && let Some(s) = extract_json_string(&line, "slug")
+        {
+            slug = Some(s);
         }
-        if let Some(ts) = extract_json_string(&line, "timestamp") {
-            if let Ok(dt) = ts.parse::<DateTime<Utc>>() {
-                if first_timestamp.is_none() {
-                    first_timestamp = Some(dt);
-                }
-                last_timestamp = Some(dt);
+        if let Some(ts) = extract_json_string(&line, "timestamp")
+            && let Ok(dt) = ts.parse::<DateTime<Utc>>()
+        {
+            if first_timestamp.is_none() {
+                first_timestamp = Some(dt);
             }
+            last_timestamp = Some(dt);
         }
-        if project_path.is_none() {
-            if let Some(cwd) = extract_json_string(&line, "cwd") {
-                project_path = Some(cwd);
-            }
+        if project_path.is_none()
+            && let Some(cwd) = extract_json_string(&line, "cwd")
+        {
+            project_path = Some(cwd);
         }
         // Extract first user message text (the first user prompt)
         if first_message.is_none()
             && line.contains("\"type\":\"user\"")
             && !line.contains("\"toolUseResult\"")
+            && let Some(text) = extract_user_content_string(&line)
         {
-            if let Some(text) = extract_user_content_string(&line) {
-                first_message = Some(text);
-            }
+            first_message = Some(text);
         }
     }
 
@@ -261,10 +260,9 @@ pub fn extract_agent_map(path: &Path) -> std::io::Result<Vec<(String, String)>> 
         if let (Some(parent_id), Some(agent_id)) = (
             extract_json_string(&line, "parentToolUseID"),
             extract_json_string(&line, "agentId"),
-        ) {
-            if seen.insert(parent_id.clone()) {
-                mappings.push((parent_id, agent_id));
-            }
+        ) && seen.insert(parent_id.clone())
+        {
+            mappings.push((parent_id, agent_id));
         }
     }
 

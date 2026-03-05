@@ -44,7 +44,7 @@ impl Query {
                     && !s.is_sidechain
                     && project
                         .as_ref()
-                        .map_or(true, |p| s.project.contains(p.as_str()))
+                        .is_none_or(|p| s.project.contains(p.as_str()))
             })
             .map(Session::from)
             .collect();
@@ -68,11 +68,7 @@ impl Query {
     }
 
     /// Load a session by ID.
-    async fn session(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> Result<Option<Session>> {
+    async fn session(&self, ctx: &Context<'_>, id: String) -> Result<Option<Session>> {
         let base_path = ctx.data::<PathBuf>()?;
         let sessions = loader::discover_sessions(base_path)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
