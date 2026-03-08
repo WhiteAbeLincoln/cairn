@@ -1,21 +1,47 @@
-.message {
+.full {
   border-radius: 8px;
   padding: 0.75rem 1rem;
+  background: color-mix(in srgb, currentColor 5%, transparent);
 }
 
-.user {
-  background: color-mix(in srgb, currentColor 4%, transparent);
-  border-left: 3px solid #a08860;
+.full[data-role='user-message'] {
+  border-left: 3px solid #293c52;
 }
 
-.assistant {
-  background: color-mix(in srgb, currentColor 3%, transparent);
+/*:global(:root.light) .full[data-role='user-message'] {
+  border-left: 3px solid #ccdef2;
+}
+
+@media (prefers-color-scheme: light) {
+  :global(:root.system) .full[data-role='user-message'] {
+    border-left: 3px solid #ccdef2;
+  }
+}*/
+
+.full[data-role='assistant-message'] {
   border-left: 3px solid #7a9070;
 }
 
-.bash {
+.full[data-role='tool-use'] {
+  border-left: 3px solid #a08860;
+}
+
+.grouped .collapsed {
+  margin-left: 1rem;
+}
+
+.collapsed[data-expanded] {
   background: color-mix(in srgb, currentColor 5%, transparent);
-  border-left: 3px solid #6a8a6a;
+}
+
+.grouped-items {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.bash {
   padding: 0.5rem 0.75rem;
 }
 
@@ -36,13 +62,6 @@
   border-left: 3px solid #7a7aaa;
 }
 
-.meta {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
-}
-
 .role-label {
   font-size: 0.75rem;
   font-weight: 600;
@@ -57,13 +76,48 @@
   text-decoration: underline;
 }
 
-.model {
-  font-size: 0.75rem;
-  opacity: 0.4;
-  font-family: monospace;
-}
-
 .content {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  & > span {
+    font-size: 0.75rem;
+    font-family: monospace;
+  }
+}
+
+/*
+don't change opacity on collapsed or grouped
+since they're already lower
+*/
+.full .meta {
+  opacity: 65%;
+}
+
+.tokens {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.uuid {
+  color: inherit;
+  text-decoration: none;
+}
+
+.uuid:hover {
+  text-decoration: underline;
+  opacity: 0.7;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
 }

@@ -3,7 +3,7 @@
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  padding: 0.15rem 0.5rem;
+  padding: 0.25rem 0.5rem;
   background: none;
   border: none;
   color: inherit;
@@ -47,12 +47,6 @@
   text-overflow: ellipsis;
 }
 
-.meta {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
 .link-icon {
   font-size: 0.7em;
   text-decoration: none;
@@ -70,21 +64,4 @@
 
 .step-dot {
   opacity: 0.5;
-}
-
-/* --- Group layout --- */
-
-.internal-group {
-  margin: -0.25rem 0;
-}
-
-.internal-single {
-  margin: -0.25rem 0;
-}
-
-.internal-expanded {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding: 0.35rem 0 0.35rem 1rem;
 }

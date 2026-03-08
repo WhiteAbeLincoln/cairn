@@ -11,48 +11,13 @@ import { createVirtualizer } from '@tanstack/solid-virtual'
 import { query } from '../lib/graphql'
 import { SessionPageQuery, SessionMetaQuery, RawLogQuery } from '../lib/queries'
 import type { SessionMetaQuery as SessionMetaQueryType } from '../lib/generated/graphql'
-import { JsonTree } from '../lib/json-tree'
+import RawEventRow from './RawEventRow'
+import type { RawEvent } from './RawEventRow'
 import styles from './RawLogView.module.css'
 
 const PAGE_SIZE = 200
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type RawEvent = Record<string, any>
-
 type SessionInfo = NonNullable<SessionMetaQueryType['session']>['meta']
-
-function getSummary(event: RawEvent): { type: string; uuid: string; timestamp: string } {
-  return {
-    type: (event?.type as string) ?? '',
-    uuid: (event?.uuid as string) ?? '',
-    timestamp: (event?.timestamp as string) ?? '',
-  }
-}
-
-function badgeClass(type: string): string {
-  switch (type) {
-    case 'user':
-      return styles['type-user']
-    case 'assistant':
-      return styles['type-assistant']
-    case 'system':
-      return styles['type-system']
-    case 'progress':
-      return styles['type-progress']
-    default:
-      return styles['type-other']
-  }
-}
-
-function formatTimestamp(ts: string): string {
-  if (!ts) return ''
-  try {
-    const d = new Date(ts)
-    return d.toLocaleTimeString()
-  } catch {
-    return ts
-  }
-}
 
 export default function RawLogView() {
   const params = useParams<{ id: string }>()
@@ -61,7 +26,9 @@ export default function RawLogView() {
   let scrollRef!: HTMLDivElement
 
   // Event cache: index -> parsed JSON event
-  const [lineCache, setLineCache] = createSignal<Map<number, RawEvent>>(new Map())
+  const [lineCache, setLineCache] = createSignal<Map<number, RawEvent>>(
+    new Map(),
+  )
   const [totalLines, setTotalLines] = createSignal(0)
   const [expandedLines, setExpandedLines] = createSignal<Set<number>>(new Set())
   const [highlightLine, setHighlightLine] = createSignal<number | null>(null)
@@ -99,12 +66,15 @@ export default function RawLogView() {
   const [initialLoad] = createResource(
     () => params.id,
     async (id) => {
-      const data = await query(SessionPageQuery, { id, page: { offset: 0, limit: PAGE_SIZE } })
+      const data = await query(SessionPageQuery, {
+        id,
+        page: { offset: 0, limit: PAGE_SIZE },
+      })
 
       if (!data.session) return null
 
       const { events: wrapped, total } = data.session.events
-      const events = wrapped.map(e => e.raw as RawEvent)
+      const events = wrapped.map((e) => e.raw as RawEvent)
       setTotalLines(total)
 
       const cache = new Map<number, RawEvent>()
@@ -125,10 +95,15 @@ export default function RawLogView() {
 
         // Not in first page — fetch all remaining to find it
         if (total > PAGE_SIZE) {
-          const rest = await query(SessionPageQuery, { id, page: { offset: PAGE_SIZE, limit: total - PAGE_SIZE } })
+          const rest = await query(SessionPageQuery, {
+            id,
+            page: { offset: PAGE_SIZE, limit: total - PAGE_SIZE },
+          })
 
           if (rest.session) {
-            const restEvents = rest.session.events.events.map(e => e.raw as RawEvent)
+            const restEvents = rest.session.events.events.map(
+              (e) => e.raw as RawEvent,
+            )
             const newCache = new Map(cache)
             for (let i = 0; i < restEvents.length; i++) {
               const idx = PAGE_SIZE + i
@@ -159,7 +134,7 @@ export default function RawLogView() {
       })
 
       if (data.session) {
-        const fetched = data.session.events.events.map(e => e.raw as RawEvent)
+        const fetched = data.session.events.events.map((e) => e.raw as RawEvent)
         setLineCache((prev) => {
           const next = new Map(prev)
           for (let i = 0; i < fetched.length; i++) {
@@ -186,7 +161,10 @@ export default function RawLogView() {
         const end = Math.min(offset + PAGE_SIZE, total)
         let hasMissing = false
         for (let i = offset; i < end; i++) {
-          if (!cache.has(i)) { hasMissing = true; break }
+          if (!cache.has(i)) {
+            hasMissing = true
+            break
+          }
         }
         if (hasMissing) {
           promises.push(fetchRange(offset, end))
@@ -270,10 +248,7 @@ export default function RawLogView() {
       } else if (gapStart !== null) {
         // Align to page boundaries
         const pageStart = Math.floor(gapStart / PAGE_SIZE) * PAGE_SIZE
-        const pageEnd = Math.min(
-          pageStart + PAGE_SIZE,
-          totalLines(),
-        )
+        const pageEnd = Math.min(pageStart + PAGE_SIZE, totalLines())
         fetchRange(pageStart, pageEnd)
         gapStart = null
       }
@@ -335,7 +310,9 @@ export default function RawLogView() {
             />
             <Show when={searchQuery()}>
               <span class={styles['search-count']}>
-                {loadingAll() ? 'loading...' : `${filteredIndices()?.length ?? 0} / ${totalLines()}`}
+                {loadingAll()
+                  ? 'loading...'
+                  : `${filteredIndices()?.length ?? 0} / ${totalLines()}`}
               </span>
             </Show>
           </div>
@@ -364,7 +341,9 @@ export default function RawLogView() {
           Error: {(initialLoad.error as Error).message}
         </p>
       </Show>
-      <Show when={totalLines() === 0 && !initialLoad.loading && !initialLoad.error}>
+      <Show
+        when={totalLines() === 0 && !initialLoad.loading && !initialLoad.error}
+      >
         <p class={styles.status}>Empty log file.</p>
       </Show>
 
@@ -389,7 +368,9 @@ export default function RawLogView() {
                   fallback={
                     <div
                       data-index={vItem.index}
-                      ref={(el) => queueMicrotask(() => virtualizer.measureElement(el))}
+                      ref={(el) =>
+                        queueMicrotask(() => virtualizer.measureElement(el))
+                      }
                       class={styles['line-row']}
                       style={{
                         transform: `translateY(${vItem.start}px)`,
@@ -400,86 +381,21 @@ export default function RawLogView() {
                     </div>
                   }
                 >
-                  {(event) => {
-                    const summary = () => getSummary(event())
-                    const preview = () => {
-                      const s = JSON.stringify(event())
-                      return s.length > 120 ? s.slice(0, 120) + '...' : s
-                    }
-
-                    return (
-                      <Show
-                        when={isExpanded()}
-                        fallback={
-                          <div
-                            id={summary().uuid || undefined}
-                            data-index={vItem.index}
-                            ref={(el) => queueMicrotask(() => virtualizer.measureElement(el))}
-                            class={`${styles['line-row']} ${isHighlight() ? styles['highlight-line'] : ''}`}
-                            style={{
-                              transform: `translateY(${vItem.start}px)`,
-                            }}
-                            onClick={() => toggleLine(lineNum())}
-                          >
-                            <span class={styles['line-num']}>
-                              {lineNum() + 1}
-                            </span>
-                            <span
-                              class={`${styles['type-badge']} ${badgeClass(summary().type)}`}
-                            >
-                              {summary().type || '?'}
-                            </span>
-                            <span class={styles['line-uuid']}>
-                              {summary().uuid
-                                ? summary().uuid.slice(0, 8)
-                                : ''}
-                            </span>
-                            <span class={styles['line-preview']}>
-                              {preview()}
-                            </span>
-                            <span class={styles['line-timestamp']}>
-                              {formatTimestamp(summary().timestamp)}
-                            </span>
-                          </div>
-                        }
-                      >
-                        <div
-                          id={summary().uuid || undefined}
-                          data-index={vItem.index}
-                          ref={(el) => queueMicrotask(() => virtualizer.measureElement(el))}
-                          class={styles['line-expanded']}
-                          style={{
-                            transform: `translateY(${vItem.start}px)`,
-                          }}
-                        >
-                          <div
-                            class={`${styles['line-expanded-header']} ${isHighlight() ? styles['highlight-line'] : ''}`}
-                            onClick={() => toggleLine(lineNum())}
-                          >
-                            <span class={styles['line-num']}>
-                              {lineNum() + 1}
-                            </span>
-                            <span
-                              class={`${styles['type-badge']} ${badgeClass(summary().type)}`}
-                            >
-                              {summary().type || '?'}
-                            </span>
-                            <span class={styles['line-uuid']}>
-                              {summary().uuid
-                                ? summary().uuid.slice(0, 8)
-                                : ''}
-                            </span>
-                            <span class={styles['line-timestamp']}>
-                              {formatTimestamp(summary().timestamp)}
-                            </span>
-                          </div>
-                          <div class={styles['line-expanded-body']}>
-                            <JsonTree value={event()} defaultExpandDepth={1} />
-                          </div>
-                        </div>
-                      </Show>
-                    )
-                  }}
+                  {(event) => (
+                    <RawEventRow
+                      class={styles['fixed-row']}
+                      event={event()}
+                      expanded={isExpanded()}
+                      highlighted={isHighlight()}
+                      lineNum={lineNum()}
+                      onToggle={() => toggleLine(lineNum())}
+                      data-index={vItem.index}
+                      ref={(el) =>
+                        queueMicrotask(() => virtualizer.measureElement(el))
+                      }
+                      style={{ transform: `translateY(${vItem.start}px)` }}
+                    />
+                  )}
                 </Show>
               )
             }}

@@ -34,8 +34,11 @@ export default function AgentBlockView(props: {
   return (
     <CollapsibleBlock
       role="agent"
-      meta={{ sessionId: props.sessionId, uuid: props.msg.uuid, tokens: totalTokens(props.msg) ?? undefined }}
-      class={cb['internal-single']}
+      meta={{
+        sessionId: props.sessionId,
+        uuid: props.msg.uuid,
+        tokens: totalTokens(props.msg) ?? undefined,
+      }}
       classList={{
         [styles['tool-block']]: true,
       }}
@@ -56,10 +59,7 @@ export default function AgentBlockView(props: {
       <div class={ab['agent-expanded']}>
         <Show when={agentId()}>
           {(aid) => (
-            <A
-              class={ab['agent-link']}
-              href={`/session/agent-${aid()}`}
-            >
+            <A class={ab['agent-link']} href={`/session/agent-${aid()}`}>
               View subagent session &rarr;
             </A>
           )}
@@ -67,7 +67,10 @@ export default function AgentBlockView(props: {
         <Show when={result}>
           {(r) => (
             <div class={ab['agent-output-section']}>
-              <button class={styles.toggle} onClick={() => props.toggle(outputKey)}>
+              <button
+                class={styles.toggle}
+                onClick={() => props.toggle(outputKey)}
+              >
                 {props.expanded.has(outputKey) ? '\u25BE' : '\u25B8'} Output
               </button>
               <Show when={props.expanded.has(outputKey)}>

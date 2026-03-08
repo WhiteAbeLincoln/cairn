@@ -8,45 +8,79 @@ interface JsonTreeProps {
   defaultExpandDepth?: number
 }
 
+function CopyButton(props: { value: unknown }) {
+  const [copied, setCopied] = createSignal(false)
+
+  const handleCopy = (e: MouseEvent) => {
+    e.stopPropagation()
+    const text = typeof props.value === 'string'
+      ? props.value
+      : JSON.stringify(props.value, null, 2)
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  return (
+    <button class="json-copy" onClick={handleCopy} title="Copy value">
+      {copied() ? '✓' : '⧉'}
+    </button>
+  )
+}
+
+function CopyableValue(props: { value: unknown; children: any }) {
+  return (
+    <span class="json-copyable">
+      {props.children}
+      <CopyButton value={props.value} />
+    </span>
+  )
+}
+
 export function JsonTree(props: JsonTreeProps) {
   const depth = () => props.depth ?? 0
   const maxDepth = () => props.defaultExpandDepth ?? 1
 
-  if (props.value === null) return <span class="json-null">null</span>
-  if (props.value === undefined) return <span class="json-null">undefined</span>
+  if (props.value === null) return <CopyableValue value={null}><span class="json-null">null</span></CopyableValue>
+  if (props.value === undefined) return <CopyableValue value={undefined}><span class="json-null">undefined</span></CopyableValue>
 
   switch (typeof props.value) {
     case 'string':
-      return <JsonString value={props.value} />
+      return <CopyableValue value={props.value}><JsonString value={props.value} /></CopyableValue>
     case 'number':
-      return <span class="json-number">{String(props.value)}</span>
+      return <CopyableValue value={props.value}><span class="json-number">{String(props.value)}</span></CopyableValue>
     case 'boolean':
-      return <span class="json-bool">{String(props.value)}</span>
+      return <CopyableValue value={props.value}><span class="json-bool">{String(props.value)}</span></CopyableValue>
     default:
       break
   }
 
   if (Array.isArray(props.value)) {
     return (
-      <JsonArray
-        items={props.value}
-        depth={depth()}
-        defaultExpandDepth={maxDepth()}
-      />
+      <CopyableValue value={props.value}>
+        <JsonArray
+          items={props.value}
+          depth={depth()}
+          defaultExpandDepth={maxDepth()}
+        />
+      </CopyableValue>
     )
   }
 
   if (typeof props.value === 'object') {
     return (
-      <JsonObject
-        obj={props.value as Record<string, unknown>}
-        depth={depth()}
-        defaultExpandDepth={maxDepth()}
-      />
+      <CopyableValue value={props.value}>
+        <JsonObject
+          obj={props.value as Record<string, unknown>}
+          depth={depth()}
+          defaultExpandDepth={maxDepth()}
+        />
+      </CopyableValue>
     )
   }
 
-  return <span>{String(props.value)}</span>
+  return <CopyableValue value={props.value}><span>{String(props.value)}</span></CopyableValue>
 }
 
 function JsonString(props: { value: string }) {

@@ -1,5 +1,7 @@
 // --- Raw JSONL event types (from session log files, not GraphQL) ---
 
+import { createSignal } from 'solid-js'
+
 // Fields shared across user, assistant, progress, and system events
 interface CommonFields {
   uuid: string
@@ -47,7 +49,11 @@ export interface AssistantEvent extends CommonFields {
   requestId?: string
 }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ToolUseBlock | ToolResultBlock
+export type ContentBlock =
+  | TextBlock
+  | ThinkingBlock
+  | ToolUseBlock
+  | ToolResultBlock
 
 export interface TextBlock {
   type: 'text'
@@ -119,7 +125,11 @@ export type SessionEvent =
   | QueueOperationEvent
 
 // Events that have uuid/timestamp and can be rendered in the UI
-export type DisplayableEvent = UserEvent | AssistantEvent | SystemEvent | ProgressEvent
+export type DisplayableEvent =
+  | UserEvent
+  | AssistantEvent
+  | SystemEvent
+  | ProgressEvent
 
 // Type guards
 export function isUserEvent(e: SessionEvent): e is UserEvent {
@@ -138,4 +148,24 @@ export function isSystemEvent(e: SessionEvent): e is SystemEvent {
 export interface ToolResultEntry {
   content: unknown
   is_error?: boolean
+}
+
+export interface Toggleable<T = string> {
+  toggled: (id: T) => boolean
+  toggle: (id: T) => void
+}
+
+export function mkToggle<T>(initial?: Set<T>): Toggleable<T> {
+  initial = initial || new Set<T>()
+  const [getter, setter] = createSignal(initial)
+  return {
+    toggled: (v) => getter().has(v),
+    toggle: (key: T) =>
+      setter((prev: Set<T>) => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      }),
+  }
 }

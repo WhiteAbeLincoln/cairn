@@ -30,7 +30,9 @@
     border: 1px solid color-mix(in srgb, currentColor 20%, transparent);
     background-color: color-mix(in srgb, currentColor 8%, transparent);
     cursor: pointer;
-    transition: background-color 0.15s, border-color 0.15s;
+    transition:
+      background-color 0.15s,
+      border-color 0.15s;
   }
 
   & a.back-link:hover {
@@ -75,9 +77,26 @@
 }
 
 .messages {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 1fr auto;
   gap: 0.75rem;
+}
+
+.inspect-message-icon {
+  font-size: 0.7em;
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+  font-family: monospace;
+}
+
+.inspect-message-icon:hover {
+  opacity: 1 !important;
+}
+
+.inspect-message-icon-toggled {
+  opacity: 1 !important;
+  color: #4a4;
 }
 
 /* --- Shared block styles --- */
@@ -104,34 +123,6 @@
 
 .tool-block[data-expanded] {
   background: color-mix(in srgb, currentColor 3%, transparent);
-}
-
-.tool-details {
-  padding: 0 0.5rem 0.5rem;
-
-  & pre {
-    margin: 0;
-    padding: 0.5rem;
-    background: color-mix(in srgb, currentColor 6%, transparent);
-    border-radius: 4px;
-    font-size: 0.8rem;
-    overflow-x: auto;
-    max-height: 300px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-}
-
-.tool-section {
-  margin-top: 0.5rem;
-}
-
-.tool-section-label {
-  font-size: 0.7rem;
-  opacity: 0.5;
-  text-transform: uppercase;
-  margin-bottom: 0.2rem;
 }
 
 .tool-filepath {
