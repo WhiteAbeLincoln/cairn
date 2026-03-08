@@ -1,6 +1,7 @@
 import {
   type JSX,
   createMemo,
+  createSignal,
   useContext,
   Switch,
   Match,
@@ -12,9 +13,10 @@ import type { DisplayItemWithMode, DisplayItem } from '../../lib/display-item'
 import { JsonTree } from '../../lib/json-tree'
 import { upperFirst } from '../../lib/util'
 import { SessionContext } from '../session-context'
+import { ToolBlockContext } from './tool-block-context'
 import Prose from '../Prose'
 import MessageBlock from './MessageBlock'
-import ToolUseBlockView from './ToolUseBlockView'
+import ToolUseBlockView, { toolExtraLabel } from './ToolUseBlockView'
 import mb from './MessageBlock.module.css'
 import tb from './ThinkingBlockView.module.css'
 import styles from '../SessionView.module.css'
@@ -115,6 +117,15 @@ function RenderDisplayItem(props: {
     props.event.mode === 'grouped' ? 'collapsed' : props.event.mode
   const ctx = useContext(SessionContext)
 
+  const computedLabel = createMemo(() => toolExtraLabel(displayItem()))
+  const [childLabel, setExtraLabel] = createSignal<JSX.Element | undefined>(
+    undefined,
+  )
+  const effectiveExtraLabel = () => {
+    const cl = childLabel()
+    return cl !== undefined ? cl : computedLabel()
+  }
+
   return (
     <>
       {/* special case for turn duration which we don't want to wrap */}
@@ -125,19 +136,26 @@ function RenderDisplayItem(props: {
         fallback={<TurnDuration event={displayItem() as any} />}
       >
         {(_) => (
-          <MessageBlock
-            kind={displayMode()}
-            label={evtToName(displayItem())}
-            expanded={ctx.isExpanded(id())}
-            onExpand={() => ctx.toggleExpanded(id())}
-            id={displayItem().id}
-            event={displayItem()}
-          >
-            <Dynamic
-              component={eventRenderMap[displayItem().kind]}
-              event={displayItem() as any}
-            />
-          </MessageBlock>
+          <ToolBlockContext.Provider value={{ setExtraLabel }}>
+            <MessageBlock
+              kind={displayMode()}
+              label={
+                <>
+                  {evtToName(displayItem())}
+                  {effectiveExtraLabel()}
+                </>
+              }
+              expanded={ctx.isExpanded(id())}
+              onExpand={() => ctx.toggleExpanded(id())}
+              id={displayItem().id}
+              event={displayItem()}
+            >
+              <Dynamic
+                component={eventRenderMap[displayItem().kind]}
+                event={displayItem() as any}
+              />
+            </MessageBlock>
+          </ToolBlockContext.Provider>
         )}
       </Show>
       <button

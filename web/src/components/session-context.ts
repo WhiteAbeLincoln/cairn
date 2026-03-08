@@ -1,12 +1,5 @@
-import { ReactiveMap } from '@solid-primitives/map'
-import type {
-  DisplayItem,
-  ToolResultMap,
-  ToolUseMap,
-} from '../lib/display-item'
-import { mkToggle } from '../lib/types'
+import type { DisplayItem } from '../lib/display-item'
 import { createContext } from 'solid-js'
-import { ReactiveSet } from '@solid-primitives/set'
 
 type ToolUse = Extract<DisplayItem, { kind: 'tool-use' }>
 type ToolResult = Extract<DisplayItem, { kind: 'tool-result' }>

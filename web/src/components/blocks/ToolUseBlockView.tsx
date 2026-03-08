@@ -1,5 +1,6 @@
-// Collapsible tool use block with input/output sections.
-// Used inside ContentBlockView (from AssistantMessageView and InternalGroupView).
+// Tool use block dispatcher and individual tool view components.
+// Each view renders only content — the parent MessageBlock (via DisplayItemView)
+// handles the collapsible wrapper, label, and metadata.
 
 import {
   createMemo,
@@ -9,18 +10,86 @@ import {
   Show,
   useContext,
 } from 'solid-js'
-import { formatInput, stripAnsi, truncate } from '../../lib/format'
+import { A } from '@solidjs/router'
+import {
+  formatInput,
+  stripAnsi,
+  truncate,
+  parseToolResultParts,
+  stripReadLineNumbers,
+} from '../../lib/format'
+import { fileExtToLang, highlight, highlightBash } from '../../lib/highlight'
 import { contentToString } from '../../lib/session'
 import styles from '../SessionView.module.css'
 import tu from './ToolUseBlockView.module.css'
+import eb from './EditBlockView.module.css'
+import ab from './AgentBlockView.module.css'
+import cb from './CollapsibleBlock.module.css'
 import type { DisplayItem } from '../../lib/display-item'
 import { SessionContext } from '../session-context'
+import { ToolBlockContext } from './tool-block-context'
 import { Dynamic } from 'solid-js/web'
-import { highlightBash } from '../../lib/highlight'
 
 type ToolUse = Extract<DisplayItem, { kind: 'tool-use' }>
 type ToolResult = Extract<DisplayItem, { kind: 'tool-result' }>
 type ToolEvent = ToolUse | ToolResult
+
+/** Compute the extra label JSX for a tool-use display item from its input data.
+ *  Called by DisplayItemView to build the label without requiring child rendering. */
+export function toolExtraLabel(evt: DisplayItem): JSX.Element {
+  if (evt.kind !== 'tool-use') return null
+  const input = evt.content.input as Record<string, unknown> | undefined
+  if (!input) return null
+
+  switch (evt.content.name) {
+    case 'Read':
+    case 'Write':
+      return input.file_path ? (
+        <span class={styles['tool-filepath']}>{input.file_path as string}</span>
+      ) : null
+    case 'Edit':
+      return (
+        <>
+          {input.file_path ? (
+            <span class={styles['tool-filepath']}>
+              {input.file_path as string}
+            </span>
+          ) : null}
+          {input.replace_all ? (
+            <span class={eb['info-badge']}>all</span>
+          ) : null}
+        </>
+      )
+    case 'Bash':
+      return input.description ? (
+        <span class={tu['bash-desc']}>{input.description as string}</span>
+      ) : null
+    case 'Grep':
+    case 'Glob':
+      return input.pattern ? (
+        <span class={styles['tool-filepath']}>{input.pattern as string}</span>
+      ) : null
+    case 'Agent':
+      return (
+        <>
+          {input.subagent_type ? (
+            <>
+              <span class={cb['step-dot']}>&middot;</span>
+              <span class={styles.step}>{input.subagent_type as string}</span>
+            </>
+          ) : null}
+          {input.description ? (
+            <>
+              <span class={cb['step-dot']}>&middot;</span>
+              <span class={styles.step}>{input.description as string}</span>
+            </>
+          ) : null}
+        </>
+      )
+    default:
+      return null
+  }
+}
 
 export default function ToolUseBlockView(props: { event: ToolEvent }) {
   const ctx = useContext(SessionContext)
@@ -63,6 +132,12 @@ const toolUseMap: {
 } = {
   AskUserQuestion: AskUserQuestionView,
   Bash: BashView,
+  Read: ReadView,
+  Write: WriteView,
+  Edit: EditView,
+  Glob: GlobView,
+  Grep: GrepView,
+  Agent: AgentView,
 }
 
 type ToolViewProps = {
@@ -71,27 +146,49 @@ type ToolViewProps = {
   isError: boolean
 }
 
-function GenericToolUse(props: ToolViewProps) {
-  const toolInput = () =>
-    (props.toolUse?.content as { input?: unknown } | undefined)?.input
+// --- helpers ---
 
-  const resultContent = () =>
-    props.toolResult && props.toolResult.event.toolUseResult
-      ? props.toolResult.event.toolUseResult
-      : props.toolResult?.content?.content
+function useExtraLabel(label: () => JSX.Element) {
+  const blockCtx = useContext(ToolBlockContext)
+  createMemo(() => blockCtx?.setExtraLabel(label()))
+}
+
+function toolInput<T>(props: ToolViewProps): T | undefined {
+  return props.toolUse?.content.input as T | undefined
+}
+
+function toolResultContent(props: ToolViewProps): unknown {
+  if (!props.toolResult) return undefined
+  return props.toolResult.event.toolUseResult ?? props.toolResult.content?.content
+}
+
+function toolResultString(props: ToolViewProps): string {
+  return contentToString(toolResultContent(props))
+}
+
+function toolResultIsError(props: ToolViewProps): boolean {
+  return !!(props.toolResult?.content as { is_error?: boolean } | undefined)
+    ?.is_error
+}
+
+// --- GenericToolUse ---
+
+function GenericToolUse(props: ToolViewProps) {
+  const input = () => toolInput(props)
+  const result = () => toolResultContent(props)
 
   return (
     <div class={tu['tool-details']}>
       <div class={tu['tool-section']}>
         <div class={tu['tool-section-label']}>Input</div>
-        <pre>{formatInput(toolInput())}</pre>
+        <pre>{formatInput(input())}</pre>
       </div>
       <Show when={props.toolResult}>
-        {(r) => (
+        {(_r) => (
           <div class={tu['tool-section']}>
             <div class={tu['tool-section-label']}>Output</div>
             <pre classList={{ [styles['is-error']]: props.isError }}>
-              {truncate(contentToString(resultContent()), 5000)}
+              {truncate(contentToString(result()), 5000)}
             </pre>
           </div>
         )}
@@ -100,7 +197,7 @@ function GenericToolUse(props: ToolViewProps) {
   )
 }
 
-// ---- AskUserQuestion ----
+// --- AskUserQuestion ---
 
 type Question = {
   header: string
@@ -120,7 +217,6 @@ type QuestionToolResult = {
 function AskUserQuestionView(props: ToolViewProps): JSX.Element {
   const questions = () => {
     if (!props.toolUse) {
-      // we can get from the toolResult instead
       const result = (
         props.toolResult?.event as { toolUseResult?: QuestionToolResult }
       )?.toolUseResult
@@ -233,22 +329,18 @@ type BashOutput = {
 }
 
 function BashView(props: ToolViewProps): JSX.Element {
-  const input = () => {
-    return props.toolUse?.content.input as BashInput | undefined
-  }
+  const input = () => toolInput<BashInput>(props)
+
+  useExtraLabel(() => {
+    const desc = input()?.description
+    return desc ? <span class={tu['bash-desc']}>{desc}</span> : null
+  })
+
   const output = () => {
-    if (!props.toolResult) {
-      return undefined
-    }
-
-    const output = props?.toolResult?.event.toolUseResult as
-      | BashOutput
-      | undefined
-    const uuid = props?.toolResult.event.uuid
-
+    if (!props.toolResult) return undefined
     return {
-      output,
-      uuid,
+      output: props.toolResult.event.toolUseResult as BashOutput | undefined,
+      uuid: props.toolResult.event.uuid,
     }
   }
 
@@ -315,5 +407,432 @@ export function HighlightedBash(props: { code: string }) {
     >
       {(h) => <div class={tu['bash-command']} innerHTML={h()} />}
     </Show>
+  )
+}
+
+// --- Read ---
+
+const MAX_HIGHLIGHT_LENGTH = 50_000
+
+type ReadInput = {
+  file_path?: string
+  offset?: number
+  limit?: number
+  pages?: string
+}
+
+function ReadView(props: ToolViewProps): JSX.Element {
+  const input = () => toolInput<ReadInput>(props)
+  const filePath = () => input()?.file_path ?? ''
+  const lang = () => fileExtToLang(filePath())
+
+  useExtraLabel(() => {
+    const fp = filePath()
+    return fp ? <span class={styles['tool-filepath']}>{fp}</span> : null
+  })
+
+  const rangeInfo = () => {
+    const inp = input()
+    if (!inp) return null
+    const parts: string[] = []
+    if (inp.offset != null) parts.push(`offset ${inp.offset}`)
+    if (inp.limit != null) parts.push(`limit ${inp.limit}`)
+    if (inp.pages != null) parts.push(`pages ${inp.pages}`)
+    return parts.length > 0 ? parts.join(', ') : null
+  }
+
+  const resultStr = () => toolResultString(props)
+  const isError = () => toolResultIsError(props)
+  const parsed = () =>
+    props.toolResult ? parseToolResultParts(resultStr()) : null
+
+  const strippedText = () => {
+    if (!props.toolResult || isError()) return null
+    const p = parsed()
+    if (p && p.length === 1 && p[0].type === 'text') {
+      return stripReadLineNumbers(p[0].text)
+    }
+    if (!p) {
+      return stripReadLineNumbers(resultStr())
+    }
+    return null
+  }
+
+  const [html] = createResource(
+    () => {
+      const st = strippedText()
+      const l = lang()
+      if (!st || !l || st.code.length > MAX_HIGHLIGHT_LENGTH) return null
+      return st.code
+    },
+    (code) => highlight(code!, lang()!),
+  )
+
+  return (
+    <div class={tu['tool-details']}>
+      <Show when={rangeInfo()}>
+        {(info) => (
+          <div class={tu['tool-section']}>
+            <pre>{info()}</pre>
+          </div>
+        )}
+      </Show>
+      <Show when={props.toolResult}>
+        {(_r) => {
+          const st = strippedText()
+          const parts = parsed()
+          return (
+            <div class={tu['tool-section']}>
+              {/* Highlighted text output */}
+              <Show when={st && !isError()}>
+                {(_) => (
+                  <Show
+                    when={html()}
+                    fallback={
+                      <pre
+                        class={`${styles['highlighted-code']} line-numbers`}
+                        style={{ '--start-line': st!.startLine }}
+                      >
+                        {st!.code}
+                      </pre>
+                    }
+                  >
+                    {(h) => (
+                      <div
+                        class={`${styles['highlighted-code']} line-numbers`}
+                        style={{ '--start-line': st!.startLine }}
+                        innerHTML={h()}
+                      />
+                    )}
+                  </Show>
+                )}
+              </Show>
+              {/* Error output */}
+              <Show when={isError()}>
+                <pre class={styles['is-error']}>
+                  {truncate(resultStr(), 5000)}
+                </pre>
+              </Show>
+              {/* Multi-part output with images */}
+              <Show when={!st && parts && !isError()}>
+                {(_) => (
+                  <For each={parts!}>
+                    {(part) => (
+                      <Show
+                        when={
+                          part.type === 'image' &&
+                          (part as { type: 'image'; dataUri: string })
+                        }
+                        fallback={
+                          <pre>
+                            {truncate(
+                              (part as { type: 'text'; text: string }).text,
+                              5000,
+                            )}
+                          </pre>
+                        }
+                      >
+                        {(img) => (
+                          <img
+                            class={styles['tool-image']}
+                            src={img().dataUri}
+                          />
+                        )}
+                      </Show>
+                    )}
+                  </For>
+                )}
+              </Show>
+            </div>
+          )
+        }}
+      </Show>
+    </div>
+  )
+}
+
+// --- Write ---
+
+type WriteInput = {
+  file_path?: string
+  content?: string
+}
+
+function WriteView(props: ToolViewProps): JSX.Element {
+  const input = () => toolInput<WriteInput>(props)
+  const filePath = () => input()?.file_path ?? ''
+  const content = () => input()?.content ?? ''
+  const lang = () => fileExtToLang(filePath())
+
+  useExtraLabel(() => {
+    const fp = filePath()
+    return fp ? <span class={styles['tool-filepath']}>{fp}</span> : null
+  })
+
+  const [html] = createResource(
+    () => {
+      const l = lang()
+      const c = content()
+      return l && c.length <= MAX_HIGHLIGHT_LENGTH ? c : null
+    },
+    async (code) => {
+      const l = lang()
+      if (!code || !l) return null
+      return highlight(code, l)
+    },
+  )
+
+  return (
+    <div class={tu['tool-details']}>
+      <Show
+        when={html()}
+        fallback={
+          <pre class={styles['highlighted-code']}>
+            {truncate(content(), 5000)}
+          </pre>
+        }
+      >
+        {(h) => <div class={styles['highlighted-code']} innerHTML={h()} />}
+      </Show>
+      <Show when={toolResultIsError(props)}>
+        {(_) => (
+          <div class={tu['tool-section']}>
+            <div class={tu['tool-section-label']}>Output</div>
+            <pre class={styles['is-error']}>
+              {truncate(toolResultString(props), 5000)}
+            </pre>
+          </div>
+        )}
+      </Show>
+    </div>
+  )
+}
+
+// --- Edit ---
+
+type EditInput = {
+  file_path?: string
+  old_string?: string
+  new_string?: string
+  replace_all?: boolean
+}
+
+function buildDiffLines(
+  oldStr: string,
+  newStr: string,
+): { type: 'remove' | 'add' | 'context'; text: string }[] {
+  const oldLines = oldStr.split('\n')
+  const newLines = newStr.split('\n')
+  const lines: { type: 'remove' | 'add' | 'context'; text: string }[] = []
+  for (const line of oldLines) {
+    lines.push({ type: 'remove', text: line })
+  }
+  for (const line of newLines) {
+    lines.push({ type: 'add', text: line })
+  }
+  return lines
+}
+
+function EditView(props: ToolViewProps): JSX.Element {
+  const input = () => toolInput<EditInput>(props)
+  const filePath = () => input()?.file_path ?? ''
+  const hasStrings = () =>
+    typeof input()?.old_string === 'string' &&
+    typeof input()?.new_string === 'string'
+
+  useExtraLabel(() => {
+    const fp = filePath()
+    const ra = input()?.replace_all
+    return (
+      <>
+        <Show when={fp}>
+          <span class={styles['tool-filepath']}>{fp}</span>
+        </Show>
+        <Show when={ra}>
+          <span class={eb['info-badge']}>all</span>
+        </Show>
+      </>
+    )
+  })
+
+  return (
+    <div class={tu['tool-details']}>
+      <Show
+        when={hasStrings()}
+        fallback={
+          <div class={tu['tool-section']}>
+            <div class={tu['tool-section-label']}>Input</div>
+            <pre>{formatInput(toolInput(props))}</pre>
+          </div>
+        }
+      >
+        <div class={eb['diff-block']}>
+          {buildDiffLines(input()!.old_string!, input()!.new_string!).map(
+            (line) => (
+              <div
+                class={eb['diff-line']}
+                classList={{
+                  [eb['diff-add']]: line.type === 'add',
+                  [eb['diff-remove']]: line.type === 'remove',
+                }}
+              >
+                <span class={eb['diff-marker']}>
+                  {line.type === 'add'
+                    ? '+'
+                    : line.type === 'remove'
+                      ? '-'
+                      : ' '}
+                </span>
+                <span>{line.text}</span>
+              </div>
+            ),
+          )}
+        </div>
+      </Show>
+      <Show when={toolResultIsError(props)}>
+        {(_) => (
+          <div class={tu['tool-section']}>
+            <div class={tu['tool-section-label']}>Output</div>
+            <pre class={styles['is-error']}>
+              {truncate(toolResultString(props), 5000)}
+            </pre>
+          </div>
+        )}
+      </Show>
+    </div>
+  )
+}
+
+// --- Glob ---
+
+type GlobInput = {
+  pattern?: string
+  path?: string
+}
+
+function GlobView(props: ToolViewProps): JSX.Element {
+  const input = () => toolInput<GlobInput>(props)
+
+  useExtraLabel(() => {
+    const pattern = input()?.pattern
+    return pattern ? (
+      <span class={styles['tool-filepath']}>{pattern}</span>
+    ) : null
+  })
+
+  return (
+    <div class={tu['tool-details']}>
+      <Show when={props.toolResult}>
+        {(_) => (
+          <div class={tu['tool-section']}>
+            <pre classList={{ [styles['is-error']]: props.isError }}>
+              {truncate(toolResultString(props), 5000)}
+            </pre>
+          </div>
+        )}
+      </Show>
+    </div>
+  )
+}
+
+// --- Grep ---
+
+type GrepInput = {
+  path?: string
+  pattern?: string
+}
+
+function GrepView(props: ToolViewProps): JSX.Element {
+  const input = () => toolInput<GrepInput>(props)
+
+  useExtraLabel(() => {
+    const pattern = input()?.pattern
+    return pattern ? (
+      <span class={styles['tool-filepath']}>{pattern}</span>
+    ) : null
+  })
+
+  return (
+    <div class={tu['tool-details']}>
+      <Show when={props.toolResult}>
+        {(_) => (
+          <div class={tu['tool-section']}>
+            <pre classList={{ [styles['is-error']]: props.isError }}>
+              {truncate(toolResultString(props), 5000)}
+            </pre>
+          </div>
+        )}
+      </Show>
+    </div>
+  )
+}
+
+// --- Agent ---
+
+function AgentView(props: ToolViewProps): JSX.Element {
+  const input = () =>
+    toolInput<{
+      description?: string
+      prompt?: string
+      subagent_type?: string
+    }>(props)
+
+  useExtraLabel(() => {
+    const desc = input()?.description
+    const subType = input()?.subagent_type
+    return (
+      <>
+        <Show when={subType}>
+          <span class={cb['step-dot']}>&middot;</span>
+          <span class={styles.step}>{subType}</span>
+        </Show>
+        <Show when={desc}>
+          <span class={cb['step-dot']}>&middot;</span>
+          <span class={styles.step}>{desc}</span>
+        </Show>
+      </>
+    )
+  })
+
+  const ctx = useContext(SessionContext)
+
+  const agentId = () => {
+    // The agent result typically contains the agent ID
+    const result = props.toolResult?.event.toolUseResult as
+      | { agentId?: string }
+      | undefined
+    return result?.agentId
+  }
+
+  const outputId = () =>
+    props.toolResult ? `${props.toolResult.event.uuid}-agent-output` : ''
+
+  return (
+    <div class={ab['agent-expanded']}>
+      <Show when={agentId()}>
+        {(aid) => (
+          <A class={ab['agent-link']} href={`/session/agent-${aid()}`}>
+            View subagent session &rarr;
+          </A>
+        )}
+      </Show>
+      <Show when={props.toolResult}>
+        {(_r) => (
+          <div class={ab['agent-output-section']}>
+            <button
+              class={styles.toggle}
+              onClick={() => ctx.toggleExpanded(outputId())}
+            >
+              {ctx.isExpanded(outputId()) ? '\u25BE' : '\u25B8'} Output
+            </button>
+            <Show when={ctx.isExpanded(outputId())}>
+              <pre class={ab['agent-output']}>
+                {truncate(toolResultString(props), 5000)}
+              </pre>
+            </Show>
+          </div>
+        )}
+      </Show>
+    </div>
   )
 }

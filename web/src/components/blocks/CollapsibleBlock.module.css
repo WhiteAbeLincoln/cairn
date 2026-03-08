@@ -13,6 +13,7 @@
   opacity: 0.35;
   text-align: left;
   border-radius: 4px;
+  min-width: 0;
 }
 
 :global(:root.light) .toggle {
