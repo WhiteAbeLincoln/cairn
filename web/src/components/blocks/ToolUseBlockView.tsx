@@ -338,17 +338,21 @@ function BashView(props: ToolViewProps): JSX.Element {
     return desc ? <span class={tu['bash-desc']}>{desc}</span> : null
   })
 
-  const output = () => {
+  const output = (): { stdout: string; stderr: string; uuid: string } | undefined => {
     if (!props.toolResult) return undefined
-    return {
-      output: props.toolResult.event.toolUseResult as BashOutput | undefined,
-      uuid: props.toolResult.event.uuid,
+    const raw = props.toolResult.event.toolUseResult
+    const uuid = props.toolResult.event.uuid
+    if (typeof raw === 'string') {
+      return { stdout: raw, stderr: '', uuid }
     }
+    const obj = raw as BashOutput | undefined
+    if (!obj) return undefined
+    return { stdout: obj.stdout ?? '', stderr: obj.stderr ?? '', uuid }
   }
 
   const hasOutput = () => {
     const o = output()
-    return !!(o?.output?.stderr || o?.output?.stdout) ? o : undefined
+    return o && (o.stderr || o.stdout) ? o : undefined
   }
 
   const ctx = useContext(SessionContext)
@@ -375,15 +379,17 @@ function BashView(props: ToolViewProps): JSX.Element {
                   class={tu['bash-output']}
                   classList={{ [styles['is-error']]: props.isError }}
                 >
-                  {stripAnsi(contentToString(r().output?.stdout))}
+                  {stripAnsi(contentToString(r().stdout))}
                 </pre>
-                <p>Stderr</p>
-                <pre
-                  class={tu['bash-output']}
-                  classList={{ [styles['is-error']]: props.isError }}
-                >
-                  {stripAnsi(contentToString(r().output?.stderr))}
-                </pre>
+                <Show when={r().stderr}>
+                  <p>Stderr</p>
+                  <pre
+                    class={tu['bash-output']}
+                    classList={{ [styles['is-error']]: props.isError }}
+                  >
+                    {stripAnsi(contentToString(r().stderr))}
+                  </pre>
+                </Show>
               </Show>
             </div>
           )

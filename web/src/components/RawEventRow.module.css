@@ -110,6 +110,27 @@
   overflow-x: auto;
 }
 
+/* Inline raw JSON (shown below message blocks) */
+.raw-inline {
+  padding: 0.5rem 0.8rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  overflow-x: auto;
+}
+
+.raw-inline-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.4;
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.raw-inline-label:first-child {
+  margin-top: 0;
+}
+
 /* Highlighted (scroll-to-uuid target) */
 .highlight-line {
   background: color-mix(in srgb, #a08860 25%, transparent) !important;

@@ -83,36 +83,9 @@
 }
 
 .messages {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-}
-
-@media (max-width: 640px) {
-  .messages {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .inspect-message-icon {
-    display: none;
-  }
-}
-
-.inspect-message-icon {
-  font-size: 0.7em;
-  text-decoration: none;
-  opacity: 0;
-  transition: opacity 0.15s;
-  font-family: monospace;
-}
-
-.inspect-message-icon:hover {
-  opacity: 1 !important;
-}
-
-.inspect-message-icon-toggled {
-  opacity: 1 !important;
-  color: #4a4;
 }
 
 /* --- Shared block styles --- */
@@ -144,9 +117,6 @@
 .tool-filepath {
   font-size: 0.8rem;
   opacity: 0.5;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .tool-image {

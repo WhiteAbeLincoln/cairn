@@ -19,7 +19,6 @@ import MessageBlock from './MessageBlock'
 import ToolUseBlockView, { toolExtraLabel } from './ToolUseBlockView'
 import mb from './MessageBlock.module.css'
 import tb from './ThinkingBlockView.module.css'
-import styles from '../SessionView.module.css'
 import rer from '../RawEventRow.module.css'
 import RawEventRow from '../RawEventRow'
 
@@ -35,12 +34,7 @@ export function DisplayItemView(props: {
     <Switch>
       <Match when={ctx.globalRaw()}>
         <For each={displayEvents()}>
-          {(evt) => (
-            <>
-              <RawDisplayItem event={evt} />
-              <span></span>
-            </>
-          )}
+          {(evt) => <RawDisplayItem event={evt} />}
         </For>
       </Match>
       <Match when={props.event.mode === 'hidden'}>{null}</Match>
@@ -52,10 +46,7 @@ export function DisplayItemView(props: {
         }
       >
         {(e) => (
-          <>
-            <GroupedEvent events={e().items} />
-            <span></span>
-          </>
+          <GroupedEvent events={e().items} />
         )}
       </Match>
       <Match when={true}>
@@ -139,16 +130,14 @@ function RenderDisplayItem(props: {
           <ToolBlockContext.Provider value={{ setExtraLabel }}>
             <MessageBlock
               kind={displayMode()}
-              label={
-                <>
-                  {evtToName(displayItem())}
-                  {effectiveExtraLabel()}
-                </>
-              }
+              label={evtToName(displayItem())}
+              extraLabel={effectiveExtraLabel()}
               expanded={ctx.isExpanded(id())}
               onExpand={() => ctx.toggleExpanded(id())}
               id={displayItem().id}
               event={displayItem()}
+              isRaw={ctx.displayAsRaw(id())}
+              onToggleRaw={() => ctx.toggleRawDisplay(id())}
             >
               <Dynamic
                 component={eventRenderMap[displayItem().kind]}
@@ -158,21 +147,28 @@ function RenderDisplayItem(props: {
           </ToolBlockContext.Provider>
         )}
       </Show>
-      <button
-        class={styles['inspect-message-icon']}
-        classList={{
-          [styles['inspect-message-icon-toggled']]: ctx.displayAsRaw(id()),
-        }}
-        onClick={() => ctx.toggleRawDisplay(id())}
-      >
-        {'{}'}
-      </button>
       <Show when={ctx.displayAsRaw(id())}>
-        <div class={rer['line-expanded-body']}>
+        <div class={rer['raw-inline']}>
+          <Show when={displayItem().kind === 'tool-use'}>
+            <div class={rer['raw-inline-label']}>tool_use</div>
+          </Show>
           <JsonTree value={rawItem()} defaultExpandDepth={1} />
+          <Show
+            when={(() => {
+              const item = displayItem()
+              return item.kind === 'tool-use'
+                ? ctx.getToolResult(item.content.id)
+                : undefined
+            })()}
+          >
+            {(result) => (
+              <>
+                <div class={rer['raw-inline-label']}>tool_result</div>
+                <JsonTree value={result().event} defaultExpandDepth={1} />
+              </>
+            )}
+          </Show>
         </div>
-        {/* we need an empty element or else the grid layout breaks */}
-        <span></span>
       </Show>
     </>
   )
