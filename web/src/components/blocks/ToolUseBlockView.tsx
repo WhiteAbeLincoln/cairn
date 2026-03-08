@@ -18,7 +18,9 @@ import {
   parseToolResultParts,
   stripReadLineNumbers,
 } from '../../lib/format'
-import { fileExtToLang, highlight, highlightBash } from '../../lib/highlight'
+import { fileExtToLang, highlight, highlightBash, highlightToLines } from '../../lib/highlight'
+import { parseGrepOutput, type GrepGroup } from '../../lib/grep-parse'
+import { JsonTree } from '../../lib/json-tree'
 import { contentToString } from '../../lib/session'
 import styles from '../SessionView.module.css'
 import tu from './ToolUseBlockView.module.css'
@@ -748,6 +750,7 @@ function GlobView(props: ToolViewProps): JSX.Element {
 type GrepInput = {
   path?: string
   pattern?: string
+  output_mode?: string
 }
 
 function GrepView(props: ToolViewProps): JSX.Element {
@@ -760,17 +763,105 @@ function GrepView(props: ToolViewProps): JSX.Element {
     ) : null
   })
 
+  const resultStr = () => toolResultString(props)
+  const groups = createMemo(() =>
+    props.toolResult ? parseGrepOutput(resultStr()) : [],
+  )
+
+  // If the output is files_with_matches or count mode, or an error,
+  // just show plain text
+  const isPlainMode = () => {
+    const mode = input()?.output_mode
+    return mode === 'files_with_matches' || mode === 'count'
+  }
+
+  const ctx = useContext(SessionContext)
+  const inputId = () => `grep-input-${props.toolUse?.id ?? ''}`
+
   return (
     <div class={tu['tool-details']}>
+      <div class={tu['grep-input-section']}>
+        <button
+          class={styles.toggle}
+          onClick={() => ctx.toggleExpanded(inputId())}
+        >
+          {ctx.isExpanded(inputId()) ? '\u25BE' : '\u25B8'} Input
+        </button>
+        <Show when={ctx.isExpanded(inputId())}>
+          <JsonTree value={input()} defaultExpandDepth={1} />
+        </Show>
+      </div>
       <Show when={props.toolResult}>
         {(_) => (
-          <div class={tu['tool-section']}>
-            <pre classList={{ [styles['is-error']]: props.isError }}>
-              {truncate(toolResultString(props), 5000)}
-            </pre>
-          </div>
+          <Show
+            when={!toolResultIsError(props) && !isPlainMode()}
+            fallback={
+              <div class={tu['tool-section']}>
+                <pre classList={{ [styles['is-error']]: props.isError }}>
+                  {truncate(resultStr(), 5000)}
+                </pre>
+              </div>
+            }
+          >
+            <div class={tu['grep-results']}>
+              <For each={groups()}>
+                {(group) => <GrepGroupView group={group} />}
+              </For>
+            </div>
+          </Show>
         )}
       </Show>
+    </div>
+  )
+}
+
+const MAX_GREP_HIGHLIGHT = 50_000
+
+function GrepGroupView(props: { group: GrepGroup }): JSX.Element {
+  const lang = () => {
+    const fp = props.group.filePath
+    return fp ? fileExtToLang(fp) : null
+  }
+
+  const code = () => props.group.lines.map((l) => l.content).join('\n')
+  const [highlighted] = createResource(
+    () => {
+      const l = lang()
+      const c = code()
+      if (!l || c.length > MAX_GREP_HIGHLIGHT) return null
+      return { code: c, lang: l }
+    },
+    (params) => highlightToLines(params!.code, params!.lang),
+  )
+
+  return (
+    <div class={tu['grep-group']}>
+      <Show when={props.group.filePath}>
+        {(fp) => <div class={tu['grep-file-header']}>{fp()}</div>}
+      </Show>
+      <div class={tu['grep-code-block']}>
+        <For each={props.group.lines}>
+          {(line, i) => {
+            const hl = () => highlighted()?.[i()]
+            return (
+              <div
+                class={tu['grep-line']}
+                classList={{ [tu['grep-match']]: line.isMatch }}
+              >
+                <Show when={line.lineNum > 0}>
+                  <span class={tu['grep-linenum']}>{line.lineNum}</span>
+                </Show>
+                <span
+                  class={tu['grep-content']}
+                  innerHTML={hl() ?? undefined}
+                >
+                  {hl() ? undefined : line.content}
+                </span>
+              </div>
+            )
+          }}
+        </For>
+      </div>
     </div>
   )
 }

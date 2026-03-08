@@ -140,3 +140,46 @@ export async function highlight(code: string, lang: BundledLanguage): Promise<st
 export async function highlightBash(code: string): Promise<string> {
   return highlight(code, 'bash')
 }
+
+/** Highlight code and return an array of HTML strings, one per source line.
+ *  Each string contains themed <span> elements for the tokens on that line. */
+export async function highlightToLines(
+  code: string,
+  lang: BundledLanguage,
+): Promise<string[]> {
+  const hl = await getHighlighterInstance()
+  const loaded = hl.getLoadedLanguages()
+  if (!loaded.includes(lang)) {
+    await hl.loadLanguage(lang)
+  }
+  const { tokens } = hl.codeToTokens(code, {
+    lang,
+    themes: { dark: 'vitesse-dark', light: 'vitesse-light' },
+  })
+  // htmlStyle has { color: "<light>", "--shiki-dark": "<dark>" }
+  // Store both as CSS custom properties so CSS rules can pick the right one.
+  return tokens.map((line) =>
+    line
+      .map((token) => {
+        const escaped = escapeHtml(token.content)
+        const style = token.htmlStyle
+        if (!style) return escaped
+        const light = style.color ?? ''
+        const dark = (style as Record<string, string>)['--shiki-dark'] ?? ''
+        if (!light && !dark) return escaped
+        const vars: string[] = []
+        if (light) vars.push(`--shiki-light:${light}`)
+        if (dark) vars.push(`--shiki-dark:${dark}`)
+        return `<span style="${vars.join(';')}">${escaped}</span>`
+      })
+      .join(''),
+  )
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
