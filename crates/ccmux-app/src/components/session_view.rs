@@ -129,6 +129,8 @@ pub fn SessionView(id: String) -> Element {
 
     // Jump-to-bottom FAB state
     let mut show_fab = use_signal(|| false);
+    // Debounce flag: skip spawning a new scroll eval if one is already in-flight.
+    let mut eval_pending = use_signal(|| false);
 
     // Signal to hold live-updated items (initially None, set after load)
     let mut live_items: Signal<Option<Vec<DisplayItem>>> = use_signal(|| None);
@@ -196,18 +198,22 @@ pub fn SessionView(id: String) -> Element {
                     div {
                         class: "session-items",
                         onscroll: move |_evt| {
-                            spawn(async move {
-                                let result = dioxus::document::eval(
-                                    r#"
-                                    let el = document.querySelector('.session-items');
-                                    el.scrollTop + el.clientHeight < el.scrollHeight - 200
-                                "#,
-                                )
-                                .await;
-                                if let Ok(val) = result {
-                                    show_fab.set(val.as_bool().unwrap_or(false));
-                                }
-                            });
+                            if !eval_pending() {
+                                eval_pending.set(true);
+                                spawn(async move {
+                                    let result = dioxus::document::eval(
+                                        r#"
+                                        let el = document.querySelector('.session-items');
+                                        el.scrollTop + el.clientHeight < el.scrollHeight - 200
+                                    "#,
+                                    )
+                                    .await;
+                                    if let Ok(val) = result {
+                                        show_fab.set(val.as_bool().unwrap_or(false));
+                                    }
+                                    eval_pending.set(false);
+                                });
+                            }
                         },
                         for (i, item) in items.iter().enumerate() {
                             DisplayItemView { key: "{i}", item: item.clone() }
@@ -220,8 +226,8 @@ pub fn SessionView(id: String) -> Element {
                                 spawn(async move {
                                     let _ = dioxus::document::eval(
                                         r#"
-                                        document.querySelector('.session-items')
-                                            .scrollTo({ top: 999999, behavior: 'smooth' })
+                                        let el = document.querySelector('.session-items');
+                                        el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
                                     "#,
                                     )
                                     .await;

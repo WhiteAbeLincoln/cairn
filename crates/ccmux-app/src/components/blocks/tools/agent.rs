@@ -38,7 +38,10 @@ pub fn AgentView(input: Value, result: Option<ToolResultData>) -> Element {
         .unwrap_or("")
         .to_string();
 
-    // Agent ID from tool_use_result.agentId
+    // Agent ID from tool_use_result.agentId.
+    // NOTE: agentId is not currently populated through the pipeline, so this link
+    // will not render in practice. AgentView still displays subagent_type, description,
+    // and output text correctly. This is a known limitation.
     let agent_id = result.as_ref().and_then(|r| {
         r.tool_use_result
             .as_ref()
@@ -62,7 +65,7 @@ pub fn AgentView(input: Value, result: Option<ToolResultData>) -> Element {
             if let Some(aid) = agent_id {
                 a {
                     class: "agent-link",
-                    href: "/session/agent-{aid}",
+                    href: "/session/{aid}",
                     "View subagent session \u{2192}"
                 }
             }
