@@ -8,21 +8,19 @@ use crate::components::session_view::RawModeContext;
 
 #[component]
 pub fn MessageBlock(
-    label: String,
-    border_class: String,
-    #[props(default)] extra_label: Option<String>,
+    label: Element,
+    role: String,
+    #[props(default)] extra_label: Option<Element>,
     #[props(default)] meta: Option<ItemMeta>,
     #[props(default)] raw: Option<Value>,
     /// For tool calls: the raw tool_result event, shown alongside the tool_use raw event.
     #[props(default)]
     result_raw: Option<Value>,
-    #[props(default = true)] default_open: bool,
     #[props(default = false)] minimal: bool,
     children: Element,
 ) -> Element {
-    let mut open = use_signal(|| default_open);
+    let mut open = use_signal(|| !minimal);
     let mut raw_open = use_signal(|| false);
-    let mut kebab_open = use_signal(|| false);
 
     let global_raw: Option<Signal<bool>> =
         try_use_context::<RawModeContext>().map(|ctx| ctx.global_raw);
@@ -33,87 +31,52 @@ pub fn MessageBlock(
     // Build outer class
     let block_class = if minimal {
         if open() {
-            format!("message-block {border_class} message-block-minimal message-block-expanded")
+            "message-block message-block-minimal message-block-expanded".to_string()
         } else {
-            format!("message-block {border_class} message-block-minimal")
+            "message-block message-block-minimal".to_string()
         }
     } else {
-        format!("message-block {border_class}")
+        "message-block".to_string()
+    };
+
+    let header_middle = rsx! {
+        span {
+            class: "header-middle",
+            if let Some(extra) = &extra_label {
+                span { class: "message-extra-label", {extra} }
+            }
+            span { class: "header-spacer" }
+            if let Some(ref m) = meta {
+                MetaFields { meta: m.clone() }
+            }
+        }
+    };
+
+    let fixed_end = rsx! {
+        if has_raw {
+            button {
+                class: if show_raw { "message-raw-toggle message-raw-toggle-active" } else { "message-raw-toggle" },
+                title: "Toggle raw JSON",
+                onclick: move |e| {
+                    e.stop_propagation();
+                    raw_open.toggle();
+                },
+                "{{}}"
+            }
+        }
     };
 
     rsx! {
-        div { class: "{block_class}",
+        div {
+            class: "{block_class}",
+            "data-role": "{role}",
             // Header — same structure for both full and minimal, styling differs via CSS
             div {
                 class: "message-header message-header-clickable",
                 onclick: move |_| open.toggle(),
-                // Fixed start: caret + label
-                span { class: "message-caret",
-                    if open() { "\u{25BE}" } else { "\u{25B8}" }
-                }
-                span { class: "message-label", "{label}" }
-
-                // Scrollable middle: extra label + spacer + metadata
-                span { class: "header-middle",
-                    if let Some(extra) = &extra_label {
-                        span { class: "message-extra-label", "{extra}" }
-                    }
-                    span { class: "header-spacer" }
-                    if let Some(ref m) = meta {
-                        MetaFields { meta: m.clone() }
-                    }
-                }
-
-                // Fixed end: action buttons
-                div { class: "message-actions",
-                    if has_raw {
-                        button {
-                            class: if show_raw { "message-raw-toggle message-raw-toggle-active" } else { "message-raw-toggle" },
-                            title: "Toggle raw JSON",
-                            onclick: move |e| {
-                                e.stop_propagation();
-                                raw_open.toggle();
-                            },
-                            "{{}}"
-                        }
-                    }
-                    // Kebab menu (mobile, <=768px)
-                    if !minimal && has_raw {
-                        div { class: "kebab-menu",
-                            button {
-                                class: "kebab-trigger",
-                                title: "More options",
-                                onclick: move |e| {
-                                    e.stop_propagation();
-                                    kebab_open.toggle();
-                                },
-                                "\u{22EE}"
-                            }
-                            if kebab_open() {
-                                div {
-                                    class: "kebab-backdrop",
-                                    onclick: move |e| {
-                                        e.stop_propagation();
-                                        kebab_open.set(false);
-                                    },
-                                }
-                                div { class: "kebab-dropdown",
-                                    if has_raw {
-                                        button {
-                                            class: if show_raw { "kebab-item kebab-item-active" } else { "kebab-item" },
-                                            onclick: move |e| {
-                                                e.stop_propagation();
-                                                raw_open.toggle();
-                                                kebab_open.set(false);
-                                            },
-                                            "{{}}"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                span { class: "message-label", {label} }
+                {header_middle}
+                {fixed_end}
             }
 
             // Body

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use ccmux_core::display::DisplayItem;
+use ccmux_core::display::DisplayItemWithMode;
 use ccmux_core::display::streaming::StreamEvent;
 
 /// Wire type for session metadata, serializable across the network boundary.
@@ -32,7 +32,7 @@ pub struct ProjectGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionResponse {
     pub meta: SessionMeta,
-    pub items: Vec<DisplayItem>,
+    pub items: Vec<DisplayItemWithMode>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

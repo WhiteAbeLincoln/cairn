@@ -1,40 +1,81 @@
 use dioxus::prelude::*;
 
-use ccmux_core::display::DisplayItem;
+use ccmux_core::display::{DisplayItem, DisplayItemWithMode};
+
+use crate::components::blocks::json_tree::JsonTree;
 
 use super::group::GroupBlock;
 use super::message::MessageBlock;
 use super::prose::Prose;
-use super::thinking::ThinkingBlock;
 use super::tool_use::ToolUseBlock;
 
 #[component]
-pub fn DisplayItemView(item: DisplayItem) -> Element {
+pub fn DisplayItemModedView(item: DisplayItemWithMode) -> Element {
     match item {
+        DisplayItemWithMode::Full(item) => rsx! {
+            DisplayItemView { item, minimal: false }
+        },
+        DisplayItemWithMode::Collapsed(item) => rsx! {
+            DisplayItemView { item, minimal: true }
+        },
+        DisplayItemWithMode::Grouped(items) => match items.len() {
+            // would like to match on vec as a slice here, but then we have to clone
+            // the value since we get a reference back
+            0 => rsx! {},
+            // If there's only one item in the group, render it directly in minimal mode (no summary)
+            1 => {
+                let single_item = items.into_iter().next().unwrap();
+                rsx! { DisplayItemView { item: single_item, minimal: true } }
+            }
+            _ => rsx! {
+                GroupBlock { items }
+            },
+        },
+        DisplayItemWithMode::Hidden(_) => rsx! {}, // Don't render hidden items at
+    }
+}
+
+#[component]
+pub fn DisplayItemView(item: DisplayItem, minimal: bool) -> Element {
+    match item {
+        DisplayItem::TurnDuration { duration_ms, .. } => {
+            let secs = duration_ms as f64 / 1000.0;
+            rsx! {
+                div { class: "turn-duration", "data-role": "system", "Turn completed in {secs:.1}s" }
+            }
+        }
         DisplayItem::UserMessage { content, meta, raw } => rsx! {
             MessageBlock {
-                label: "User",
-                border_class: "border-user",
+                label: rsx!{"User"},
+                role: "user",
                 meta,
                 raw,
+                minimal,
 
-                default_open: true,
                 Prose { content }
             }
         },
         DisplayItem::AssistantMessage { text, meta, raw } => rsx! {
             MessageBlock {
-                label: "Assistant",
-                border_class: "border-assistant",
+                label: rsx!{"Assistant"},
+                role: "assistant",
                 meta,
                 raw,
+                minimal,
 
-                default_open: true,
                 Prose { content: text }
             }
         },
-        DisplayItem::Thinking { text, .. } => rsx! {
-            ThinkingBlock { text }
+        DisplayItem::Thinking { text, meta, raw } => rsx! {
+            MessageBlock {
+                label: rsx!{"Thinking"},
+                role: "thinking",
+                meta,
+                raw,
+                minimal,
+
+                Prose { content: text }
+            }
         },
         DisplayItem::ToolUse {
             name,
@@ -44,7 +85,7 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
             raw,
             ..
         } => rsx! {
-            ToolUseBlock { name, input, result, meta, raw }
+            ToolUseBlock { name, input, result, meta, raw, minimal }
         },
         // DisplayItem::TaskList { tasks, meta, raw } => {
         //     // TaskList rendering is broken — display as a simple pre-formatted list for now
@@ -73,28 +114,25 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
         //         }
         //     }
         // }
-        DisplayItem::TurnDuration { duration_ms, .. } => {
-            let secs = duration_ms as f64 / 1000.0;
-            rsx! {
-                div { class: "turn-duration", "{secs:.1}s" }
-            }
-        }
         DisplayItem::Compaction { content, meta, raw } => rsx! {
             MessageBlock {
-                label: "Compaction",
-                border_class: "border-compaction",
+                label: rsx!{"Compaction"},
+                role: "compaction",
                 meta,
                 raw,
+                minimal,
 
-                default_open: true,
                 Prose { content }
             }
         },
-        DisplayItem::Group { items, meta, .. } => rsx! {
-            GroupBlock { items, meta }
-        },
-        DisplayItem::Other { .. } => rsx! {
-            div { class: "other-block", "(other event)" }
+        DisplayItem::Other { raw } => rsx! {
+            MessageBlock {
+                label: rsx!{"Other"},
+                role: "other",
+                minimal,
+
+                JsonTree { value: raw }
+            }
         },
     }
 }

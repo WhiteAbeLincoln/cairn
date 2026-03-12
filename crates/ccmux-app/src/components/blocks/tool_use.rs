@@ -18,22 +18,17 @@ pub fn ToolUseBlock(
 ) -> Element {
     let extra = tool_extra_label(&name, &input);
 
-    // Standalone (full mode) tools are open; grouped (minimal) tools are closed.
-    // The pipeline's DisplayOpts determines which tools appear standalone vs grouped.
-    let default_open = !minimal;
-
     let result_raw = result.as_ref().map(|r| r.raw.clone());
 
     rsx! {
         MessageBlock {
-            label: name.clone(),
-            border_class: "border-tool",
-            extra_label: extra,
+            label: rsx!{ {name.clone()} },
+            extra_label: rsx!{ {extra} },
+            role: "tool-use",
             meta,
             raw,
             result_raw,
 
-            default_open,
             minimal,
             match name.as_str() {
                 "Bash" => rsx! {

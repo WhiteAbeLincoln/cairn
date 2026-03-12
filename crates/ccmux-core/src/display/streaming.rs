@@ -2,30 +2,25 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{DisplayItem, DisplayMode, DisplayOpts, ToolResultData};
+use super::{
+    DisplayItem, DisplayItemWithMode, DisplayMode, DisplayModeF, DisplayOpts, ToolResultData,
+};
 
 /// Protocol message sent over SSE from server to client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum StreamEvent {
     Append {
-        item: DisplayItem,
-    },
-    MergeWithPrevious {
-        item: DisplayItem,
+        item: DisplayItemWithMode,
     },
     UpdateToolResult {
         tool_use_id: String,
         result: ToolResultData,
     },
-    // UpdateTask {
-    //     task: TaskItem,
-    // },
 }
 
 /// Minimal server-side state for streaming decisions.
 pub struct StreamPipelineState {
-    pub last_mode: Option<DisplayMode>,
     pub opts: DisplayOpts,
     pub tool_results: HashMap<String, ToolResultData>,
 }
@@ -33,7 +28,6 @@ pub struct StreamPipelineState {
 impl StreamPipelineState {
     pub fn new(opts: DisplayOpts) -> Self {
         Self {
-            last_mode: None,
             opts,
             tool_results: HashMap::new(),
         }
@@ -42,29 +36,16 @@ impl StreamPipelineState {
     /// Decide how to emit a new display item.
     pub fn emit(&mut self, item: DisplayItem, mode: DisplayMode) -> Option<StreamEvent> {
         match mode {
-            DisplayMode::Hidden => None,
-            DisplayMode::Grouped => {
-                let event = if self.last_mode == Some(DisplayMode::Grouped) {
-                    StreamEvent::MergeWithPrevious { item }
-                } else {
-                    StreamEvent::Append { item }
-                };
-                self.last_mode = Some(DisplayMode::Grouped);
-                Some(event)
-            }
-            // DisplayMode::TaskList => {
-            //     let event = if self.last_mode == Some(DisplayMode::TaskList) {
-            //         StreamEvent::MergeWithPrevious { item }
-            //     } else {
-            //         StreamEvent::Append { item }
-            //     };
-            //     self.last_mode = Some(DisplayMode::TaskList);
-            //     Some(event)
-            // }
-            _ => {
-                self.last_mode = Some(mode);
-                Some(StreamEvent::Append { item })
-            }
+            DisplayModeF::Hidden(()) => None,
+            DisplayModeF::Grouped(()) => Some(StreamEvent::Append {
+                item: DisplayModeF::Grouped(vec![item]),
+            }),
+            DisplayModeF::Full(()) => Some(StreamEvent::Append {
+                item: DisplayModeF::Full(item),
+            }),
+            DisplayModeF::Collapsed(()) => Some(StreamEvent::Append {
+                item: DisplayModeF::Collapsed(item),
+            }),
         }
     }
 

@@ -1,9 +1,9 @@
 use dioxus::prelude::*;
 
 use ccmux_core::display::streaming::StreamEvent;
-use ccmux_core::display::{DisplayItem, ItemMeta};
+use ccmux_core::display::{DisplayItem, DisplayItemWithMode, DisplayModeF};
 
-use crate::components::blocks::display_item::DisplayItemView;
+use crate::components::blocks::display_item::DisplayItemModedView;
 use crate::routes::Route;
 use crate::server_fns::{get_session, stream_session_events};
 
@@ -14,102 +14,83 @@ pub struct RawModeContext {
 }
 
 /// Apply a stream event to a mutable list of display items.
-fn apply_stream_event(items: &mut Vec<DisplayItem>, event: StreamEvent) {
+fn apply_stream_event(items: &mut Vec<DisplayItemWithMode>, event: StreamEvent) {
     match event {
         StreamEvent::Append { item } => {
-            items.push(item);
-        }
-        StreamEvent::MergeWithPrevious { item } => {
-            if let Some(last) = items.last_mut() {
-                match last {
-                    DisplayItem::Group {
-                        items: group_items, ..
-                    } => {
-                        group_items.push(item);
-                    }
-                    _ => {
-                        // Wrap the previous item and the new one into a Group
-                        let prev = std::mem::replace(
-                            last,
-                            DisplayItem::Group {
-                                items: Vec::with_capacity(2),
-                                meta: ItemMeta::default(),
-                            },
-                        );
-                        if let DisplayItem::Group {
-                            items: group_items, ..
-                        } = last
-                        {
-                            group_items.push(prev);
-                            group_items.push(item);
+            // Merge consecutive Collapsed items into a Grouped
+            if matches!(item, DisplayModeF::Collapsed(_))
+                && let Some(last) = items.last_mut() {
+                    match last {
+                        DisplayModeF::Grouped(group_items) => {
+                            if let DisplayModeF::Collapsed(inner) = item {
+                                group_items.push(inner);
+                            }
+                            return;
                         }
+                        DisplayModeF::Collapsed(_) => {
+                            let prev = std::mem::replace(
+                                last,
+                                DisplayModeF::Grouped(Vec::with_capacity(2)),
+                            );
+                            if let (
+                                DisplayModeF::Grouped(group_items),
+                                DisplayModeF::Collapsed(prev_inner),
+                                DisplayModeF::Collapsed(new_inner),
+                            ) = (last, prev, item)
+                            {
+                                group_items.push(prev_inner);
+                                group_items.push(new_inner);
+                            }
+                            return;
+                        }
+                        _ => {}
                     }
                 }
-            } else {
-                // No previous item, just append
-                items.push(item);
-            }
+            items.push(item);
         }
         StreamEvent::UpdateToolResult {
             tool_use_id,
             result,
         } => {
-            update_tool_result_recursive(items, &tool_use_id, &result);
-        } // StreamEvent::UpdateTask { task } => {
-          //     // Find and update a matching task in any TaskList
-          //     for item in items.iter_mut() {
-          //         match item {
-          //             DisplayItem::TaskList { tasks, .. } => {
-          //                 if let Some(existing) = tasks.iter_mut().find(|t| t.id == task.id) {
-          //                     existing.status = task.status.clone();
-          //                     if !task.subject.is_empty() {
-          //                         existing.subject = task.subject.clone();
-          //                     }
-          //                 }
-          //             }
-          //             DisplayItem::Group {
-          //                 items: group_items, ..
-          //             } => {
-          //                 for group_item in group_items.iter_mut() {
-          //                     if let DisplayItem::TaskList { tasks, .. } = group_item
-          //                         && let Some(existing) = tasks.iter_mut().find(|t| t.id == task.id)
-          //                     {
-          //                         existing.status = task.status.clone();
-          //                         if !task.subject.is_empty() {
-          //                             existing.subject = task.subject.clone();
-          //                         }
-          //                     }
-          //                 }
-          //             }
-          //             _ => {}
-          //         }
-          //     }
-          // }
+            update_tool_result(items, &tool_use_id, &result);
+        }
     }
 }
 
-/// Recursively find a ToolUse by id and update its result.
-fn update_tool_result_recursive(
-    items: &mut [DisplayItem],
+/// Find a ToolUse by id across all items and update its result.
+fn update_tool_result(
+    items: &mut [DisplayItemWithMode],
     tool_use_id: &str,
     result: &ccmux_core::display::ToolResultData,
 ) {
-    for item in items.iter_mut() {
-        match item {
-            DisplayItem::ToolUse {
-                tool_use_id: id,
-                result: r,
-                ..
-            } if id == tool_use_id => {
-                *r = Some(result.clone());
-                return;
+    for entry in items.iter_mut() {
+        match entry {
+            DisplayModeF::Full(item)
+            | DisplayModeF::Collapsed(item)
+            | DisplayModeF::Hidden(item) => {
+                if let DisplayItem::ToolUse {
+                    tool_use_id: id,
+                    result: r,
+                    ..
+                } = item
+                    && id == tool_use_id {
+                        *r = Some(result.clone());
+                        return;
+                    }
             }
-            DisplayItem::Group {
-                items: group_items, ..
-            } => {
-                update_tool_result_recursive(group_items, tool_use_id, result);
+            DisplayModeF::Grouped(group_items) => {
+                for item in group_items.iter_mut() {
+                    if let DisplayItem::ToolUse {
+                        tool_use_id: id,
+                        result: r,
+                        ..
+                    } = item
+                        && id == tool_use_id {
+                            *r = Some(result.clone());
+                            return;
+                        }
+                }
             }
-            _ => {}
         }
     }
 }
@@ -132,7 +113,7 @@ pub fn SessionView(id: String) -> Element {
     let mut eval_pending = use_signal(|| false);
 
     // Signal to hold live-updated items (initially None, set after load)
-    let mut live_items: Signal<Option<Vec<DisplayItem>>> = use_signal(|| None);
+    let mut live_items: Signal<Option<Vec<DisplayItemWithMode>>> = use_signal(|| None);
 
     // Start streaming after initial load completes
     let stream_id = id.clone();
@@ -215,7 +196,7 @@ pub fn SessionView(id: String) -> Element {
                             }
                         },
                         for (i, item) in items.iter().enumerate() {
-                            DisplayItemView { key: "{i}", item: item.clone() }
+                            DisplayItemModedView { key: "{i}", item: item.clone() }
                         }
                     }
                     if show_fab() {

@@ -61,11 +61,6 @@ pub enum DisplayItem {
         meta: ItemMeta,
         raw: Value,
     },
-    /// Heterogeneous group of items with Grouped display mode.
-    Group {
-        items: Vec<DisplayItem>,
-        meta: ItemMeta,
-    },
     Other {
         raw: Value,
     },
@@ -97,14 +92,17 @@ pub enum TaskStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DisplayMode {
-    Full,
-    Collapsed,
-    Grouped,
-    // TaskList,
-    Hidden,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DisplayModeF<T, TArr> {
+    Full(T),
+    Collapsed(T),
+    Grouped(TArr),
+    // TaskList(TArr),
+    Hidden(T),
 }
+
+pub type DisplayMode = DisplayModeF<(), ()>;
+pub type DisplayItemWithMode = DisplayModeF<DisplayItem, Vec<DisplayItem>>;
 
 /// Discriminant for DisplayItem variants, used as keys in DisplayOpts.defaults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -130,22 +128,22 @@ pub struct DisplayOpts {
 impl Default for DisplayOpts {
     fn default() -> Self {
         use DisplayItemDiscriminant::*;
-        use DisplayMode::*;
+        use DisplayModeF::*;
 
         let defaults = HashMap::from([
-            (UserMessage, Full),
-            (AssistantMessage, Full),
-            (Thinking, Grouped),
-            (ToolUse, Grouped),
-            (ToolResult, Hidden),
-            (TurnDuration, Full),
-            (Compaction, Grouped),
-            (Other, Hidden),
+            (UserMessage, Full(())),
+            (AssistantMessage, Full(())),
+            (Thinking, Grouped(())),
+            (ToolUse, Grouped(())),
+            (ToolResult, Hidden(())),
+            (TurnDuration, Full(())),
+            (Compaction, Grouped(())),
+            (Other, Hidden(())),
         ]);
 
         let tool_overrides = HashMap::from([
-            ("Bash".to_string(), Full),
-            ("AskUserQuestion".to_string(), Full),
+            ("Bash".to_string(), Full(())),
+            ("AskUserQuestion".to_string(), Full(())),
             // ("TaskCreate".to_string(), TaskList),
             // ("TaskUpdate".to_string(), TaskList),
             // ("TaskGet".to_string(), TaskList),

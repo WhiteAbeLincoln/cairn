@@ -4,6 +4,5 @@ pub mod json_tree;
 pub mod message;
 pub mod prose;
 pub mod task_list;
-pub mod thinking;
 pub mod tool_use;
 pub mod tools;

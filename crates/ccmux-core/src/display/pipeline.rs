@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use super::{
-    DisplayItem, DisplayItemDiscriminant, DisplayMode, DisplayOpts, ItemMeta, TaskItem, TaskStatus,
-    ToolResultData,
+    DisplayItem, DisplayItemDiscriminant, DisplayItemWithMode, DisplayMode, DisplayModeF,
+    DisplayOpts, ItemMeta, TaskItem, TaskStatus, ToolResultData,
 };
 use crate::events::Event;
 
@@ -13,42 +13,37 @@ pub fn events_to_display_items(
     events: &[Event],
     raw_events: &[Value],
     opts: &DisplayOpts,
-) -> Vec<DisplayItem> {
+) -> Vec<DisplayItemWithMode> {
     // Pre-scan: index tool results by tool_use_id from user events.
     let tool_results = pre_scan_tool_results(raw_events);
 
-    let mut output: Vec<DisplayItem> = Vec::new();
+    let mut output: Vec<DisplayItemWithMode> = Vec::new();
     let mut grouped_acc: Vec<DisplayItem> = Vec::new();
-    // let mut task_acc: Vec<(DisplayItem, Value)> = Vec::new(); // (item, raw) for task extraction
 
     for (event, raw) in events.iter().zip(raw_events.iter()) {
         let intermediates = event_to_intermediates(event, raw, opts, &tool_results);
 
         for (item, mode) in intermediates {
             match mode {
-                // DisplayMode::TaskList => {
-                //     flush_grouped(&mut grouped_acc, &mut output);
-                //     task_acc.push((item, raw.clone()));
-                // }
-                DisplayMode::Grouped => {
-                    // flush_tasks(&mut task_acc, &mut output);
+                DisplayModeF::Grouped(()) => {
                     grouped_acc.push(item);
                 }
-                DisplayMode::Hidden => {
+                DisplayModeF::Hidden(()) => {
                     // skip
                 }
-                _ => {
-                    // Full or Collapsed — flush accumulators and emit directly
+                DisplayModeF::Full(()) => {
                     flush_grouped(&mut grouped_acc, &mut output);
-                    // flush_tasks(&mut task_acc, &mut output);
-                    output.push(item);
+                    output.push(DisplayModeF::Full(item));
+                }
+                DisplayModeF::Collapsed(()) => {
+                    flush_grouped(&mut grouped_acc, &mut output);
+                    output.push(DisplayModeF::Collapsed(item));
                 }
             }
         }
     }
 
     flush_grouped(&mut grouped_acc, &mut output);
-    // flush_tasks(&mut task_acc, &mut output);
 
     output
 }
@@ -388,7 +383,7 @@ fn mode_for(
     opts.defaults
         .get(&discriminant)
         .copied()
-        .unwrap_or(DisplayMode::Hidden)
+        .unwrap_or(DisplayMode::Hidden(()))
 }
 
 /// Extract task items from task-related tool input.
@@ -433,55 +428,18 @@ fn _extract_task_items(tool_name: &str, tool_use_id: &str, input: &Value) -> Vec
     }
 }
 
-/// Extract the ItemMeta from a DisplayItem (for aggregation).
-fn item_meta(item: &DisplayItem) -> Option<&ItemMeta> {
-    match item {
-        DisplayItem::UserMessage { meta, .. }
-        | DisplayItem::AssistantMessage { meta, .. }
-        | DisplayItem::Thinking { meta, .. }
-        | DisplayItem::ToolUse { meta, .. }
-        // | DisplayItem::TaskList { meta, .. }
-        | DisplayItem::TurnDuration { meta, .. }
-        | DisplayItem::Compaction { meta, .. }
-        | DisplayItem::Group { meta, .. } => Some(meta),
-        DisplayItem::Other { .. } => None,
-    }
-}
 
-/// Compute aggregate meta for a Group: sum tokens, model from first child with a model.
-fn aggregate_meta(items: &[DisplayItem]) -> ItemMeta {
-    let mut total_tokens: Option<u64> = None;
-    let mut model: Option<String> = None;
-
-    for item in items {
-        if let Some(m) = item_meta(item) {
-            if let Some(t) = m.tokens {
-                *total_tokens.get_or_insert(0) += t;
-            }
-            if model.is_none() {
-                model = m.model.clone();
-            }
-        }
-    }
-
-    ItemMeta {
-        uuid: None,
-        model,
-        tokens: total_tokens,
-    }
-}
-
-/// Flush grouped accumulator: single item unwrapped, multiple items wrapped in Group.
-fn flush_grouped(acc: &mut Vec<DisplayItem>, output: &mut Vec<DisplayItem>) {
+/// Flush grouped accumulator into DisplayItemWithMode entries.
+/// A single item stays Collapsed; multiple items become Grouped(vec).
+fn flush_grouped(acc: &mut Vec<DisplayItem>, output: &mut Vec<DisplayItemWithMode>) {
     if acc.is_empty() {
         return;
     }
     if acc.len() == 1 {
-        output.push(acc.remove(0));
+        output.push(DisplayModeF::Collapsed(acc.remove(0)));
     } else {
         let items = std::mem::take(acc);
-        let meta = aggregate_meta(&items);
-        output.push(DisplayItem::Group { items, meta });
+        output.push(DisplayModeF::Grouped(items));
     }
 }
 
@@ -547,7 +505,7 @@ mod tests {
         let items = events_to_display_items(&events, &raw, &make_opts());
         assert_eq!(items.len(), 1);
         assert!(
-            matches!(&items[0], DisplayItem::UserMessage { content, .. } if content == "hello world")
+            matches!(&items[0], DisplayModeF::Full(DisplayItem::UserMessage { content, .. }) if content == "hello world")
         );
     }
 
@@ -565,13 +523,13 @@ mod tests {
         })];
         let events = parse_events(&raw);
         let items = events_to_display_items(&events, &raw, &make_opts());
-        // Thinking is Grouped (alone, so no Group wrapper), then text is Full
+        // Thinking is Grouped (alone → Collapsed), then text is Full
         assert_eq!(items.len(), 2);
         assert!(
-            matches!(&items[0], DisplayItem::Thinking { text, .. } if text == "let me think...")
+            matches!(&items[0], DisplayModeF::Collapsed(DisplayItem::Thinking { text, .. }) if text == "let me think...")
         );
         assert!(
-            matches!(&items[1], DisplayItem::AssistantMessage { text, .. } if text == "here is my answer")
+            matches!(&items[1], DisplayModeF::Full(DisplayItem::AssistantMessage { text, .. }) if text == "here is my answer")
         );
     }
 
@@ -591,10 +549,10 @@ mod tests {
         })];
         let events = parse_events(&raw);
         let items = events_to_display_items(&events, &raw, &make_opts());
-        // thinking1 + thinking2 + Read (Grouped) = one Group, then text = Full
+        // thinking1 + thinking2 + Read (Grouped) = one Grouped, then text = Full
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], DisplayItem::Group { items, .. } if items.len() == 3));
-        assert!(matches!(&items[1], DisplayItem::AssistantMessage { .. }));
+        assert!(matches!(&items[0], DisplayModeF::Grouped(group) if group.len() == 3));
+        assert!(matches!(&items[1], DisplayModeF::Full(DisplayItem::AssistantMessage { .. })));
     }
 
     #[test]
@@ -611,7 +569,7 @@ mod tests {
         let events = parse_events(&raw);
         let items = events_to_display_items(&events, &raw, &make_opts());
         assert_eq!(items.len(), 1);
-        assert!(matches!(&items[0], DisplayItem::ToolUse { name, .. } if name == "Bash"));
+        assert!(matches!(&items[0], DisplayModeF::Full(DisplayItem::ToolUse { name, .. }) if name == "Bash"));
     }
 
     #[test]
@@ -640,12 +598,12 @@ mod tests {
         let items = events_to_display_items(&events, &raw, &make_opts());
         assert_eq!(items.len(), 1);
         match &items[0] {
-            DisplayItem::ToolUse { name, result, .. } => {
+            DisplayModeF::Full(DisplayItem::ToolUse { name, result, .. }) => {
                 assert_eq!(name, "Bash");
                 assert!(result.is_some());
                 assert_eq!(result.as_ref().unwrap().output.as_deref(), Some("hi\n"));
             }
-            other => panic!("Expected ToolUse, got {:?}", other),
+            other => panic!("Expected Full(ToolUse), got {:?}", other),
         }
     }
 
@@ -664,10 +622,10 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert!(matches!(
             &items[0],
-            DisplayItem::TurnDuration {
+            DisplayModeF::Full(DisplayItem::TurnDuration {
                 duration_ms: 1500,
                 ..
-            }
+            })
         ));
     }
 
@@ -688,7 +646,7 @@ mod tests {
     fn test_custom_display_opts() {
         let mut opts = DisplayOpts::default();
         opts.defaults
-            .insert(DisplayItemDiscriminant::Thinking, DisplayMode::Full);
+            .insert(DisplayItemDiscriminant::Thinking, DisplayModeF::Full(()));
         let raw = vec![json!({
             "type": "assistant",
             "cwd": "/tmp", "isSidechain": false, "sessionId": "s1",
@@ -702,7 +660,7 @@ mod tests {
         let events = parse_events(&raw);
         let items = events_to_display_items(&events, &raw, &opts);
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], DisplayItem::Thinking { .. }));
-        assert!(matches!(&items[1], DisplayItem::Thinking { .. }));
+        assert!(matches!(&items[0], DisplayModeF::Full(DisplayItem::Thinking { .. })));
+        assert!(matches!(&items[1], DisplayModeF::Full(DisplayItem::Thinking { .. })));
     }
 }

@@ -3,10 +3,9 @@ use std::collections::{HashMap, HashSet};
 use dioxus::prelude::*;
 use serde_json::Value;
 
-use ccmux_core::display::{DisplayItem, ItemMeta};
+use ccmux_core::display::DisplayItem;
 
-use super::message::MessageBlock;
-use super::tool_use::ToolUseBlock;
+use crate::components::blocks::{display_item::DisplayItemView, message::MessageBlock};
 
 /// Extract a contextual extra label string from a tool's input data.
 pub fn tool_extra_label(name: &str, input: &Value) -> Option<String> {
@@ -51,7 +50,7 @@ fn item_kind_name(item: &DisplayItem) -> Option<String> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct SummaryEntry {
     label: String,
     count: usize,
@@ -82,42 +81,19 @@ fn build_summary(items: &[DisplayItem]) -> Vec<SummaryEntry> {
 }
 
 #[component]
-pub fn GroupBlock(items: Vec<DisplayItem>, meta: ItemMeta) -> Element {
-    let mut open = use_signal(|| false);
-
-    let summary = build_summary(&items);
-
+fn GroupSummary(summary: Vec<SummaryEntry>) -> Element {
     rsx! {
-        div { class: "group-block",
-            // Summary / toggle row
-            div {
-                class: "group-summary",
-                onclick: move |_| open.toggle(),
-                span { class: "group-caret",
-                    if open() { "\u{25BE}" } else { "\u{25B8}" }
+        div {
+            class: "group-summary",
+            // Summary items with · separators
+            for (i, entry) in summary.iter().enumerate() {
+                if i > 0 {
+                    span { class: "step-dot", "\u{00B7}" }
                 }
-                // Summary items with · separators
-                for (i, entry) in summary.iter().enumerate() {
-                    if i > 0 {
-                        span { class: "step-dot", "\u{00B7}" }
-                    }
-                    span { class: "group-summary-item",
-                        "{entry.label}"
-                        if entry.count > 1 {
-                            span { class: "group-count", "\u{00D7}{entry.count}" }
-                        }
-                    }
-                }
-                // Aggregate meta on right
-                if let Some(tokens) = meta.tokens {
-                    span { class: "group-meta-tokens", "{tokens} tok" }
-                }
-            }
-            // Expanded children
-            if open() {
-                div { class: "group-expanded",
-                    for (i, item) in items.into_iter().enumerate() {
-                        GroupChild { key: "{i}", item }
+                span { class: "group-summary-item",
+                    "{entry.label}"
+                    if entry.count > 1 {
+                        span { class: "group-count", "\u{00D7}{entry.count}" }
                     }
                 }
             }
@@ -125,33 +101,21 @@ pub fn GroupBlock(items: Vec<DisplayItem>, meta: ItemMeta) -> Element {
     }
 }
 
-/// Renders a single child item in minimal mode within a group.
 #[component]
-fn GroupChild(item: DisplayItem) -> Element {
-    match item {
-        DisplayItem::Thinking { text, raw, .. } => rsx! {
-            MessageBlock {
-                label: "Thinking",
-                border_class: "border-thinking",
-                minimal: true,
-                default_open: false,
-                raw,
-                pre { class: "thinking-text", "{text}" }
-            }
-        },
-        DisplayItem::ToolUse {
-            name,
-            input,
-            result,
-            meta,
-            raw,
-            ..
-        } => {
-            rsx! {
-                ToolUseBlock { name, input, result, meta, raw, minimal: true }
+pub fn GroupBlock(items: Vec<DisplayItem>) -> Element {
+    let summary = build_summary(&items);
+
+    rsx! {
+        MessageBlock {
+            label: rsx!{ GroupSummary { summary } },
+            role: "group",
+            minimal: true,
+            div {
+                class: "group-expanded",
+                for (i, item) in items.into_iter().enumerate() {
+                    DisplayItemView {  key: "{i}", item, minimal: true }
+                }
             }
         }
-        // Fallback: nothing to render
-        _ => rsx! {},
     }
 }
