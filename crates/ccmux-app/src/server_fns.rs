@@ -27,6 +27,7 @@ pub struct SessionResponse {
     pub items: Vec<DisplayItem>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn base_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     std::path::PathBuf::from(home)
@@ -34,6 +35,7 @@ fn base_path() -> std::path::PathBuf {
         .join("projects")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SessionMeta {
     fn from_info(info: &ccmux_core::session::loader::SessionInfo) -> Self {
         Self {

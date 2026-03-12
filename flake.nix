@@ -29,6 +29,7 @@
         rustToolchainFor = p:
           (p.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml).override {
             extensions = ["rust-src"];
+            targets = ["wasm32-unknown-unknown"];
           };
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchainFor;
         src = craneLib.cleanCargoSource ./.;
