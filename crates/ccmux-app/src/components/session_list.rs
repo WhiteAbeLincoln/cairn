@@ -34,13 +34,13 @@ fn ProjectGroup(project: String, sessions: Vec<SessionMeta>) -> Element {
 
     rsx! {
         div { class: "project-group",
-            div {
+            button {
                 class: "project-header",
                 onclick: move |_| collapsed.toggle(),
                 span { class: "project-toggle",
                     if collapsed() { "\u{25B8}" } else { "\u{25BE}" }
                 }
-                h2 { class: "project-name", "{project}" }
+                span { class: "project-name", "{project}" }
                 span { class: "session-count-badge", "{count}" }
             }
             if !collapsed() {

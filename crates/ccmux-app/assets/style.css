@@ -66,6 +66,8 @@ body {
 }
 
 .project-header {
+    all: unset;
+    box-sizing: border-box;
     width: 100%;
     display: flex;
     align-items: center;
@@ -706,10 +708,62 @@ body {
 .group-block {
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 0.5rem;
+    overflow: hidden;
+}
+
+.group-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.25rem 0.5rem;
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    opacity: 0.35;
+    user-select: none;
+    min-width: 0;
+}
+
+.group-summary:hover {
+    opacity: 0.7;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.group-caret {
+    font-size: 0.65rem;
+    width: 0.8em;
+    flex-shrink: 0;
+}
+
+.group-summary-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    white-space: nowrap;
+}
+
+.step-dot {
+    opacity: 0.5;
+    flex-shrink: 0;
+}
+
+.group-count {
+    font-size: 0.7em;
+    opacity: 0.65;
+    margin-left: 0.1em;
+}
+
+.group-meta-tokens {
+    margin-left: auto;
+    opacity: 0.5;
+    font-size: 0.7rem;
+    flex-shrink: 0;
+}
+
+.group-expanded {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    padding: 0.25rem 0;
 }
 
 /* Turn Duration */

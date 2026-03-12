@@ -2,6 +2,7 @@ use dioxus::prelude::*;
 
 use ccmux_core::display::DisplayItem;
 
+use super::group::GroupBlock;
 use super::message::MessageBlock;
 use super::prose::Prose;
 use super::task_list::TaskListBlock;
@@ -64,12 +65,8 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
                 Prose { content }
             }
         },
-        DisplayItem::Group { items, .. } => rsx! {
-            div { class: "group-block",
-                for (i, sub_item) in items.into_iter().enumerate() {
-                    DisplayItemView { key: "{i}", item: sub_item }
-                }
-            }
+        DisplayItem::Group { items, meta, .. } => rsx! {
+            GroupBlock { items, meta }
         },
         DisplayItem::Other { .. } => rsx! {
             div { class: "other-block", "(other event)" }
