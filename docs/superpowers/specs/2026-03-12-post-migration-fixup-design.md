@@ -115,13 +115,15 @@ Replace the current minimal `MessageBlock` with a component supporting two rende
 
 ### 1.4 Frontend: Per-Block Raw JSON Toggle
 
-- `{}` button in header toggles a `<pre>` with pretty-printed JSON from the `raw: Value` field
+- `{}` button on each block header toggles a `<pre>` with pretty-printed JSON from the `raw: Value` field
 - Raw JSON renders below the normal content (not replacing it)
-- Toggle state is per-block (local signal)
+- Toggle state is per-block (local signal), but controlled by a shared "raw mode" signal (see below)
 - On wide viewports: `{}` button visible in header action area
 - On narrow viewports: "Raw JSON" item in kebab `⋮` menu
 
-**Old source reference:** `5e14bad:web/src/components/SessionView.tsx` (raw toggle implementation on each block).
+**Bulk raw toggle ("Raw" button):** A `Raw` button in the session view header (next to the back button / session title) toggles all blocks to raw mode simultaneously. This sets a shared signal that overrides each block's local raw state. Clicking `Raw` again turns all raw views off. Individual per-block `{}` toggles still work independently — they flip the local override for that block. This matches the old app's `Raw` button behavior.
+
+**Old source reference:** `5e14bad:web/src/components/SessionView.tsx` (Raw button in header, raw toggle propagation to all blocks).
 
 ### 1.5 Frontend: Group Block
 
