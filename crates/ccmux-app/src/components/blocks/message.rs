@@ -49,9 +49,37 @@ pub fn MessageBlock(
                     if let Some(extra) = &extra_label {
                         span { class: "message-extra-label", "{extra}" }
                     }
+                    if open() && has_raw {
+                        span { class: "message-header-spacer" }
+                        button {
+                            class: if show_raw { "message-raw-toggle message-raw-toggle-active" } else { "message-raw-toggle" },
+                            title: "Toggle raw JSON",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                raw_open.toggle();
+                            },
+                            "{{}}"
+                        }
+                    }
                 }
                 if open() {
-                    div { class: "message-body", {children} }
+                    div { class: "message-body",
+                        {children}
+                        if show_raw {
+                            div { class: "raw-inline",
+                                if let Some(ref v) = raw {
+                                    if result_raw.is_some() {
+                                        div { class: "raw-inline-label", "tool_use" }
+                                    }
+                                    JsonTree { value: v.clone(), default_expand_depth: 1 }
+                                }
+                                if let Some(ref rv) = result_raw {
+                                    div { class: "raw-inline-label", "tool_result" }
+                                    JsonTree { value: rv.clone(), default_expand_depth: 1 }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
