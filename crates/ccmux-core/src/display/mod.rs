@@ -6,20 +6,34 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Per-item metadata extracted from raw events.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ItemMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+}
+
 /// A display item sent to the client. The client never sees raw Event types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum DisplayItem {
     UserMessage {
         content: String,
+        meta: ItemMeta,
         raw: Value,
     },
     AssistantMessage {
         text: String,
+        meta: ItemMeta,
         raw: Value,
     },
     Thinking {
         text: String,
+        meta: ItemMeta,
         raw: Value,
     },
     ToolUse {
@@ -27,23 +41,28 @@ pub enum DisplayItem {
         tool_use_id: String,
         input: Value,
         result: Option<ToolResultData>,
+        meta: ItemMeta,
         raw: Value,
     },
     TaskList {
         tasks: Vec<TaskItem>,
+        meta: ItemMeta,
         raw: Value,
     },
     TurnDuration {
         duration_ms: u64,
+        meta: ItemMeta,
         raw: Value,
     },
     Compaction {
         content: String,
+        meta: ItemMeta,
         raw: Value,
     },
     /// Heterogeneous group of items with Grouped display mode.
     Group {
         items: Vec<DisplayItem>,
+        meta: ItemMeta,
     },
     Other {
         raw: Value,

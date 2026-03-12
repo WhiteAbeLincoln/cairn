@@ -46,7 +46,7 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
                 Prose { content }
             }
         },
-        DisplayItem::Group { items } => rsx! {
+        DisplayItem::Group { items, .. } => rsx! {
             div { class: "group-block",
                 for (i, sub_item) in items.into_iter().enumerate() {
                     DisplayItemView { key: "{i}", item: sub_item }

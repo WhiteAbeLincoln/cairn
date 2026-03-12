@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde_json::Value;
 
 use super::{
-    DisplayItem, DisplayItemDiscriminant, DisplayMode, DisplayOpts, TaskItem, TaskStatus,
+    DisplayItem, DisplayItemDiscriminant, DisplayMode, DisplayOpts, ItemMeta, TaskItem, TaskStatus,
     ToolResultData,
 };
 use crate::events::Event;
@@ -146,6 +146,8 @@ fn user_event_items(
     raw: &Value,
     opts: &DisplayOpts,
 ) -> Vec<(DisplayItem, DisplayMode)> {
+    let uuid = Some(data.core.uuid.clone());
+
     // Compaction check
     if data.is_compact_summary == Some(true) {
         let content = data
@@ -158,6 +160,10 @@ fn user_event_items(
         return vec![(
             DisplayItem::Compaction {
                 content,
+                meta: ItemMeta {
+                    uuid,
+                    ..Default::default()
+                },
                 raw: raw.clone(),
             },
             mode,
@@ -178,6 +184,10 @@ fn user_event_items(
             return vec![(
                 DisplayItem::UserMessage {
                     content: text.to_string(),
+                    meta: ItemMeta {
+                        uuid,
+                        ..Default::default()
+                    },
                     raw: raw.clone(),
                 },
                 mode,
@@ -220,14 +230,30 @@ fn assistant_event_items(
     tool_results: &HashMap<String, ToolResultData>,
 ) -> Vec<(DisplayItem, DisplayMode)> {
     // Skip synthetic messages
-    let model = data
+    let model_str = data
         .message
         .get("model")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    if model == "<synthetic>" {
+    if model_str == "<synthetic>" {
         return vec![];
     }
+
+    let model = if model_str.is_empty() {
+        None
+    } else {
+        Some(model_str.to_string())
+    };
+    let tokens = data
+        .message
+        .pointer("/usage/output_tokens")
+        .and_then(|v| v.as_u64());
+    let uuid = Some(data.core.uuid.clone());
+    let meta = ItemMeta {
+        uuid,
+        model,
+        tokens,
+    };
 
     let content = data.message.get("content").and_then(|v| v.as_array());
     let Some(items) = content else {
@@ -246,6 +272,7 @@ fn assistant_event_items(
                 result.push((
                     DisplayItem::AssistantMessage {
                         text: text.to_string(),
+                        meta: meta.clone(),
                         raw: raw.clone(),
                     },
                     mode,
@@ -257,6 +284,7 @@ fn assistant_event_items(
                 result.push((
                     DisplayItem::Thinking {
                         text: text.to_string(),
+                        meta: meta.clone(),
                         raw: raw.clone(),
                     },
                     mode,
@@ -283,6 +311,7 @@ fn assistant_event_items(
                     result.push((
                         DisplayItem::TaskList {
                             tasks,
+                            meta: meta.clone(),
                             raw: raw.clone(),
                         },
                         mode,
@@ -295,6 +324,7 @@ fn assistant_event_items(
                             tool_use_id: id,
                             input,
                             result: tool_result,
+                            meta: meta.clone(),
                             raw: raw.clone(),
                         },
                         mode,
@@ -316,12 +346,18 @@ fn system_event_items(
     raw: &Value,
     opts: &DisplayOpts,
 ) -> Vec<(DisplayItem, DisplayMode)> {
+    let uuid = Some(data.core.uuid.clone());
+
     if data.subtype.as_deref() == Some("turn_duration") {
         let duration_ms = data.duration_ms.unwrap_or(0) as u64;
         let mode = mode_for(DisplayItemDiscriminant::TurnDuration, None, opts);
         return vec![(
             DisplayItem::TurnDuration {
                 duration_ms,
+                meta: ItemMeta {
+                    uuid,
+                    ..Default::default()
+                },
                 raw: raw.clone(),
             },
             mode,
@@ -392,6 +428,44 @@ fn extract_task_items(tool_name: &str, tool_use_id: &str, input: &Value) -> Vec<
     }
 }
 
+/// Extract the ItemMeta from a DisplayItem (for aggregation).
+fn item_meta(item: &DisplayItem) -> Option<&ItemMeta> {
+    match item {
+        DisplayItem::UserMessage { meta, .. }
+        | DisplayItem::AssistantMessage { meta, .. }
+        | DisplayItem::Thinking { meta, .. }
+        | DisplayItem::ToolUse { meta, .. }
+        | DisplayItem::TaskList { meta, .. }
+        | DisplayItem::TurnDuration { meta, .. }
+        | DisplayItem::Compaction { meta, .. }
+        | DisplayItem::Group { meta, .. } => Some(meta),
+        DisplayItem::Other { .. } => None,
+    }
+}
+
+/// Compute aggregate meta for a Group: sum tokens, model from first child with a model.
+fn aggregate_meta(items: &[DisplayItem]) -> ItemMeta {
+    let mut total_tokens: Option<u64> = None;
+    let mut model: Option<String> = None;
+
+    for item in items {
+        if let Some(m) = item_meta(item) {
+            if let Some(t) = m.tokens {
+                *total_tokens.get_or_insert(0) += t;
+            }
+            if model.is_none() {
+                model = m.model.clone();
+            }
+        }
+    }
+
+    ItemMeta {
+        uuid: None,
+        model,
+        tokens: total_tokens,
+    }
+}
+
 /// Flush grouped accumulator: single item unwrapped, multiple items wrapped in Group.
 fn flush_grouped(acc: &mut Vec<DisplayItem>, output: &mut Vec<DisplayItem>) {
     if acc.is_empty() {
@@ -400,9 +474,9 @@ fn flush_grouped(acc: &mut Vec<DisplayItem>, output: &mut Vec<DisplayItem>) {
     if acc.len() == 1 {
         output.push(acc.remove(0));
     } else {
-        output.push(DisplayItem::Group {
-            items: std::mem::take(acc),
-        });
+        let items = std::mem::take(acc);
+        let meta = aggregate_meta(&items);
+        output.push(DisplayItem::Group { items, meta });
     }
 }
 
@@ -414,16 +488,33 @@ fn flush_tasks(acc: &mut Vec<(DisplayItem, Value)>, output: &mut Vec<DisplayItem
 
     let mut all_tasks = Vec::new();
     let mut last_raw = Value::Null;
+    let mut meta = ItemMeta::default();
 
     for (item, raw) in acc.drain(..) {
         last_raw = raw;
-        if let DisplayItem::TaskList { tasks, .. } = item {
+        if let DisplayItem::TaskList {
+            tasks,
+            meta: item_meta,
+            ..
+        } = item
+        {
             all_tasks.extend(tasks);
+            // Use meta from first item with a model; accumulate tokens
+            if meta.model.is_none() {
+                meta.model = item_meta.model;
+            }
+            if let Some(t) = item_meta.tokens {
+                *meta.tokens.get_or_insert(0) += t;
+            }
+            if meta.uuid.is_none() {
+                meta.uuid = item_meta.uuid;
+            }
         }
     }
 
     output.push(DisplayItem::TaskList {
         tasks: all_tasks,
+        meta,
         raw: last_raw,
     });
 }
@@ -497,7 +588,7 @@ mod tests {
         let items = events_to_display_items(&events, &raw, &make_opts());
         // thinking1 + thinking2 + Read (Grouped) = one Group, then text = Full
         assert_eq!(items.len(), 2);
-        assert!(matches!(&items[0], DisplayItem::Group { items } if items.len() == 3));
+        assert!(matches!(&items[0], DisplayItem::Group { items, .. } if items.len() == 3));
         assert!(matches!(&items[1], DisplayItem::AssistantMessage { .. }));
     }
 
