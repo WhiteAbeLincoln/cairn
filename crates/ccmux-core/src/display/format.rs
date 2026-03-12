@@ -25,10 +25,10 @@ pub fn parse_grep_output(output: &str) -> Vec<GrepGroup> {
 
     for line in output.lines() {
         if line == "--" {
-            if let Some(g) = current.take() {
-                if !g.lines.is_empty() {
-                    groups.push(g);
-                }
+            if let Some(g) = current.take()
+                && !g.lines.is_empty()
+            {
+                groups.push(g);
             }
             continue;
         }
@@ -50,10 +50,10 @@ pub fn parse_grep_output(output: &str) -> Vec<GrepGroup> {
         };
 
         if need_new {
-            if let Some(g) = current.take() {
-                if !g.lines.is_empty() {
-                    groups.push(g);
-                }
+            if let Some(g) = current.take()
+                && !g.lines.is_empty()
+            {
+                groups.push(g);
             }
             current = Some(GrepGroup {
                 file: file.clone(),
@@ -71,10 +71,10 @@ pub fn parse_grep_output(output: &str) -> Vec<GrepGroup> {
         }
     }
 
-    if let Some(g) = current {
-        if !g.lines.is_empty() {
-            groups.push(g);
-        }
+    if let Some(g) = current
+        && !g.lines.is_empty()
+    {
+        groups.push(g);
     }
 
     groups
@@ -152,12 +152,13 @@ fn find_separator(line: &str, sep: u8) -> Option<(usize, u32, usize)> {
         while j < bytes.len() && bytes[j].is_ascii_digit() {
             j += 1;
         }
-        if j > sep_idx + 1 && j < bytes.len() && bytes[j] == sep {
-            if let Ok(line_num) = line[sep_idx + 1..j].parse::<u32>() {
-                if line_num > 0 {
-                    return Some((sep_idx, line_num, j + 1));
-                }
-            }
+        if j > sep_idx + 1
+            && j < bytes.len()
+            && bytes[j] == sep
+            && let Ok(line_num) = line[sep_idx + 1..j].parse::<u32>()
+            && line_num > 0
+        {
+            return Some((sep_idx, line_num, j + 1));
         }
         i = sep_idx + 1;
     }

@@ -917,6 +917,120 @@ body {
     border-radius: 4px;
 }
 
+/* Grep */
+.grep-results {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding-top: 0.25rem;
+}
+
+.grep-group {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.grep-file-header {
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--accent);
+    padding: 0.25rem 0.5rem;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.grep-code-block {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.5;
+}
+
+.grep-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.1rem 0.5rem;
+}
+
+.grep-match {
+    background: color-mix(in srgb, var(--yellow) 8%, transparent);
+}
+
+.grep-linenum {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    min-width: 2.5rem;
+    text-align: right;
+    flex-shrink: 0;
+    user-select: none;
+    opacity: 0.6;
+}
+
+.grep-content {
+    white-space: pre-wrap;
+    word-break: break-all;
+    flex: 1;
+    min-width: 0;
+}
+
+/* Write */
+.write-file-header {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+    padding: 0.25rem 0;
+    margin-bottom: 0.25rem;
+    overflow-x: auto;
+    white-space: nowrap;
+}
+
+.write-content {
+    margin: 0;
+    padding: 0.5rem;
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    overflow-x: auto;
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.write-content code {
+    font-family: var(--font-mono);
+}
+
+/* Glob */
+.glob-search-path {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    padding: 0.1rem 0;
+    margin-bottom: 0.25rem;
+}
+
+.glob-search-path-label {
+    opacity: 0.6;
+}
+
+.glob-results {
+    margin: 0;
+    padding: 0.5rem;
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    overflow-x: auto;
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 /* Loading / Error states */
 .loading {
     text-align: center;

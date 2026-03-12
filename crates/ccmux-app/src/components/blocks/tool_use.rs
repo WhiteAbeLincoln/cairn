@@ -42,6 +42,15 @@ pub fn ToolUseBlock(
                 "Read" => rsx! {
                     tools::read::ReadView { input, result }
                 },
+                "Grep" => rsx! {
+                    tools::grep::GrepView { input, result }
+                },
+                "Write" => rsx! {
+                    tools::write::WriteView { input, result }
+                },
+                "Glob" => rsx! {
+                    tools::glob::GlobView { input, result }
+                },
                 _ => rsx! {
                     GenericToolView { input, result }
                 },

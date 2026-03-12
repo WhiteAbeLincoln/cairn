@@ -8,6 +8,7 @@ enum DiffLineType {
     Add,
 }
 
+#[derive(Clone, PartialEq)]
 struct DiffLine {
     line_type: DiffLineType,
     text: String,
