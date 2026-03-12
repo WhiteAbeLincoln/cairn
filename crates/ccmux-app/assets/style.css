@@ -15,6 +15,9 @@
     --cyan: #3a8a9a;
     --red: #aa4a4a;
     --font-mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+    --border-user: var(--blue);
+    --border-assistant: var(--green);
+    --border-group: var(--blue);
 }
 
 /* Dark theme */
@@ -34,6 +37,9 @@
     --cyan: #6ac8d8;
     --red: #cc6a6a;
     --font-mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+    --border-user: var(--blue);
+    --border-assistant: var(--green);
+    --border-group: var(--blue);
 }
 
 /* System mode: follow OS preference when no data-theme set */
@@ -54,6 +60,9 @@
         --cyan: #6ac8d8;
         --red: #cc6a6a;
         --font-mono: "SF Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+        --border-user: var(--blue);
+        --border-assistant: var(--green);
+        --border-group: var(--blue);
     }
 }
 
@@ -154,7 +163,7 @@ body {
 }
 
 .project-name {
-    font-family: monospace;
+    font-family: var(--font-mono);
     font-size: 0.85rem;
     font-weight: 500;
     flex: 1;
@@ -283,11 +292,11 @@ body {
 }
 
 .border-user {
-    border-left-color: var(--blue);
+    border-left-color: var(--border-user);
 }
 
 .border-assistant {
-    border-left-color: var(--green);
+    border-left-color: var(--border-assistant);
 }
 
 .border-compaction {
@@ -311,7 +320,6 @@ body {
 .message-label {
     font-size: 0.8rem;
     font-weight: 600;
-    text-transform: uppercase;
     letter-spacing: 0.04em;
     color: var(--text-muted);
     flex-shrink: 0;
@@ -695,7 +703,9 @@ body {
 /* Group */
 .group-block {
     border: 1px solid var(--border);
-    border-radius: 6px;
+    border-left: 3px solid var(--border-group);
+    border-radius: 4px;
+    background: var(--surface);
     overflow: hidden;
 }
 
@@ -1356,7 +1366,7 @@ body {
     font-size: 0.75rem;
 }
 
-/* Shiki syntax highlighting */
+/* Shiki syntax highlighting (legacy) */
 .shiki span {
     color: var(--shiki-dark);
 }
@@ -1369,4 +1379,22 @@ body {
     :root:not([data-theme]) .shiki span {
         color: var(--shiki-light);
     }
+}
+
+/* syntect syntax highlighting */
+.syntect-highlight {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 0.75rem 0;
+    border: 1px solid var(--border);
+}
+
+.syntect-highlight code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
+    font-family: inherit;
 }
