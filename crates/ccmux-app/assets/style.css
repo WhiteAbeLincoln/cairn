@@ -582,6 +582,40 @@ body {
     color: var(--text);
 }
 
+.jt-copy {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 0 0.2rem;
+    opacity: 0;
+    transition: opacity 0.15s;
+    vertical-align: baseline;
+}
+
+.jt-entry:hover > .jt-copy,
+.jt-bracket > .jt-copy,
+.json-tree > .jt-copy {
+    opacity: 0;
+}
+
+.jt-entry:hover > .jt-copy,
+.jt-bracket:hover > .jt-copy,
+*:hover > .jt-copy {
+    opacity: 0.5;
+}
+
+.jt-copy:hover {
+    opacity: 1 !important;
+    color: var(--text);
+}
+
+.jt-copy-ok {
+    opacity: 1 !important;
+    color: var(--green);
+}
+
 .message-body {
     padding: 0.75rem;
 }

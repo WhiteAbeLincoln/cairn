@@ -17,16 +17,32 @@ pub fn JsonTree(value: Value, #[props(default = 1)] default_expand_depth: usize)
 #[component]
 fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element {
     match &value {
-        Value::Null => rsx! { span { class: "jt-null", "null" } },
-        Value::Bool(b) => rsx! { span { class: "jt-bool", "{b}" } },
-        Value::Number(n) => rsx! { span { class: "jt-number", "{n}" } },
-        Value::String(s) => rsx! { JsonString { value: s.clone() } },
+        Value::Null => rsx! {
+            CopyButton { value: value.clone() }
+            span { class: "jt-null", "null" }
+        },
+        Value::Bool(b) => rsx! {
+            CopyButton { value: value.clone() }
+            span { class: "jt-bool", "{b}" }
+        },
+        Value::Number(n) => rsx! {
+            CopyButton { value: value.clone() }
+            span { class: "jt-number", "{n}" }
+        },
+        Value::String(s) => rsx! {
+            CopyButton { value: value.clone() }
+            JsonString { value: s.clone() }
+        },
         Value::Array(arr) => {
             if arr.is_empty() {
-                return rsx! { span { class: "jt-bracket", "[]" } };
+                return rsx! {
+                    CopyButton { value: value.clone() }
+                    span { class: "jt-bracket", "[]" }
+                };
             }
             rsx! {
                 JsonCollection {
+                    raw_value: value.clone(),
                     entries: arr.iter().enumerate().map(|(i, v)| CollectionEntry {
                         key: CollectionKey::Index(i),
                         value: v.clone(),
@@ -41,12 +57,16 @@ fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element 
         }
         Value::Object(obj) => {
             if obj.is_empty() {
-                return rsx! { span { class: "jt-bracket", "{{}}" } };
+                return rsx! {
+                    CopyButton { value: value.clone() }
+                    span { class: "jt-bracket", "{{}}" }
+                };
             }
             let open = "{".to_string();
             let close = "}".to_string();
             rsx! {
                 JsonCollection {
+                    raw_value: value.clone(),
                     entries: obj.iter().map(|(k, v)| CollectionEntry {
                         key: CollectionKey::Key(k.clone()),
                         value: v.clone(),
@@ -58,6 +78,40 @@ fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element 
                     default_expand_depth,
                 }
             }
+        }
+    }
+}
+
+/// Copy button that copies the JSON value to clipboard.
+/// Shows ⧉ by default, briefly shows ✓ after copying.
+#[component]
+fn CopyButton(value: Value) -> Element {
+    let copied = use_signal(|| false);
+
+    let copy_text = match &value {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    };
+
+    rsx! {
+        button {
+            class: if copied() { "jt-copy jt-copy-ok" } else { "jt-copy" },
+            title: "Copy value",
+            onclick: move |e| {
+                e.stop_propagation();
+                let text = copy_text.clone();
+                let mut copied = copied;
+                spawn(async move {
+                    let js = format!(
+                        "await navigator.clipboard.writeText({}); await new Promise(r => setTimeout(r, 1500))",
+                        serde_json::to_string(&text).unwrap_or_default()
+                    );
+                    copied.set(true);
+                    let _ = document::eval(&js).await;
+                    copied.set(false);
+                });
+            },
+            if copied() { "\u{2713}" } else { "\u{29C9}" }
         }
     }
 }
@@ -76,6 +130,7 @@ struct CollectionEntry {
 
 #[component]
 fn JsonCollection(
+    raw_value: Value,
     entries: Vec<CollectionEntry>,
     open_char: String,
     close_char: String,
@@ -88,6 +143,7 @@ fn JsonCollection(
     if expanded() {
         rsx! {
             span { class: "jt-bracket",
+                CopyButton { value: raw_value }
                 button {
                     class: "jt-toggle",
                     onclick: move |_| expanded.set(false),
@@ -122,6 +178,7 @@ fn JsonCollection(
     } else {
         rsx! {
             span { class: "jt-bracket",
+                CopyButton { value: raw_value }
                 button {
                     class: "jt-toggle",
                     onclick: move |_| expanded.set(true),
