@@ -1,0 +1,9 @@
+[application]
+name = "ccmux"
+default_platform = "fullstack"
+
+[web.app]
+title = "ccmux"
+
+[web.resource.dev]
+style = []

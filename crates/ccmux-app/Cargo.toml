@@ -1,0 +1,24 @@
+[package]
+name = "ccmux-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ccmux-core = { path = "../ccmux-core" }
+dioxus = { version = "0.7", features = ["fullstack", "router"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pulldown-cmark = "0.12"
+futures = "0.3"
+tracing = "0.1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+notify = "7"
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = ["web", "server"]
+web = ["dioxus/web"]
+server = ["dioxus/server"]

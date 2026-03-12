@@ -1,25 +1,15 @@
 # ccmux
 
-Session log viewer for Claude Code. Rust/Axum GraphQL backend, SolidJS frontend.
+Session log viewer for Claude Code. Rust/Dioxus fullstack app.
 
 ## Development
 
 ```
-cargo run          # backend on :3001
-cd web && bun dev  # frontend on :5173
-cd web && bun run check # typecheck frontend
+cd crates/ccmux-app && dx serve   # fullstack dev server
 ```
 
-Run `cargo clippy` and `cargo fmt` to lint and format Rust code after every change.
+Run `cargo clippy --workspace` and `cargo fmt --all` to lint and format after every change.
 Fix any warnings or errors before committing.
-
-## GraphQL Schema & TypeScript Codegen
-
-Rust types are the source of truth. After changing GraphQL types in `src/graphql/types.rs`, run from the project root:
-
-```bash
-cargo run --bin export_schema > schema.graphql && bun run --cwd web codegen
-```
 
 ## Browser Testing with Rodney
 
