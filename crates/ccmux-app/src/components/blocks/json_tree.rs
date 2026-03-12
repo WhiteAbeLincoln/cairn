@@ -27,7 +27,6 @@ fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element 
             }
             rsx! {
                 JsonCollection {
-                    raw_value: value.clone(),
                     entries: arr.iter().enumerate().map(|(i, v)| CollectionEntry {
                         key: CollectionKey::Index(i),
                         value: v.clone(),
@@ -48,7 +47,6 @@ fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element 
             let close = "}".to_string();
             rsx! {
                 JsonCollection {
-                    raw_value: value.clone(),
                     entries: obj.iter().map(|(k, v)| CollectionEntry {
                         key: CollectionKey::Key(k.clone()),
                         value: v.clone(),
@@ -112,7 +110,6 @@ struct CollectionEntry {
 
 #[component]
 fn JsonCollection(
-    raw_value: Value,
     entries: Vec<CollectionEntry>,
     open_char: String,
     close_char: String,
@@ -156,7 +153,6 @@ fn JsonCollection(
                 }
             }
             span { class: "jt-bracket", "{close_char}" }
-            CopyButton { value: raw_value }
         }
     } else {
         rsx! {
@@ -174,7 +170,6 @@ fn JsonCollection(
                 "{count_label}"
             }
             span { class: "jt-bracket", "{close_char}" }
-            CopyButton { value: raw_value }
         }
     }
 }
