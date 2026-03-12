@@ -18,9 +18,9 @@ pub fn ToolUseBlock(
 ) -> Element {
     let extra = tool_extra_label(&name, &input);
 
-    // Bash and AskUserQuestion: default open, collapsible
-    // All other tools: default closed, collapsible
-    let default_open = matches!(name.as_str(), "Bash" | "AskUserQuestion");
+    // Standalone (full mode) tools are open; grouped (minimal) tools are closed.
+    // The pipeline's DisplayOpts determines which tools appear standalone vs grouped.
+    let default_open = !minimal;
 
     let result_raw = result.as_ref().map(|r| r.raw.clone());
 
