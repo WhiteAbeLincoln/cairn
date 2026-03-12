@@ -17,28 +17,13 @@ pub fn JsonTree(value: Value, #[props(default = 1)] default_expand_depth: usize)
 #[component]
 fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element {
     match &value {
-        Value::Null => rsx! {
-            span { class: "jt-null", "null" }
-            CopyButton { value: value.clone() }
-        },
-        Value::Bool(b) => rsx! {
-            span { class: "jt-bool", "{b}" }
-            CopyButton { value: value.clone() }
-        },
-        Value::Number(n) => rsx! {
-            span { class: "jt-number", "{n}" }
-            CopyButton { value: value.clone() }
-        },
-        Value::String(s) => rsx! {
-            JsonString { value: s.clone() }
-            CopyButton { value: value.clone() }
-        },
+        Value::Null => rsx! { span { class: "jt-null", "null" } },
+        Value::Bool(b) => rsx! { span { class: "jt-bool", "{b}" } },
+        Value::Number(n) => rsx! { span { class: "jt-number", "{n}" } },
+        Value::String(s) => rsx! { JsonString { value: s.clone() } },
         Value::Array(arr) => {
             if arr.is_empty() {
-                return rsx! {
-                    span { class: "jt-bracket", "[]" }
-                    CopyButton { value: value.clone() }
-                };
+                return rsx! { span { class: "jt-bracket", "[]" } };
             }
             rsx! {
                 JsonCollection {
@@ -57,10 +42,7 @@ fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element 
         }
         Value::Object(obj) => {
             if obj.is_empty() {
-                return rsx! {
-                    span { class: "jt-bracket", "{{}}" }
-                    CopyButton { value: value.clone() }
-                };
+                return rsx! { span { class: "jt-bracket", "{{}}" } };
             }
             let open = "{".to_string();
             let close = "}".to_string();
@@ -169,6 +151,7 @@ fn JsonCollection(
                         if i < entries.len() - 1 {
                             span { class: "jt-comma", "," }
                         }
+                        CopyButton { value: entry.value.clone() }
                     }
                 }
             }
