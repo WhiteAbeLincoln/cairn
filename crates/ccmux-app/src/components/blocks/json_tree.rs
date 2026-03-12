@@ -18,26 +18,26 @@ pub fn JsonTree(value: Value, #[props(default = 1)] default_expand_depth: usize)
 fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element {
     match &value {
         Value::Null => rsx! {
-            CopyButton { value: value.clone() }
             span { class: "jt-null", "null" }
+            CopyButton { value: value.clone() }
         },
         Value::Bool(b) => rsx! {
-            CopyButton { value: value.clone() }
             span { class: "jt-bool", "{b}" }
+            CopyButton { value: value.clone() }
         },
         Value::Number(n) => rsx! {
-            CopyButton { value: value.clone() }
             span { class: "jt-number", "{n}" }
+            CopyButton { value: value.clone() }
         },
         Value::String(s) => rsx! {
-            CopyButton { value: value.clone() }
             JsonString { value: s.clone() }
+            CopyButton { value: value.clone() }
         },
         Value::Array(arr) => {
             if arr.is_empty() {
                 return rsx! {
-                    CopyButton { value: value.clone() }
                     span { class: "jt-bracket", "[]" }
+                    CopyButton { value: value.clone() }
                 };
             }
             rsx! {
@@ -58,8 +58,8 @@ fn JsonNode(value: Value, depth: usize, default_expand_depth: usize) -> Element 
         Value::Object(obj) => {
             if obj.is_empty() {
                 return rsx! {
-                    CopyButton { value: value.clone() }
                     span { class: "jt-bracket", "{{}}" }
+                    CopyButton { value: value.clone() }
                 };
             }
             let open = "{".to_string();
@@ -143,7 +143,6 @@ fn JsonCollection(
     if expanded() {
         rsx! {
             span { class: "jt-bracket",
-                CopyButton { value: raw_value }
                 button {
                     class: "jt-toggle",
                     onclick: move |_| expanded.set(false),
@@ -174,11 +173,11 @@ fn JsonCollection(
                 }
             }
             span { class: "jt-bracket", "{close_char}" }
+            CopyButton { value: raw_value }
         }
     } else {
         rsx! {
             span { class: "jt-bracket",
-                CopyButton { value: raw_value }
                 button {
                     class: "jt-toggle",
                     onclick: move |_| expanded.set(true),
@@ -192,6 +191,7 @@ fn JsonCollection(
                 "{count_label}"
             }
             span { class: "jt-bracket", "{close_char}" }
+            CopyButton { value: raw_value }
         }
     }
 }
