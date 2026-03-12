@@ -21,6 +21,13 @@ pub struct SessionMeta {
     pub agent_id: Option<String>,
 }
 
+/// A group of sessions belonging to the same project, sorted by recency.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectGroup {
+    pub project: String,
+    pub sessions: Vec<SessionMeta>,
+}
+
 /// Response type for get_session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionResponse {
@@ -56,11 +63,12 @@ impl SessionMeta {
 }
 
 #[server]
-pub async fn list_sessions(project: Option<String>) -> Result<Vec<SessionMeta>, ServerFnError> {
+pub async fn list_sessions(project: Option<String>) -> Result<Vec<ProjectGroup>, ServerFnError> {
     let base = base_path();
     let sessions = ccmux_core::session::loader::discover_sessions(&base)
         .map_err(|e| ServerFnError::new(format!("Failed to discover sessions: {e}")))?;
 
+    // Filter and convert to wire types
     let metas: Vec<SessionMeta> = sessions
         .iter()
         .filter(|s| !s.is_sidechain)
@@ -69,7 +77,27 @@ pub async fn list_sessions(project: Option<String>) -> Result<Vec<SessionMeta>, 
         .map(SessionMeta::from_info)
         .collect();
 
-    Ok(metas)
+    // Group by project; sessions are already sorted by updated_at desc from discover_sessions
+    let mut groups: Vec<ProjectGroup> = Vec::new();
+    for meta in metas {
+        if let Some(group) = groups.iter_mut().find(|g| g.project == meta.project) {
+            group.sessions.push(meta);
+        } else {
+            groups.push(ProjectGroup {
+                project: meta.project.clone(),
+                sessions: vec![meta],
+            });
+        }
+    }
+
+    // Sort groups by the most recent session's updated_at (descending)
+    groups.sort_by(|a, b| {
+        let a_max = a.sessions.iter().filter_map(|s| s.updated_at).max();
+        let b_max = b.sessions.iter().filter_map(|s| s.updated_at).max();
+        b_max.cmp(&a_max)
+    });
+
+    Ok(groups)
 }
 
 #[server]

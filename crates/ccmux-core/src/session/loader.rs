@@ -60,9 +60,11 @@ pub fn discover_sessions(base_path: &Path) -> std::io::Result<Vec<SessionInfo>> 
             match scan_session_metadata(&file_path) {
                 Ok(meta) => {
                     let sid = session_id.clone();
+                    let project =
+                        unescape_project_name(&project_name, meta.project_path.as_deref());
                     sessions.push(SessionInfo {
                         id: session_id,
-                        project: project_name.clone(),
+                        project,
                         path: file_path,
                         slug: meta.slug,
                         created_at: meta.first_timestamp,
@@ -94,9 +96,13 @@ pub fn discover_sessions(base_path: &Path) -> std::io::Result<Vec<SessionInfo>> 
                             let agent_id = stem.strip_prefix("agent-").map(|s| s.to_string());
                             match scan_session_metadata(&path) {
                                 Ok(sub_meta) => {
+                                    let sub_project = unescape_project_name(
+                                        &project_name,
+                                        sub_meta.project_path.as_deref(),
+                                    );
                                     sessions.push(SessionInfo {
                                         id: stem.clone(),
-                                        project: project_name.clone(),
+                                        project: sub_project,
                                         path,
                                         slug: sub_meta.slug,
                                         created_at: sub_meta.first_timestamp,
@@ -182,13 +188,23 @@ fn scan_session_metadata(path: &Path) -> std::io::Result<SessionMeta> {
         {
             project_path = Some(cwd);
         }
-        // Extract first user message text (the first user prompt)
+        // Extract first real user message text (skip CLI/tool messages)
         if first_message.is_none()
             && line.contains("\"type\":\"user\"")
+            && line.contains("\"userType\":\"external\"")
             && !line.contains("\"toolUseResult\"")
+            && !line.contains("\"sourceToolAssistantUUID\"")
             && let Some(text) = extract_user_content_string(&line)
+            && !text.starts_with("<local-command")
+            && !text.starts_with("<local_command")
         {
-            first_message = Some(text);
+            let cleaned = strip_xml_tags(&text);
+            let truncated = if cleaned.len() > 200 {
+                format!("{}...", &cleaned[..cleaned.floor_char_boundary(200)])
+            } else {
+                cleaned
+            };
+            first_message = Some(truncated);
         }
     }
 
@@ -258,6 +274,37 @@ fn extract_json_string(line: &str, key: &str) -> Option<String> {
     Some(unescaped)
 }
 
+/// Strip XML-style tags from a string, keeping only the text content.
+fn strip_xml_tags(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut in_tag = false;
+    for ch in input.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => result.push(ch),
+            _ => {}
+        }
+    }
+    result.trim().to_string()
+}
+
+/// Convert dash-escaped Claude project directory name to a path.
+///
+/// Claude stores projects as directories with path separators replaced by dashes,
+/// e.g. `-Users-alice-myproject`. The real project path is always preferred when
+/// available via `project_path` (extracted from event `cwd` fields).
+pub fn unescape_project_name(dir_name: &str, project_path: Option<&str>) -> String {
+    if let Some(path) = project_path {
+        return path.to_string();
+    }
+    if dir_name.starts_with('-') {
+        dir_name.replacen('-', "/", 1).replace('-', "/")
+    } else {
+        dir_name.to_string()
+    }
+}
+
 /// Extract agent mappings (parentToolUseID -> agentId) from progress events.
 pub fn extract_agent_map(path: &Path) -> std::io::Result<Vec<(String, String)>> {
     use std::io::BufRead;
@@ -325,8 +372,79 @@ mod tests {
         let sessions = discover_sessions(dir.path()).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, "abc123");
-        assert_eq!(sessions[0].project, "my-project");
+        assert_eq!(sessions[0].project, "/tmp");
         assert_eq!(sessions[0].first_message, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_first_message_filtering() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("-Users-alice-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let session_path = project_dir.join("sess1.jsonl");
+        let mut f = std::fs::File::create(&session_path).unwrap();
+        // Line 1: local-command-caveat user event (should be skipped)
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{{"role":"user","content":"<local-command-caveat>some caveat</local-command-caveat>"}},"userType":"external","sessionId":"sess1","uuid":"u1","version":"1","isSidechain":false}}"#).unwrap();
+        // Line 2: tool_result user event (should be skipped)
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-01-01T00:00:01Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t1","content":"output"}}]}},"toolUseResult":true,"userType":"external","sessionId":"sess1","uuid":"u2","version":"1","isSidechain":false}}"#).unwrap();
+        // Line 3: real external user message (should be selected)
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-01-01T00:00:02Z","message":{{"role":"user","content":"hello world"}},"userType":"external","sessionId":"sess1","uuid":"u3","version":"1","isSidechain":false}}"#).unwrap();
+
+        let sessions = discover_sessions(dir.path()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].first_message, Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_first_message_skips_source_tool_assistant_uuid() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_dir = dir.path().join("myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let session_path = project_dir.join("sess2.jsonl");
+        let mut f = std::fs::File::create(&session_path).unwrap();
+        // Sidechain user event (has sourceToolAssistantUUID, should be skipped)
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{{"role":"user","content":"sidechain input"}},"userType":"external","sourceToolAssistantUUID":"some-uuid","sessionId":"sess2","uuid":"u1","version":"1","isSidechain":false}}"#).unwrap();
+        // Real user message
+        writeln!(f, r#"{{"type":"user","timestamp":"2026-01-01T00:00:01Z","message":{{"role":"user","content":"real message"}},"userType":"external","sessionId":"sess2","uuid":"u2","version":"1","isSidechain":false}}"#).unwrap();
+
+        let sessions = discover_sessions(dir.path()).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].first_message, Some("real message".to_string()));
+    }
+
+    #[test]
+    fn test_unescape_project_name_with_project_path() {
+        // project_path always wins
+        let result =
+            unescape_project_name("-Users-alice-myproject", Some("/Users/alice/myproject"));
+        assert_eq!(result, "/Users/alice/myproject");
+    }
+
+    #[test]
+    fn test_unescape_project_name_dash_heuristic() {
+        // Leading dash → convert all dashes to slashes
+        let result = unescape_project_name("-Users-alice-myproject", None);
+        assert_eq!(result, "/Users/alice/myproject");
+    }
+
+    #[test]
+    fn test_unescape_project_name_no_leading_dash() {
+        // No leading dash → return as-is
+        let result = unescape_project_name("myproject", None);
+        assert_eq!(result, "myproject");
+    }
+
+    #[test]
+    fn test_strip_xml_tags() {
+        assert_eq!(
+            strip_xml_tags("<local-command-caveat>text</local-command-caveat>"),
+            "text"
+        );
+        assert_eq!(strip_xml_tags("hello world"), "hello world");
+        assert_eq!(strip_xml_tags("  plain  "), "plain");
+        assert_eq!(strip_xml_tags("<tag>a</tag> and <b>b</b>"), "a and b");
     }
 
     #[test]

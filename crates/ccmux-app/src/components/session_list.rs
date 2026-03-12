@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use dioxus::prelude::*;
 
 use crate::routes::Route;
@@ -10,16 +8,15 @@ pub fn SessionList() -> Element {
     let sessions_resource = use_server_future(move || list_sessions(None))?;
 
     match &*sessions_resource.read() {
-        Some(Ok(sessions)) => {
-            let grouped = group_by_project(sessions);
+        Some(Ok(groups)) => {
             rsx! {
                 div { class: "session-list",
                     h1 { class: "page-title", "Sessions" }
-                    for (project, sessions) in grouped {
-                        div { key: "{project}", class: "project-group",
-                            h2 { class: "project-name", "{project}" }
+                    for group in groups {
+                        div { key: "{group.project}", class: "project-group",
+                            h2 { class: "project-name", "{group.project}" }
                             div { class: "session-cards",
-                                for session in sessions {
+                                for session in &group.sessions {
                                     SessionCard { key: "{session.id}", session: session.clone() }
                                 }
                             }
@@ -35,17 +32,6 @@ pub fn SessionList() -> Element {
             div { class: "loading", "Loading sessions..." }
         },
     }
-}
-
-fn group_by_project(sessions: &[SessionMeta]) -> BTreeMap<String, Vec<&SessionMeta>> {
-    let mut groups: BTreeMap<String, Vec<&SessionMeta>> = BTreeMap::new();
-    for session in sessions {
-        groups
-            .entry(session.project.clone())
-            .or_default()
-            .push(session);
-    }
-    groups
 }
 
 #[component]

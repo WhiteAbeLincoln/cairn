@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
-use ccmux_core::display::DisplayItem;
 use ccmux_core::display::streaming::StreamEvent;
+use ccmux_core::display::{DisplayItem, ItemMeta};
 
 use crate::components::blocks::display_item::DisplayItemView;
 use crate::server_fns::{get_session, stream_session_events};
@@ -15,7 +15,9 @@ fn apply_stream_event(items: &mut Vec<DisplayItem>, event: StreamEvent) {
         StreamEvent::MergeWithPrevious { item } => {
             if let Some(last) = items.last_mut() {
                 match last {
-                    DisplayItem::Group { items: group_items } => {
+                    DisplayItem::Group {
+                        items: group_items, ..
+                    } => {
                         group_items.push(item);
                     }
                     _ => {
@@ -24,9 +26,13 @@ fn apply_stream_event(items: &mut Vec<DisplayItem>, event: StreamEvent) {
                             last,
                             DisplayItem::Group {
                                 items: Vec::with_capacity(2),
+                                meta: ItemMeta::default(),
                             },
                         );
-                        if let DisplayItem::Group { items: group_items } = last {
+                        if let DisplayItem::Group {
+                            items: group_items, ..
+                        } = last
+                        {
                             group_items.push(prev);
                             group_items.push(item);
                         }
@@ -55,7 +61,9 @@ fn apply_stream_event(items: &mut Vec<DisplayItem>, event: StreamEvent) {
                             }
                         }
                     }
-                    DisplayItem::Group { items: group_items } => {
+                    DisplayItem::Group {
+                        items: group_items, ..
+                    } => {
                         for group_item in group_items.iter_mut() {
                             if let DisplayItem::TaskList { tasks, .. } = group_item
                                 && let Some(existing) = tasks.iter_mut().find(|t| t.id == task.id)
@@ -90,7 +98,9 @@ fn update_tool_result_recursive(
                 *r = Some(result.clone());
                 return;
             }
-            DisplayItem::Group { items: group_items } => {
+            DisplayItem::Group {
+                items: group_items, ..
+            } => {
                 update_tool_result_recursive(group_items, tool_use_id, result);
             }
             _ => {}
