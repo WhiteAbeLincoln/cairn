@@ -32,7 +32,7 @@ pub fn ToolUseBlock(
             meta,
             raw,
             result_raw,
-            collapsible: true,
+
             default_open,
             minimal,
             match name.as_str() {

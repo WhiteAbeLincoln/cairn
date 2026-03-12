@@ -17,7 +17,7 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
                 border_class: "border-user",
                 meta,
                 raw,
-                collapsible: true,
+
                 default_open: true,
                 Prose { content }
             }
@@ -28,7 +28,7 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
                 border_class: "border-assistant",
                 meta,
                 raw,
-                collapsible: true,
+
                 default_open: true,
                 Prose { content: text }
             }
@@ -67,7 +67,7 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
                     border_class: "border-tool",
                     meta,
                     raw,
-                    collapsible: true,
+
                     default_open: true,
                     pre { class: "task-list-text", "{text}" }
                 }
@@ -85,7 +85,7 @@ pub fn DisplayItemView(item: DisplayItem) -> Element {
                 border_class: "border-compaction",
                 meta,
                 raw,
-                collapsible: true,
+
                 default_open: true,
                 Prose { content }
             }

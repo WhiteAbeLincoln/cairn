@@ -16,7 +16,6 @@ pub fn MessageBlock(
     /// For tool calls: the raw tool_result event, shown alongside the tool_use raw event.
     #[props(default)]
     result_raw: Option<Value>,
-    #[props(default = true)] collapsible: bool,
     #[props(default = true)] default_open: bool,
     #[props(default = false)] minimal: bool,
     children: Element,
@@ -46,17 +45,11 @@ pub fn MessageBlock(
         div { class: "{block_class}",
             // Header — same structure for both full and minimal, styling differs via CSS
             div {
-                class: if collapsible { "message-header message-header-clickable" } else { "message-header" },
-                onclick: move |_| {
-                    if collapsible {
-                        open.toggle();
-                    }
-                },
+                class: "message-header message-header-clickable",
+                onclick: move |_| open.toggle(),
                 // Fixed start: caret + label
-                if collapsible {
-                    span { class: "message-caret",
-                        if open() { "\u{25BE}" } else { "\u{25B8}" }
-                    }
+                span { class: "message-caret",
+                    if open() { "\u{25BE}" } else { "\u{25B8}" }
                 }
                 span { class: "message-label", "{label}" }
 
@@ -85,7 +78,7 @@ pub fn MessageBlock(
                         }
                     }
                     // Kebab menu (mobile, <=768px)
-                    if !minimal && (has_raw || collapsible) {
+                    if !minimal && has_raw {
                         div { class: "kebab-menu",
                             button {
                                 class: "kebab-trigger",
@@ -114,17 +107,6 @@ pub fn MessageBlock(
                                                 kebab_open.set(false);
                                             },
                                             "{{}}"
-                                        }
-                                    }
-                                    if collapsible {
-                                        button {
-                                            class: "kebab-item",
-                                            onclick: move |e| {
-                                                e.stop_propagation();
-                                                open.toggle();
-                                                kebab_open.set(false);
-                                            },
-                                            if open() { "\u{25B4}" } else { "\u{25BE}" }
                                         }
                                     }
                                 }
