@@ -129,12 +129,13 @@ pub fn GroupBlock(items: Vec<DisplayItem>, meta: ItemMeta) -> Element {
 #[component]
 fn GroupChild(item: DisplayItem) -> Element {
     match item {
-        DisplayItem::Thinking { text, .. } => rsx! {
+        DisplayItem::Thinking { text, raw, .. } => rsx! {
             MessageBlock {
                 label: "Thinking",
                 border_class: "border-thinking",
                 minimal: true,
                 default_open: false,
+                raw,
                 pre { class: "thinking-text", "{text}" }
             }
         },
