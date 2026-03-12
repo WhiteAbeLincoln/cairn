@@ -183,11 +183,5 @@ fn MetaFields(meta: ItemMeta) -> Element {
         if let Some(tokens) = meta.tokens {
             span { class: "message-meta-item", "{tokens} tok" }
         }
-        if (meta.model.is_some() || meta.tokens.is_some()) && meta.uuid.is_some() {
-            span { class: "message-meta-dot", "\u{00B7}" }
-        }
-        if let Some(ref uuid) = meta.uuid {
-            span { class: "message-meta-item", "{&uuid[..uuid.len().min(6)]}" }
-        }
     }
 }
