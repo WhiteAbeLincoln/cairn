@@ -800,6 +800,81 @@ body {
     border: 1px solid color-mix(in srgb, var(--red, #ff4a6a) 30%, transparent);
 }
 
+/* Edit Tool */
+.edit-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.edit-badge {
+    font-size: 0.7rem;
+    background: #68a;
+    color: white;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+}
+
+.edit-diff {
+    margin: 0;
+    padding: 0.5rem;
+    background: color-mix(in srgb, currentColor 6%, transparent);
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+    line-height: 1.5;
+    overflow-x: auto;
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre;
+    word-break: break-all;
+}
+
+.diff-line {
+    display: flex;
+}
+
+.diff-marker {
+    flex-shrink: 0;
+    width: 1.2em;
+    text-align: center;
+    user-select: none;
+    opacity: 0.6;
+}
+
+.diff-add {
+    background: color-mix(in srgb, #4a4 18%, transparent);
+    color: #6d6;
+}
+
+.diff-remove {
+    background: color-mix(in srgb, #e55 15%, transparent);
+    color: #e88;
+}
+
+:root.light .diff-add {
+    background: color-mix(in srgb, #2a2 12%, transparent);
+    color: #1a4a1a;
+}
+
+:root.light .diff-remove {
+    background: color-mix(in srgb, #c33 10%, transparent);
+    color: #6a1a1a;
+}
+
+@media (prefers-color-scheme: light) {
+    :root.system .diff-add {
+        background: color-mix(in srgb, #2a2 12%, transparent);
+        color: #1a4a1a;
+    }
+    :root.system .diff-remove {
+        background: color-mix(in srgb, #c33 10%, transparent);
+        color: #6a1a1a;
+    }
+}
+
 /* Loading / Error states */
 .loading {
     text-align: center;

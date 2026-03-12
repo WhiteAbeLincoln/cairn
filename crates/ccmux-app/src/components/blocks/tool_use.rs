@@ -36,6 +36,12 @@ pub fn ToolUseBlock(
                 "Bash" => rsx! {
                     tools::bash::BashView { input, result }
                 },
+                "Edit" => rsx! {
+                    tools::edit::EditView { input, result }
+                },
+                "Read" => rsx! {
+                    tools::read::ReadView { input, result }
+                },
                 _ => rsx! {
                     GenericToolView { input, result }
                 },
