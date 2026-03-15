@@ -332,6 +332,46 @@ pub fn extract_agent_map(path: &Path) -> std::io::Result<Vec<(String, String)>> 
     Ok(mappings)
 }
 
+/// Load all events from a session JSONL file as raw JSON values, paired with byte offsets.
+/// Each tuple contains (byte_offset, json_value) where byte_offset is the position
+/// of the line's first byte in the file.
+pub fn load_session_raw_with_offsets(
+    path: &Path,
+) -> std::io::Result<Vec<(u64, serde_json::Value)>> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path)?;
+    let mut reader = std::io::BufReader::new(file);
+
+    let mut events = Vec::new();
+    let mut offset: u64 = 0;
+    let mut line = String::new();
+    let mut line_num = 0;
+
+    loop {
+        line.clear();
+        let bytes_read = reader.read_line(&mut line)?;
+        if bytes_read == 0 {
+            break;
+        }
+        line_num += 1;
+        let line_offset = offset;
+        offset += bytes_read as u64;
+
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(value) => events.push((line_offset, value)),
+            Err(e) => {
+                tracing::warn!(line = line_num, error = %e, "Failed to parse JSONL line");
+            }
+        }
+    }
+    Ok(events)
+}
+
 /// Load all events from a session JSONL file as raw JSON values.
 pub fn load_session_raw(path: &Path) -> std::io::Result<Vec<serde_json::Value>> {
     use std::io::BufRead;
@@ -472,5 +512,34 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["type"], "user");
         assert_eq!(events[1]["type"], "assistant");
+    }
+
+    #[test]
+    fn test_load_session_raw_with_offsets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","msg":"hello"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"assistant","msg":"hi"}}"#).unwrap();
+
+        let events = load_session_raw_with_offsets(&path).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].0, 0); // first line starts at byte 0
+        assert!(events[1].0 > 0); // second line starts after first
+        assert_eq!(events[0].1["type"], "user");
+        assert_eq!(events[1].1["type"], "assistant");
+    }
+
+    #[test]
+    fn test_load_session_raw_with_offsets_skips_empty_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, r#"{{"type":"user","msg":"hello"}}"#).unwrap();
+        writeln!(f).unwrap(); // empty line
+        writeln!(f, r#"{{"type":"assistant","msg":"hi"}}"#).unwrap();
+
+        let events = load_session_raw_with_offsets(&path).unwrap();
+        assert_eq!(events.len(), 2);
     }
 }
