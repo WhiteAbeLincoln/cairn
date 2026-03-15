@@ -135,20 +135,24 @@ For UserMessage, AssistantMessage, Thinking: the full text content rendered as m
 
 #### Output format — metadata (when `?metadata=true`)
 
+Metadata is rendered as YAML front matter at the top of the document:
+
 ```markdown
-## Metadata
-
-| Field | Value |
-|-------|-------|
-| Timestamp | 2026-03-14T10:30:00Z |
-| Model | claude-opus-4-6 |
-| Tokens | 1234 in / 567 out |
-| UUID | abc-123-def |
-
 ---
+timestamp: 2026-03-14T10:30:00Z
+model: claude-opus-4-6
+tokens_in: 1234
+tokens_out: 567
+uuid: abc-123-def
+---
+
+[back to session](/session/<id>.md)
+
+## Bash
+...
 ```
 
-Metadata is extracted from the raw JSONL event fields (`timestamp`, `message.model`, `message.usage`, `uuid`).
+Fields are extracted from the raw JSONL event (`timestamp`, `message.model`, `message.usage`, `uuid`). Only present fields are included — e.g., user events won't have `model` or `tokens`.
 
 ## Opaque Cursor
 
