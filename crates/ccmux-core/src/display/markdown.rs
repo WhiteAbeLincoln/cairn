@@ -196,6 +196,143 @@ fn render_bullet_item(out: &mut String, session_id: &str, item: &DisplayItem) {
     ));
 }
 
+/// Render a single raw JSONL event as a markdown detail view.
+pub fn render_event_detail(raw: &Value, show_metadata: bool, session_id: &str) -> String {
+    let mut out = String::new();
+
+    // YAML front matter for metadata
+    if show_metadata {
+        out.push_str("---\n");
+        if let Some(ts) = raw.get("timestamp").and_then(|v| v.as_str()) {
+            out.push_str(&format!("timestamp: {ts}\n"));
+        }
+        if let Some(model) = raw.pointer("/message/model").and_then(|v| v.as_str()) {
+            out.push_str(&format!("model: {model}\n"));
+        }
+        if let Some(tokens_in) = raw
+            .pointer("/message/usage/input_tokens")
+            .and_then(|v| v.as_u64())
+        {
+            out.push_str(&format!("tokens_in: {tokens_in}\n"));
+        }
+        if let Some(tokens_out) = raw
+            .pointer("/message/usage/output_tokens")
+            .and_then(|v| v.as_u64())
+        {
+            out.push_str(&format!("tokens_out: {tokens_out}\n"));
+        }
+        if let Some(uuid) = raw.get("uuid").and_then(|v| v.as_str()) {
+            out.push_str(&format!("uuid: {uuid}\n"));
+        }
+        out.push_str("---\n\n");
+    }
+
+    // Back link
+    out.push_str(&format!("[back to session](/session/{session_id}.md)\n"));
+
+    let event_type = raw.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    match event_type {
+        "user" => render_user_event_detail(&mut out, raw),
+        "assistant" => render_assistant_event_detail(&mut out, raw),
+        "system" => render_system_event_detail(&mut out, raw),
+        _ => {
+            out.push_str("\n## Event\n\n```json\n");
+            out.push_str(&serde_json::to_string_pretty(raw).unwrap_or_default());
+            out.push_str("\n```\n");
+        }
+    }
+
+    out
+}
+
+fn render_user_event_detail(out: &mut String, raw: &Value) {
+    let content = raw.pointer("/message/content");
+    match content {
+        Some(Value::String(text)) => {
+            out.push_str(&format!("\n## User Message\n\n{text}\n"));
+        }
+        Some(Value::Array(items)) => {
+            for item in items {
+                let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                match item_type {
+                    "tool_result" => {
+                        let tool_id = item
+                            .get("tool_use_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        out.push_str(&format!("\n## Tool Result ({tool_id})\n\n```json\n"));
+                        out.push_str(&serde_json::to_string_pretty(item).unwrap_or_default());
+                        out.push_str("\n```\n");
+                    }
+                    _ => {
+                        out.push_str("\n## Content\n\n```json\n");
+                        out.push_str(&serde_json::to_string_pretty(item).unwrap_or_default());
+                        out.push_str("\n```\n");
+                    }
+                }
+            }
+        }
+        _ => {
+            out.push_str("\n## User Event\n\n```json\n");
+            out.push_str(&serde_json::to_string_pretty(raw).unwrap_or_default());
+            out.push_str("\n```\n");
+        }
+    }
+}
+
+fn render_assistant_event_detail(out: &mut String, raw: &Value) {
+    let content = raw.pointer("/message/content").and_then(|v| v.as_array());
+    let Some(items) = content else {
+        out.push_str("\n## Assistant Event\n\n```json\n");
+        out.push_str(&serde_json::to_string_pretty(raw).unwrap_or_default());
+        out.push_str("\n```\n");
+        return;
+    };
+
+    for item in items {
+        let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match item_type {
+            "text" => {
+                let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(&format!("\n## Text\n\n{text}\n"));
+            }
+            "thinking" => {
+                let text = item.get("thinking").and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(&format!("\n## Thinking\n\n{text}\n"));
+            }
+            "tool_use" => {
+                let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("Tool");
+                let input = item.get("input").unwrap_or(&Value::Null);
+                out.push_str(&format!("\n## {name}\n\n### Input\n\n```json\n"));
+                out.push_str(&serde_json::to_string_pretty(input).unwrap_or_default());
+                out.push_str("\n```\n");
+            }
+            _ => {
+                out.push_str("\n## Content Block\n\n```json\n");
+                out.push_str(&serde_json::to_string_pretty(item).unwrap_or_default());
+                out.push_str("\n```\n");
+            }
+        }
+    }
+}
+
+fn render_system_event_detail(out: &mut String, raw: &Value) {
+    let subtype = raw.get("subtype").and_then(|v| v.as_str());
+    match subtype {
+        Some("turn_duration") => {
+            let ms = raw.get("durationMs").and_then(|v| v.as_u64()).unwrap_or(0);
+            let secs = ms as f64 / 1000.0;
+            out.push_str(&format!("\n## Turn Duration\n\n{secs:.1}s ({ms}ms)\n"));
+        }
+        _ => {
+            out.push_str("\n## System Event\n\n```json\n");
+            out.push_str(&serde_json::to_string_pretty(raw).unwrap_or_default());
+            out.push_str("\n```\n");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +533,88 @@ mod tests {
             cursor: None,
         };
         assert_eq!(bullet_label(&item), "Compaction");
+    }
+
+    #[test]
+    fn test_render_event_detail_tool_use() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-03-14T10:30:00Z",
+            "uuid": "abc-123",
+            "message": {
+                "model": "claude-opus-4-6",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Bash",
+                        "id": "t1",
+                        "input": {"command": "ls src/"}
+                    }
+                ]
+            }
+        });
+        let result = render_event_detail(&raw, false, "sess1");
+        assert!(result.contains("[back to session](/session/sess1.md)"));
+        assert!(result.contains("## Bash"));
+        assert!(result.contains("### Input"));
+        assert!(result.contains("```json"));
+        assert!(!result.contains("---\ntimestamp:"));
+    }
+
+    #[test]
+    fn test_render_event_detail_with_metadata() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-03-14T10:30:00Z",
+            "uuid": "abc-123",
+            "message": {
+                "model": "claude-opus-4-6",
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "content": [
+                    {"type": "text", "text": "hello world"}
+                ]
+            }
+        });
+        let result = render_event_detail(&raw, true, "sess1");
+        assert!(result.contains("---\n"));
+        assert!(result.contains("timestamp: 2026-03-14T10:30:00Z"));
+        assert!(result.contains("model: claude-opus-4-6"));
+        assert!(result.contains("tokens_in: 100"));
+        assert!(result.contains("tokens_out: 50"));
+        assert!(result.contains("uuid: abc-123"));
+    }
+
+    #[test]
+    fn test_render_event_detail_user_message() {
+        let raw = serde_json::json!({
+            "type": "user",
+            "timestamp": "2026-03-14T10:30:00Z",
+            "uuid": "u1",
+            "message": {"role": "user", "content": "What does this do?"}
+        });
+        let result = render_event_detail(&raw, false, "sess1");
+        assert!(result.contains("## User Message"));
+        assert!(result.contains("What does this do?"));
+    }
+
+    #[test]
+    fn test_render_event_detail_thinking() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "timestamp": "2026-03-14T10:30:00Z",
+            "uuid": "u1",
+            "message": {
+                "content": [
+                    {"type": "thinking", "thinking": "Let me consider..."},
+                    {"type": "text", "text": "Here is my answer"}
+                ]
+            }
+        });
+        let result = render_event_detail(&raw, false, "sess1");
+        assert!(result.contains("## Thinking"));
+        assert!(result.contains("Let me consider..."));
+        assert!(result.contains("## Text"));
+        assert!(result.contains("Here is my answer"));
     }
 }
