@@ -191,6 +191,51 @@ fn render_bullet_item(out: &mut String, session_id: &str, item: &DisplayItem) {
     ));
 }
 
+/// Input data for rendering search results.
+pub struct SearchResultGroup {
+    pub session_id: String,
+    pub slug: Option<String>,
+    pub project_path: Option<String>,
+    pub created_at: Option<String>,
+    pub items: Vec<DisplayItemWithMode>,
+}
+
+/// Render search results as markdown.
+/// Delegates individual message rendering to the existing `render_full_item` format.
+pub fn render_search_results(
+    query: &str,
+    groups: &[SearchResultGroup],
+    total_matches: usize,
+    total_sessions: usize,
+) -> String {
+    let mut out = format!(
+        "# Search: \"{query}\"\n{total_matches} results across {total_sessions} session{}\n",
+        if total_sessions == 1 { "" } else { "s" }
+    );
+
+    for group in groups {
+        let label = group.slug.as_deref().unwrap_or(&group.session_id);
+        let date = group.created_at.as_deref().unwrap_or("");
+        if date.is_empty() {
+            out.push_str(&format!("\n## {label}\n"));
+        } else {
+            out.push_str(&format!("\n## {label} ({date})\n"));
+        }
+        if let Some(ref project) = group.project_path {
+            out.push_str(&format!("Project: {project}\n"));
+        }
+        out.push_str(&format!("Session: {}\n", group.session_id));
+
+        for item in &group.items {
+            render_display_item(&mut out, &group.session_id, item);
+        }
+
+        out.push_str("\n---\n");
+    }
+
+    out
+}
+
 /// Render a single raw JSONL event as a markdown detail view.
 pub fn render_event_detail(raw: &Value, show_metadata: bool, session_id: &str) -> String {
     let mut out = String::new();
@@ -591,6 +636,36 @@ mod tests {
         let result = render_event_detail(&raw, false, "sess1");
         assert!(result.contains("## User Message"));
         assert!(result.contains("What does this do?"));
+    }
+
+    #[test]
+    fn test_render_search_results_basic() {
+        let results = vec![SearchResultGroup {
+            session_id: "abc123".to_string(),
+            slug: Some("fix-auth-bug".to_string()),
+            project_path: Some("/Users/test/myproject".to_string()),
+            created_at: Some("2026-03-20".to_string()),
+            items: vec![
+                user_item("How do I fix the authentication bug?", "0"),
+                assistant_item("I'll help you fix the auth middleware.", "3a"),
+            ],
+        }];
+
+        let output = render_search_results("authentication", &results, 2, 1);
+        assert!(output.contains("# Search: \"authentication\""));
+        assert!(output.contains("2 results across 1 session"));
+        assert!(output.contains("## fix-auth-bug (2026-03-20)"));
+        assert!(output.contains("Project: /Users/test/myproject"));
+        assert!(output.contains("## User"));
+        assert!(output.contains("authentication bug"));
+        assert!(output.contains("## Assistant"));
+    }
+
+    #[test]
+    fn test_render_search_results_empty() {
+        let output = render_search_results("nothing", &[], 0, 0);
+        assert!(output.contains("# Search: \"nothing\""));
+        assert!(output.contains("0 results"));
     }
 
     #[test]
