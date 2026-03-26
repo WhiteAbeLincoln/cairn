@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ccmux-core", "crates/ccmux-app"]
+members = ["crates/ccmux-core", "crates/ccmux-app", "crates/ccmux-index"]
 resolver = "2"
 exclude = [".worktrees"]
 
