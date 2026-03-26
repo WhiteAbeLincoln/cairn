@@ -1,5 +1,5 @@
 use ccmux_core::session::SessionInfo;
-use ccmux_index::SearchIndex;
+use ccmux_index::{SearchIndex, SearchQuery};
 use chrono::Utc;
 use std::io::Write;
 use tempfile::TempDir;
@@ -309,4 +309,149 @@ fn test_index_session_extracts_file_paths() {
             .collect()
     };
     assert_eq!(paths, vec!["src/config.rs", "src/lib.rs"]);
+}
+
+#[test]
+fn test_search_finds_matching_messages() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let index = SearchIndex::open(&db_path).unwrap();
+
+    let session_dir = TempDir::new().unwrap();
+    let (_jsonl_path, info) = make_test_session(&session_dir);
+    index.index_session(&info).unwrap();
+
+    let results = index
+        .search(&SearchQuery {
+            text: "authentication".to_string(),
+            project: None,
+            after: None,
+            before: None,
+            limit: 20,
+        })
+        .unwrap();
+
+    assert_eq!(results.len(), 1); // One session
+    assert_eq!(results[0].session_id, "test-session-1");
+    assert!(results[0].matches.len() >= 1);
+}
+
+#[test]
+fn test_search_no_results() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let index = SearchIndex::open(&db_path).unwrap();
+
+    let session_dir = TempDir::new().unwrap();
+    let (_jsonl_path, info) = make_test_session(&session_dir);
+    index.index_session(&info).unwrap();
+
+    let results = index
+        .search(&SearchQuery {
+            text: "kubernetes".to_string(),
+            project: None,
+            after: None,
+            before: None,
+            limit: 20,
+        })
+        .unwrap();
+
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_search_with_project_filter() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let index = SearchIndex::open(&db_path).unwrap();
+
+    let session_dir = TempDir::new().unwrap();
+    let (_jsonl_path, info) = make_test_session(&session_dir);
+    index.index_session(&info).unwrap();
+
+    // Search with matching project
+    let results = index
+        .search(&SearchQuery {
+            text: "authentication".to_string(),
+            project: Some("/Users/test/myproject".to_string()),
+            after: None,
+            before: None,
+            limit: 20,
+        })
+        .unwrap();
+    assert_eq!(results.len(), 1);
+
+    // Search with non-matching project
+    let results = index
+        .search(&SearchQuery {
+            text: "authentication".to_string(),
+            project: Some("/Users/test/other".to_string()),
+            after: None,
+            before: None,
+            limit: 20,
+        })
+        .unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn test_search_files() {
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("test.db");
+    let index = SearchIndex::open(&db_path).unwrap();
+
+    let session_dir = TempDir::new().unwrap();
+    let session_id = "test-session-files-search";
+    let jsonl_path = session_dir.path().join(format!("{session_id}.jsonl"));
+    let events = vec![
+        serde_json::json!({
+            "type": "user",
+            "message": {"role": "user", "content": "Fix config"},
+            "uuid": "u1", "timestamp": "2026-03-20T10:00:00Z",
+            "userType": "external", "cwd": "/Users/test/proj",
+            "sessionId": session_id, "isSidechain": false, "version": "1"
+        }),
+        serde_json::json!({
+            "type": "file-history-snapshot",
+            "messageId": "a1",
+            "snapshot": {
+                "trackedFileBackups": {
+                    "src/config.rs": {"backupFileName": "b1", "version": 1, "backupTime": "t"},
+                    "src/auth.rs": {"backupFileName": "b2", "version": 1, "backupTime": "t"}
+                },
+                "messageId": "a1", "timestamp": "2026-03-20T10:00:10Z"
+            },
+            "isSnapshotUpdate": false
+        }),
+    ];
+    let mut file = std::fs::File::create(&jsonl_path).unwrap();
+    for event in &events {
+        writeln!(file, "{}", serde_json::to_string(event).unwrap()).unwrap();
+    }
+    let info = SessionInfo {
+        id: session_id.to_string(),
+        project: "-Users-test-proj".to_string(),
+        path: jsonl_path,
+        slug: None,
+        created_at: Some(Utc::now()),
+        updated_at: Some(Utc::now()),
+        message_count: events.len(),
+        first_message: Some("Fix config".to_string()),
+        project_path: Some("/Users/test/proj".to_string()),
+        is_sidechain: false,
+        parent_session_id: None,
+        agent_id: None,
+    };
+    index.index_session(&info).unwrap();
+
+    let results = index.search_files("config").unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].file_path, "src/config.rs");
+
+    let results = index.search_files("auth").unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].file_path, "src/auth.rs");
+
+    let results = index.search_files("nonexistent").unwrap();
+    assert!(results.is_empty());
 }

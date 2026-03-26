@@ -76,4 +76,18 @@ impl SearchIndex {
     pub fn index_all(&self, base_path: &Path) -> Result<IndexStats, Box<dyn std::error::Error>> {
         indexer::index_all(&self.conn, base_path)
     }
+
+    pub fn search(
+        &self,
+        query: &SearchQuery,
+    ) -> Result<Vec<SearchResult>, Box<dyn std::error::Error>> {
+        query::search(&self.conn, query)
+    }
+
+    pub fn search_files(
+        &self,
+        pattern: &str,
+    ) -> Result<Vec<FileMatch>, Box<dyn std::error::Error>> {
+        query::search_files(&self.conn, pattern)
+    }
 }
