@@ -166,24 +166,30 @@ Options:
 
 ### Default Output (Markdown)
 
-Rendered through the existing markdown pipeline:
+Search results are rendered as markdown with a search header followed by matching messages using the same `render_full_item` format from `markdown.rs`. A new `render_search_results` function in that module handles the search-specific wrapper (header, session grouping) while delegating individual message rendering to the existing functions.
 
 ```markdown
-## Search: "authentication middleware"
+# Search: "authentication middleware"
 12 results across 4 sessions
 
-### fix-auth-bug (2026-03-20)
+## fix-auth-bug (2026-03-20)
 Project: /Users/abe/Projects/myapp
 Session: abc123
 
-> **User**: Can you refactor the authentication middleware to use JWT instead of session cookies?
+## User
+[details](/session/abc123/event/0.md)
 
-> **Assistant**: I'll update the auth middleware in `src/middleware/auth.rs` to use JWT verification...
+Can you refactor the authentication middleware to use JWT instead of session cookies?
+
+## Assistant
+[details](/session/abc123/event/3a.md)
+
+I'll update the auth middleware in `src/middleware/auth.rs` to use JWT verification...
 
 ---
 ```
 
-Results are grouped by session, ranked by FTS5 relevance, with matching messages shown in context.
+Results are grouped by session, ranked by FTS5 relevance.
 
 ### Query Logic
 
