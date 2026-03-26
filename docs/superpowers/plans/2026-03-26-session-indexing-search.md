@@ -32,7 +32,7 @@
 |------|--------|
 | `Cargo.toml` (workspace) | Add `ccmux-index` to workspace members |
 | `crates/ccmux-app/Cargo.toml` | Add `ccmux-index`, `clap` dependencies |
-| `crates/ccmux-app/src/main.rs` | Replace bare `dioxus::server::serve` with clap subcommand dispatch (`serve`, `index`, `search`) |
+| `crates/ccmux-app/src/main.rs` | Add clap subcommand dispatch (`serve`, `index`, `search`) around existing Axum server startup |
 | `crates/ccmux-core/src/display/markdown.rs` | Add `render_search_results()` function |
 
 ---
@@ -1358,14 +1358,19 @@ git commit -m "feat: add search results markdown renderer"
 - Modify: `crates/ccmux-app/src/main.rs`
 - Create: `crates/ccmux-app/src/cli.rs`
 
+**Context:** The app is now a plain Axum HTTP server (no Dioxus, no WASM). `main.rs` uses `#[tokio::main]`, imports only `mod api;`, and calls `axum::serve`. No `cfg` guards needed.
+
 - [ ] **Step 1: Add dependencies to ccmux-app**
 
-In `crates/ccmux-app/Cargo.toml`, add to `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]`:
+In `crates/ccmux-app/Cargo.toml`, add to `[dependencies]`:
 
 ```toml
 ccmux-index = { path = "../ccmux-index" }
 clap = { version = "4", features = ["derive"] }
+dirs = "6"
 ```
+
+Note: Check how the existing `api.rs` resolves the `~/.claude/projects/` base path. If it already uses `dirs` or a helper, reuse that instead of adding `dirs` separately.
 
 - [ ] **Step 2: Create cli.rs with subcommand definitions**
 
@@ -1418,103 +1423,95 @@ pub enum Commands {
 Replace the contents of `crates/ccmux-app/src/main.rs` with:
 
 ```rust
-mod components;
-mod routes;
-mod server_fns;
-
-#[cfg(not(target_arch = "wasm32"))]
 mod api;
-#[cfg(not(target_arch = "wasm32"))]
 mod cli;
 
-use dioxus::prelude::*;
-use routes::Route;
+use clap::Parser;
+use cli::{Cli, Commands};
 
-fn main() {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use clap::Parser;
-        use cli::{Cli, Commands};
-
-        let cli = Cli::parse();
-
-        match cli.command {
-            None | Some(Commands::Serve) => {
-                // Start background indexer, then serve
-                std::thread::spawn(|| {
-                    if let Err(e) = run_index() {
-                        tracing::warn!(error = %e, "Background indexing failed");
-                    }
-                });
-
-                dioxus::server::serve(|| async {
-                    let dioxus_router = dioxus::server::router(App);
-                    Ok(api::build_combined_router(dioxus_router))
-                });
-            }
-            Some(Commands::Index) => {
-                tracing_subscriber::fmt()
-                    .with_env_filter(
-                        tracing_subscriber::EnvFilter::from_default_env()
-                            .add_directive("ccmux=info".parse().unwrap()),
-                    )
-                    .init();
-
-                match run_index() {
-                    Ok(stats) => {
-                        println!(
-                            "Indexed {} sessions ({} messages, {} files) in {:.1}s",
-                            stats.sessions_indexed,
-                            stats.messages_indexed,
-                            stats.files_indexed,
-                            stats.duration.as_secs_f64()
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("Indexing failed: {e}");
-                        std::process::exit(1);
-                    }
-                }
-            }
-            Some(Commands::Search {
-                query,
-                limit,
-                project,
-                after,
-                before,
-                files,
-                json,
-            }) => {
-                run_search(query, limit, project, after, before, files, json);
-            }
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    dioxus::launch(App);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn index_db_path() -> std::path::PathBuf {
     dirs::home_dir()
         .expect("Could not determine home directory")
         .join(".claude/ccmux/index.db")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn claude_projects_path() -> std::path::PathBuf {
     dirs::home_dir()
         .expect("Could not determine home directory")
         .join(".claude/projects")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn run_index() -> Result<ccmux_index::IndexStats, Box<dyn std::error::Error>> {
     let index = ccmux_index::SearchIndex::open(&index_db_path())?;
     index.index_all(&claude_projects_path())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+
+    match cli.command {
+        None | Some(Commands::Serve) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "info".into()),
+                )
+                .init();
+
+            // Start background indexer
+            tokio::task::spawn_blocking(|| {
+                if let Err(e) = run_index() {
+                    tracing::warn!(error = %e, "Background indexing failed");
+                }
+            });
+
+            let app = api::router();
+            let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
+                .await
+                .expect("failed to bind to port 3000");
+
+            tracing::info!("listening on {}", listener.local_addr().unwrap());
+            axum::serve(listener, app).await.expect("server error");
+        }
+        Some(Commands::Index) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("ccmux=info".parse().unwrap()),
+                )
+                .init();
+
+            match run_index() {
+                Ok(stats) => {
+                    println!(
+                        "Indexed {} sessions ({} messages, {} files) in {:.1}s",
+                        stats.sessions_indexed,
+                        stats.messages_indexed,
+                        stats.files_indexed,
+                        stats.duration.as_secs_f64()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Indexing failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Some(Commands::Search {
+            query,
+            limit,
+            project,
+            after,
+            before,
+            files,
+            json,
+        }) => {
+            run_search(query, limit, project, after, before, files, json);
+        }
+    }
+}
+
 fn run_search(
     query: String,
     limit: usize,
@@ -1570,15 +1567,13 @@ fn run_search(
             if json {
                 println!("{}", serde_json::to_string_pretty(&results).unwrap());
             } else {
-                // Convert SearchResults to markdown via render_search_results
                 use ccmux_core::display::markdown::{render_search_results, SearchResultGroup};
+                use ccmux_core::display::{DisplayItem, DisplayModeF, ItemMeta};
 
                 let total_matches: usize = results.iter().map(|r| r.matches.len()).sum();
                 let total_sessions = results.len();
 
-                // Build display items from search result content
                 let groups: Vec<SearchResultGroup> = results.iter().map(|r| {
-                    use ccmux_core::display::{DisplayItem, DisplayModeF, ItemMeta};
                     let items: Vec<_> = r.matches.iter().map(|m| {
                         let item = match m.role.as_str() {
                             "user" => DisplayItem::UserMessage {
@@ -1616,30 +1611,12 @@ fn run_search(
         }
     }
 }
-
-static MAIN_CSS: Asset = asset!("/assets/style.scss");
-
-#[component]
-fn App() -> Element {
-    rsx! {
-        document::Stylesheet { href: MAIN_CSS }
-        Router::<Route> {}
-    }
-}
 ```
-
-Note: This adds a `dirs` dependency for `home_dir()`. Add to `[target.'cfg(not(target_arch = "wasm32"))'.dependencies]` in `crates/ccmux-app/Cargo.toml`:
-
-```toml
-dirs = "6"
-```
-
-Alternatively, if `ccmux-core` or the existing code already resolves `~/.claude/projects/` a different way, reuse that approach instead of adding `dirs`. Check `server_fns.rs` for how the base path is currently resolved and match that pattern.
 
 - [ ] **Step 4: Verify it compiles**
 
 Run: `cargo check -p ccmux-app`
-Expected: Compiles. May need adjustments for import paths or feature flags.
+Expected: Compiles with no errors.
 
 - [ ] **Step 5: Test the CLI help**
 
