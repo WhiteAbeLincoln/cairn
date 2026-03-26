@@ -1,5 +1,4 @@
 pub mod format;
-pub mod highlight;
 pub mod markdown;
 pub mod pipeline;
 pub mod streaming;
