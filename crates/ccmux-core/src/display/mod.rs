@@ -180,6 +180,29 @@ pub struct DisplayOpts {
 }
 
 impl DisplayOpts {
+    /// Display options for indexing. Only user and assistant messages are Full.
+    /// Everything else is Hidden since the indexer only extracts Full items.
+    pub fn indexing() -> Self {
+        use DisplayItemDiscriminant::*;
+        use DisplayModeF::*;
+
+        let defaults = HashMap::from([
+            (UserMessage, Full(())),
+            (AssistantMessage, Full(())),
+            (Thinking, Hidden(())),
+            (ToolUse, Hidden(())),
+            (ToolResult, Hidden(())),
+            (TurnDuration, Hidden(())),
+            (Compaction, Hidden(())),
+            (Other, Hidden(())),
+        ]);
+
+        Self {
+            defaults,
+            tool_overrides: HashMap::new(),
+        }
+    }
+
     /// Display options for the markdown API. Only user and assistant messages are Full.
     /// All tools, thinking, and compaction are Grouped. TurnDuration and Other are Hidden.
     pub fn markdown() -> Self {

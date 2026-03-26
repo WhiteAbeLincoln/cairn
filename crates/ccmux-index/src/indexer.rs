@@ -91,11 +91,18 @@ fn extract_file_paths(raw_events: &[Value]) -> Vec<(String, Option<String>)> {
     paths
 }
 
+/// Counts of items added during a single session indexing operation.
+pub(crate) struct SessionIndexResult {
+    messages_added: usize,
+    files_added: usize,
+}
+
 /// Index a single session, reading only new events since the last indexed offset.
-pub fn index_session(
+/// Returns counts of messages and files added.
+pub(crate) fn index_session(
     conn: &Connection,
     info: &SessionInfo,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<SessionIndexResult, Box<dyn std::error::Error>> {
     // Get last indexed offset for this session
     let last_offset: u64 = conn
         .query_row(
@@ -109,7 +116,10 @@ pub fn index_session(
     let (offset_events, final_offset) = load_from_offset(&info.path, last_offset)?;
 
     if offset_events.is_empty() {
-        return Ok(());
+        return Ok(SessionIndexResult {
+            messages_added: 0,
+            files_added: 0,
+        });
     }
 
     let raw_events: Vec<Value> = offset_events.iter().map(|(_, v)| v.clone()).collect();
@@ -119,7 +129,7 @@ pub fn index_session(
 
     // Parse events and run through display pipeline
     let parsed = parse_events(&raw_events);
-    let opts = DisplayOpts::markdown();
+    let opts = DisplayOpts::indexing();
     let display_items = events_to_display_items(&parsed, &raw_events, &opts);
 
     // Extract file paths
@@ -156,18 +166,20 @@ pub fn index_session(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )?;
 
+    let mut messages_added = 0usize;
     for item_with_mode in &display_items {
         match item_with_mode {
             DisplayModeF::Full(DisplayItem::UserMessage { content, meta, .. }) => {
                 if let Some(uuid) = &meta.uuid {
                     let ts = timestamp_map.get(uuid).cloned().unwrap_or_default();
-                    insert_msg.execute(rusqlite::params![info.id, uuid, "user", content, ts, 0])?;
+                    messages_added += insert_msg
+                        .execute(rusqlite::params![info.id, uuid, "user", content, ts, 0])?;
                 }
             }
             DisplayModeF::Full(DisplayItem::AssistantMessage { text, meta, .. }) => {
                 if let Some(uuid) = &meta.uuid {
                     let ts = timestamp_map.get(uuid).cloned().unwrap_or_default();
-                    insert_msg.execute(rusqlite::params![
+                    messages_added += insert_msg.execute(rusqlite::params![
                         info.id,
                         uuid,
                         "assistant",
@@ -189,18 +201,22 @@ pub fn index_session(
          VALUES (?1, ?2, ?3)",
     )?;
 
+    let mut files_added = 0usize;
     for (file_path, message_id) in &file_paths {
-        insert_file.execute(rusqlite::params![info.id, file_path, message_id])?;
+        files_added += insert_file.execute(rusqlite::params![info.id, file_path, message_id])?;
     }
 
     drop(insert_file);
     tx.commit()?;
 
-    Ok(())
+    Ok(SessionIndexResult {
+        messages_added,
+        files_added,
+    })
 }
 
 /// Index all discovered sessions under the given base path.
-pub fn index_all(
+pub(crate) fn index_all(
     conn: &Connection,
     base_path: &Path,
 ) -> Result<IndexStats, Box<dyn std::error::Error>> {
@@ -222,43 +238,18 @@ pub fn index_all(
             continue;
         }
 
-        let msg_before: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
-                [&info.id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        let files_before: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM session_files WHERE session_id = ?1",
-                [&info.id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        index_session(conn, info)?;
-
-        let msg_after: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM messages WHERE session_id = ?1",
-                [&info.id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        let files_after: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM session_files WHERE session_id = ?1",
-                [&info.id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
-
-        sessions_indexed += 1;
-        messages_indexed += (msg_after - msg_before) as usize;
-        files_indexed += (files_after - files_before) as usize;
+        match index_session(conn, info) {
+            Ok(result) => {
+                if result.messages_added > 0 || result.files_added > 0 {
+                    sessions_indexed += 1;
+                }
+                messages_indexed += result.messages_added;
+                files_indexed += result.files_added;
+            }
+            Err(e) => {
+                tracing::warn!(session_id = %info.id, error = %e, "Failed to index session");
+            }
+        }
     }
 
     Ok(IndexStats {

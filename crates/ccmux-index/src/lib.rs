@@ -69,7 +69,8 @@ impl SearchIndex {
     }
 
     pub fn index_session(&self, info: &SessionInfo) -> Result<(), Box<dyn std::error::Error>> {
-        indexer::index_session(&self.conn, info)
+        indexer::index_session(&self.conn, info)?;
+        Ok(())
     }
 
     pub fn index_all(&self, base_path: &Path) -> Result<IndexStats, Box<dyn std::error::Error>> {
