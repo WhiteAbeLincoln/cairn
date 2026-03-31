@@ -195,6 +195,35 @@ class TestMessagingDiscriminators:
             assert discs["channel"].score < discs["kind"].score
 
 
+class TestBooleanDiscriminator:
+    def test_boolean_field_is_discriminator(self):
+        """A boolean field whose values produce different property sets is a discriminator."""
+        objects = [
+            {"isApiError": True, "error_code": 500, "error_msg": "fail"},
+            {"isApiError": True, "error_code": 503, "error_msg": "timeout"},
+            {"isApiError": True, "error_code": 400, "error_msg": "bad request"},
+            {"isApiError": False, "usage": {"tokens": 10}, "result": "ok"},
+            {"isApiError": False, "usage": {"tokens": 20}, "result": "done"},
+            {"isApiError": False, "usage": {"tokens": 5}, "result": "yes"},
+        ]
+        discs = discriminator_paths(objects)
+        assert "isApiError" in discs
+        assert discs["isApiError"].score > 0.5
+
+    def test_boolean_non_discriminator(self):
+        """A boolean field that doesn't change sibling structure is not a discriminator."""
+        objects = [
+            {"active": True, "name": "a", "count": 1},
+            {"active": True, "name": "b", "count": 2},
+            {"active": False, "name": "c", "count": 3},
+            {"active": False, "name": "d", "count": 4},
+            {"active": True, "name": "e", "count": 5},
+        ]
+        discs = discriminator_paths(objects)
+        if "active" in discs:
+            assert discs["active"].score < 0.3
+
+
 class TestK8sDiscriminators:
     def test_kind_is_discriminator(self, k8s_workload_schema):
         """'kind' in k8s workloads is a discriminator (different kinds -> different specs)."""

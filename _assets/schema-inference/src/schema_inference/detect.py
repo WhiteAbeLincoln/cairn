@@ -50,6 +50,9 @@ class EnumField:
     is_name_hint: bool
     """Whether the leaf property name matched a name hint."""
 
+    is_boolean: bool = False
+    """Whether this field was detected from boolean values (true/false)."""
+
 
 @dataclass
 class DetectConfig:
@@ -81,6 +84,7 @@ class _FieldStats:
     values: Counter[str] = field(default_factory=Counter)
     total: int = 0
     non_string: int = 0
+    is_boolean: bool = False
 
 
 def _walk_paths(obj: Any, prefix: str, stats: dict[str, _FieldStats]) -> None:
@@ -92,7 +96,13 @@ def _walk_paths(obj: Any, prefix: str, stats: dict[str, _FieldStats]) -> None:
                 s = stats[path]
                 s.values[val] += 1
                 s.total += 1
-            elif isinstance(val, (int, float, bool)) or val is None:
+            elif isinstance(val, bool):
+                # Treat booleans as two-valued enums: "true" / "false"
+                s = stats[path]
+                s.values[str(val).lower()] += 1
+                s.total += 1
+                s.is_boolean = True
+            elif isinstance(val, (int, float)) or val is None:
                 stats[path].non_string += 1
                 stats[path].total += 1
             elif isinstance(val, dict):
@@ -201,6 +211,7 @@ def _score_field(
         count=string_count,
         score=round(score, 3),
         is_name_hint=is_hint,
+        is_boolean=stats.is_boolean,
     )
 
 

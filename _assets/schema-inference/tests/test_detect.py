@@ -235,3 +235,49 @@ class TestNoFalsePositives:
         fields = detected_paths(objects)
         if "message" in fields:
             assert fields["message"].score < 0.6, "Free-text 'message' scored too high"
+
+
+# ---------------------------------------------------------------------------
+# Boolean enum detection
+# ---------------------------------------------------------------------------
+
+class TestBooleanEnumDetection:
+    def test_boolean_field_detected_as_enum(self):
+        """A boolean field should be detected as a two-valued enum."""
+        objects = [
+            {"isError": True, "code": 500},
+            {"isError": False, "code": 200},
+            {"isError": True, "code": 503},
+            {"isError": False, "code": 200},
+            {"isError": False, "code": 201},
+        ]
+        fields = detected_paths(objects)
+        assert "isError" in fields
+        assert fields["isError"].values == {"true", "false"}
+
+    def test_boolean_with_structural_difference(self):
+        """Boolean field with different sibling keys per value should be detected."""
+        objects = [
+            {"isApiError": True, "error_code": 500, "error_msg": "fail"},
+            {"isApiError": True, "error_code": 503, "error_msg": "timeout"},
+            {"isApiError": False, "usage": {"tokens": 10}, "result": "ok"},
+            {"isApiError": False, "usage": {"tokens": 20}, "result": "done"},
+            {"isApiError": False, "usage": {"tokens": 5}, "result": "yes"},
+        ]
+        fields = detected_paths(objects)
+        assert "isApiError" in fields
+        assert fields["isApiError"].values == {"true", "false"}
+
+    def test_always_true_boolean_not_discriminator(self):
+        """A boolean that is always the same value should still be detected as enum
+        (single-value), but the discriminator scorer will reject it."""
+        objects = [
+            {"enabled": True, "x": 1},
+            {"enabled": True, "x": 2},
+            {"enabled": True, "x": 3},
+            {"enabled": True, "x": 4},
+            {"enabled": True, "x": 5},
+        ]
+        fields = detected_paths(objects)
+        if "enabled" in fields:
+            assert fields["enabled"].values == {"true"}

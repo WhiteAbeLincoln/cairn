@@ -116,6 +116,9 @@ def score_discriminators(
             parents = _resolve_parent(obj, path_parts)
             for parent in parents:
                 val = parent.get(leaf_name)
+                # Normalize booleans to their string representation
+                if isinstance(val, bool):
+                    val = str(val).lower()
                 if not isinstance(val, str) or val not in candidate.values:
                     continue
                 # Collect sibling keys (excluding the discriminator itself)

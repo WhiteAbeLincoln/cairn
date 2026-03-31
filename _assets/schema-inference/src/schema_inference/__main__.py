@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .detect import DetectConfig, detect_enum_fields
 from .discriminators import score_discriminators
+from .schema import infer_schema
 
 
 def load_jsonl_objects(root: Path) -> list[dict]:
@@ -128,6 +129,66 @@ def cmd_discriminators(args: argparse.Namespace) -> None:
     print(json.dumps(output, indent=2))
 
 
+def cmd_schema(args: argparse.Namespace) -> None:
+    objects = load_jsonl_objects(args.dir)
+    if not objects:
+        print(f"No JSONL objects found under {args.dir}", file=sys.stderr)
+        sys.exit(1)
+
+    config = make_config(args)
+    print("Detecting enums and discriminators...", file=sys.stderr)
+    schema = infer_schema(
+        objects,
+        detect_config=config,
+        min_divergence=args.min_divergence,
+        discriminator_hints=args.discriminator_hints or None,
+    )
+
+    if args.validate:
+        from jsonschema import Draft202012Validator
+
+        validator = Draft202012Validator(schema)
+        failures = 0
+        total = len(objects)
+        examples: list[str] = []
+        for i, obj in enumerate(objects):
+            errs = list(validator.iter_errors(obj))
+            if errs:
+                failures += 1
+                if len(examples) < 10:
+                    top = errs[0]
+                    loc = " -> ".join(str(p) for p in top.absolute_path) or "(root)"
+                    examples.append(f"  object {i} type={obj.get('type', '?')} [{loc}]: {top.message[:120]}")
+        if failures:
+            print(f"\nValidation: {failures}/{total} objects failed", file=sys.stderr)
+            for ex in examples:
+                print(ex, file=sys.stderr)
+            if failures > len(examples):
+                print(f"  ... and {failures - len(examples)} more", file=sys.stderr)
+        else:
+            print(f"\nValidation: all {total} objects pass", file=sys.stderr)
+
+    # Report schema structure
+    if "oneOf" in schema:
+        disc = schema.get("discriminator", {}).get("propertyName", "?")
+        n = len(schema["oneOf"])
+        consts = [
+            v.get("properties", {}).get(disc, {}).get("const", "?")
+            for v in schema["oneOf"]
+        ]
+        print(f"\nSchema: oneOf with {n} variants, discriminator={disc}", file=sys.stderr)
+        print(f"  variants: {consts}", file=sys.stderr)
+    else:
+        print(f"\nSchema: flat object (no discriminator detected)", file=sys.stderr)
+
+    output = json.dumps(schema, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(output)
+        print(f"Wrote schema to {args.output}", file=sys.stderr)
+    else:
+        print(output)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detect enum fields and structural discriminators from JSONL files",
@@ -144,12 +205,33 @@ def main():
         help="Minimum structural divergence score (default: 0.1)",
     )
 
+    schema_parser = subparsers.add_parser("schema", help="Generate JSON Schema with auto-detected discriminators")
+    add_common_args(schema_parser)
+    schema_parser.add_argument(
+        "--min-divergence", type=float, default=0.1,
+        help="Minimum structural divergence score (default: 0.1)",
+    )
+    schema_parser.add_argument(
+        "-o", "--output", type=Path, default=None,
+        help="Output file (default: stdout)",
+    )
+    schema_parser.add_argument(
+        "--validate", action="store_true",
+        help="Validate all input objects against the generated schema",
+    )
+    schema_parser.add_argument(
+        "--discriminator", action="append", default=[], dest="discriminator_hints",
+        help="Manually specify a field as a discriminator (can be repeated)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "enums":
         cmd_enums(args)
     elif args.command == "discriminators":
         cmd_discriminators(args)
+    elif args.command == "schema":
+        cmd_schema(args)
 
 
 if __name__ == "__main__":
