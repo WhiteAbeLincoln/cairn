@@ -436,3 +436,133 @@ Source: local file `~/.claude/projects/-Users-abe-Projects-REDACTED/9413eb94-e7f
 ```json
 {"type":"last-prompt","lastPrompt":"continue","sessionId":"9413eb94-e7fe-4a90-8769-20bd12213aa9"}
 ```
+
+# Event Keys Grouped by `type`
+
+## user (31257)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+      31257 | 100.0% |  userType                    | string
+      31257 | 100.0% |  message                     | object
+      31257 | 100.0% |  type                        | string
+      31257 | 100.0% |  gitBranch                   | string
+      31257 | 100.0% |  uuid                        | string
+      31257 | 100.0% |  sessionId                   | string
+      31257 | 100.0% |  isSidechain                 | boolean
+      31257 | 100.0% |  version                     | string
+      31257 | 100.0% |  cwd                         | string
+      31257 | 100.0% |  timestamp                   | string
+      30886 |  98.8% |  slug                        | string
+      30700 |  98.2% |  parentUuid                  | string
+      28592 |  91.5% |  sourceToolAssistantUUID     | string
+      21055 |  67.4% |  promptId                    | string
+      18661 |  59.7% |  toolUseResult               | object,string,array
+      16840 |  53.9% |  agentId                     | string
+      14457 |  46.3% |  entrypoint                  | string
+       1719 |   5.5% |  permissionMode              | string
+        108 |   0.3% |  isMeta                      | boolean
+         74 |   0.2% |  isVisibleInTranscriptOnly   | boolean
+         74 |   0.2% |  isCompactSummary            | boolean
+         68 |   0.2% |  sourceToolUseID             | string
+         42 |   0.1% |  origin                      | object
+         17 |   0.1% |  imagePasteIds               | array
+          2 |   0.0% |  planContent                 | string
+          1 |   0.0% |  todos                       | array
+
+## queue-operation (747)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+        747 | 100.0% |  timestamp                    |string
+        747 | 100.0% |  sessionId                    |string
+        747 | 100.0% |  type                         |string
+        747 | 100.0% |  operation                    |string
+        369 |  49.4% |  content                      |string
+
+## system (955)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+        955 | 100.0% |  userType                     |string
+        955 | 100.0% |  gitBranch                    |string
+        955 | 100.0% |  isSidechain                  |boolean
+        955 | 100.0% |  cwd                          |string
+        955 | 100.0% |  timestamp                    |string
+        955 | 100.0% |  subtype                      |string
+        955 | 100.0% |  sessionId                    |string
+        955 | 100.0% |  version                      |string
+        955 | 100.0% |  uuid                         |string
+        955 | 100.0% |  type                         |string
+        943 |  98.7% |  isMeta                       |boolean
+        929 |  97.3% |  slug                         |string
+        881 |  92.3% |  parentUuid                   |string
+        796 |  83.4% |  durationMs                   |number
+        426 |  44.6% |  entrypoint                   |string
+        241 |  25.2% |  messageCount                 |number
+        235 |  24.6% |  agentId                      |string
+        147 |  15.4% |  content                      |string
+        138 |  14.5% |  level                        |string
+         73 |   7.6% |  compactMetadata              |object
+         73 |   7.6% |  logicalParentUuid            |string
+         21 |   2.2% |  url                          |string
+         12 |   1.3% |  error                        |object
+         12 |   1.3% |  retryAttempt                 |number
+         12 |   1.3% |  maxRetries                   |number
+         12 |   1.3% |  retryInMs                    |number
+         10 |   1.0% |  cause                        |object
+          5 |   0.5% |  upgradeNudge                 |string
+
+## progress (37888)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+      37888 | 100.0% |  gitBranch                   | string
+      37888 |100.0% |  isSidechain                  |boolean
+      37888 |100.0% |  uuid                         |string
+      37888 |100.0% |  type                         |string
+      37888 |100.0% |  timestamp                    |string
+      37888 |100.0% |  sessionId                    |string
+      37888 |100.0% |  cwd                          |string
+      37888 |100.0% |  userType                     |string
+      37888 |100.0% |  parentToolUseID              |string
+      37888 |100.0% |  data                         |object
+      37888 |100.0% |  toolUseID                    |string
+      37888 |100.0% |  version                      |string
+      37844 | 99.9% |  parentUuid                   |string
+      37780 | 99.7% |  slug                         |string
+      16743 | 44.2% |  entrypoint                   |string
+      14306 | 37.8% |  agentId                      |string
+
+## assistant (44404)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+      44404 |100.0% |userType                    | string
+      44404 |100.0% |gitBranch                    |string
+      44404 |100.0% |timestamp                    |string
+      44404 |100.0% |uuid                         |string
+      44404 |100.0% |type                         |string
+      44404 |100.0% |cwd                         | string
+      44404 |100.0% |sessionId                    |string
+      44404 |100.0% |message                     | object
+      44404 |100.0% |version                     | string
+      44404 |100.0% |isSidechain                 | boolean
+      44404 |100.0% |parentUuid                  | string
+      44370 | 99.9% |requestId                   | string
+      43888 | 98.8% |slug                        | string
+      23909 | 53.8% |agentId                     | string
+      20727 | 46.7% |entrypoint                  | string
+         34 |  0.1% |isApiErrorMessage           | boolean
+          7 |  0.0% |error                       | string
+          3 |  0.0% |apiError                    | string
+
+## last-prompt (124)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+        124 |100.0% |  sessionId                    |string
+        124 |100.0% |  type                         |string
+        124 |100.0% |  lastPrompt                   |string
+
+## file-history-snapshot (2200)
+| count | percent | key | type |
+|-------|-------|-----|-----|
+       2200 |100.0% |  messageId                    |string
+       2200 |100.0% |  snapshot                     |object
+       2200 |100.0% |  type                         |string
+       2200 |100.0% |  isSnapshotUpdate             |boolean

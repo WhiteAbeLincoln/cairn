@@ -9,4 +9,6 @@ exclude = [".worktrees"]
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["raw_value"] }
-chrono = "0.4.44"
+chrono = { version = "0.4.44", features = ["serde"] }
+snafu = { version = "0.9.0", features = ["backtrace"] }
+tracing = { version = "0.1.44" }
