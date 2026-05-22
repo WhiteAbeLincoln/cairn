@@ -225,20 +225,38 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             break;
                         }
                         Command::Subscribe { reply } => {
-                            // Snapshot is empty for now — Task 14 wires in the
-                            // Formatter-backed scrollback snapshot.
+                            // Atomic: format current Terminal state, then
+                            // subscribe to subsequent bytes. broadcast::Receiver
+                            // only sees messages sent after creation, so no
+                            // overlap with the snapshot.
+                            let snapshot = match format_snapshot(&terminal.borrow()) {
+                                Ok(bytes) => bytes,
+                                Err(e) => {
+                                    let _ = reply.send(Err(e));
+                                    continue;
+                                }
+                            };
                             let sub = Subscription {
-                                snapshot: Bytes::new(),
+                                snapshot,
                                 stream: bcast_tx.subscribe(),
                             };
                             let _ = reply.send(Ok(sub));
                         }
-                        // Kernel-side resize: update the PTY master's terminal
-                        // size so the child process sees the new dimensions via
-                        // SIGWINCH / TIOCGWINSZ. Task 14 will also call
-                        // terminal.borrow_mut().resize() here to keep the VT
-                        // emulator's internal grid in sync.
                         Command::Resize { size, reply } => {
+                            // Update VT state and kernel side together so no
+                            // partial state is observable to subscribers between
+                            // the two steps. Terminal is updated first so that
+                            // any subsequent subscribe() after a resize sees the
+                            // new dimensions in the snapshot.
+                            if let Err(e) = terminal
+                                .borrow_mut()
+                                .resize(size.cols, size.rows, 0, 0)
+                            {
+                                let _ = reply.send(Err(PtyError::Backend {
+                                    source: Box::new(e),
+                                }));
+                                continue;
+                            }
                             let result = master
                                 .resize(PtySize {
                                     rows: size.rows,
@@ -275,4 +293,33 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
         .map_err(|e| PtyError::Io { source: e })?;
 
     Ok(WorkerHandles { cmd_tx, exit_rx })
+}
+
+/// Serialize the current Terminal state as a self-contained VT escape
+/// sequence stream. Clients feed this to their local emulator (xterm.js,
+/// ghostty-web, etc.) to reconstruct the visible screen + scrollback.
+///
+/// `None` is passed to `format_alloc` so that libghostty uses its own
+/// default (C) allocator; the returned `Bytes` are immediately copied into
+/// a `bytes::Bytes`, and the libghostty allocation is freed on drop.
+fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError> {
+    use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+
+    let opts = FormatterOptions {
+        format: Format::Vt,
+        trim: false,
+        unwrap: false,
+    };
+    let mut formatter = Formatter::new(terminal, opts)
+        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+
+    // Pass None to use libghostty's default allocator. The returned
+    // `libghostty_vt::alloc::Bytes` derefs to `[u8]`; we copy into a
+    // heap-owned `bytes::Bytes` so the caller has no lifetime dependency
+    // on the libghostty allocation.
+    let vt_bytes = formatter
+        .format_alloc(None::<&libghostty_vt::alloc::Allocator<()>>)
+        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+
+    Ok(Bytes::copy_from_slice(&vt_bytes))
 }

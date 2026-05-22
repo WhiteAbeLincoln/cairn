@@ -107,3 +107,36 @@ async fn spawn_succeeds_with_terminal_attached() {
     );
     let _ = pty.wait().await;
 }
+
+#[tokio::test]
+async fn late_subscriber_sees_prior_output_in_snapshot() {
+    // First subscriber starts immediately; second subscribes after the child
+    // has finished writing. The second's snapshot should contain the same
+    // visible content (text "late-join-marker") as the first saw via stream.
+    let mut cmd = std::process::Command::new("printf");
+    cmd.arg("late-join-marker");
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    let mut sub1 = pty.subscribe().await.expect("subscribe-1");
+    let bytes1 = read_until_contains(&mut sub1, b"late-join-marker", Duration::from_secs(2)).await;
+    assert!(bytes1
+        .windows(b"late-join-marker".len())
+        .any(|w| w == b"late-join-marker"));
+
+    // Wait for child exit so subsequent reads return Closed promptly.
+    let _ = pty.wait().await;
+
+    let sub2 = pty.subscribe().await.expect("subscribe-2");
+    // The snapshot bytes are an opaque VT escape stream; we don't try to
+    // parse them, but the literal text 'late-join-marker' (printed by
+    // printf) should still appear somewhere in the encoded screen since
+    // libghostty-vt's Formatter emits literal characters for printable cells.
+    assert!(
+        sub2.snapshot
+            .windows(b"late-join-marker".len())
+            .any(|w| w == b"late-join-marker"),
+        "snapshot missing 'late-join-marker'; got {:?}",
+        std::str::from_utf8(&sub2.snapshot).unwrap_or("<non-utf8>")
+    );
+}
