@@ -162,7 +162,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     rows: initial_size.rows,
                     max_scrollback: 0,
                 }) {
-                    Ok(t) => Rc::new(std::cell::RefCell::new(t)),
+                    Ok(t) => Rc::new(RefCell::new(t)),
                     Err(e) => {
                         tracing::error!(error = ?e, "failed to construct libghostty-vt Terminal");
                         return;
@@ -197,7 +197,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 // is std::io::Write (blocking sync); writes from the dispatcher
                 // serialize at byte boundaries inside this thread.
                 let writer = match master.take_writer() {
-                    Ok(w) => std::cell::RefCell::new(w),
+                    Ok(w) => RefCell::new(w),
                     Err(e) => {
                         tracing::error!(error = %e, "failed to take PTY writer");
                         // Without a writer the session can't fulfill writes,
