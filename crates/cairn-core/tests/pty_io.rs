@@ -52,3 +52,15 @@ async fn echo_output_is_broadcast_to_subscribers() {
     // Process should have exited; wait so the test doesn't leak the worker.
     let _ = pty.wait().await;
 }
+
+#[tokio::test]
+async fn size_reports_configured_dimensions() {
+    let mut cmd = std::process::Command::new("sleep");
+    cmd.arg("5");
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 132, rows: 50 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+    let size = pty.size().await.expect("size");
+    assert_eq!(size, TermSize { cols: 132, rows: 50 });
+    pty.kill().expect("kill");
+    let _ = pty.wait().await;
+}

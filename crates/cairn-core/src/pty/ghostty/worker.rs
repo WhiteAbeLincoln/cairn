@@ -8,7 +8,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 
 use super::Command;
-use crate::pty::{PtyError, SpawnOptions, Subscription};
+use crate::pty::{PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use portable_pty::ExitStatus;
 
@@ -141,8 +141,8 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
         .name("cairn-pty-session".into())
         .spawn(move || {
             // Keep the master fd alive for the lifetime of this thread; it
-            // closes when this thread exits and `_master` drops here.
-            let _master = master;
+            // closes when this thread exits and `master` drops here.
+            let master = master;
             let local = tokio::task::LocalSet::new();
 
             local.block_on(&rt, async move {
@@ -193,7 +193,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             let _ = reply.send(Err(PtyError::Closed));
                         }
                         Command::Size { reply } => {
-                            let _ = reply.send(Err(PtyError::Closed));
+                            let result = master
+                                .get_size()
+                                .map(|s| TermSize {
+                                    cols: s.cols,
+                                    rows: s.rows,
+                                })
+                                .map_err(|e| PtyError::Backend { source: e.into() });
+                            let _ = reply.send(result);
                         }
                         Command::Write { reply, .. } => {
                             let _ = reply.send(Err(PtyError::Closed));
