@@ -2,7 +2,7 @@
 
 **Status:** Approved design, ready for implementation planning
 **Date:** 2026-05-22
-**Location:** `crates/cairn-core/src/pty.rs` (package: `cairn-types` per
+**Location:** `crates/cairn-pty/src/pty.rs` (package: `cairn-types` per
 current Cargo.toml — package rename appears to be in flight; spec uses
 module path, not package name)
 
@@ -480,7 +480,7 @@ Items deliberately excluded from this design:
   `PtySession` is just the TUI wrapper.
 - **Session recording / asciinema replay** — could be added later as a
   tee on the reader branch without changing the trait.
-- **Frontend / WebSocket layer** — outside cairn-core.
+- **Frontend / WebSocket layer** — outside cairn-pty.
 - **Shared-thread session pool** — designed in (1-thread-per-session is
   an implementation detail of `GhosttyPty`, the trait doesn't constrain
   it), but not implemented. Migration path if scale demands it: hash
@@ -507,7 +507,7 @@ Items deliberately excluded from this design:
 
 ## Cargo Dependencies
 
-Already present in `crates/cairn-core/Cargo.toml`:
+Already present in `crates/cairn-pty/Cargo.toml`:
 
 - `libghostty-vt = "0.1.1"`
 - `tokio = { version = "1.52", features = ["full"] }` (`full` includes

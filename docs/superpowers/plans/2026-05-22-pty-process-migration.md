@@ -14,16 +14,16 @@
 
 This plan migrates an existing, fully-tested implementation. The contract is:
 
-1. Every existing test in `crates/cairn-core/tests/` must continue to pass at the end of every task.
+1. Every existing test in `crates/cairn-pty/tests/` must continue to pass at the end of every task.
 2. The public API (`pty::PtySession`, `pty::GhosttyPty`, `pty::SpawnOptions`, etc.) does not change.
 3. The `pty::ghostty::ExitStatus` re-export changes type (from `portable_pty::ExitStatus` to `std::process::ExitStatus`), but the methods callers use (`.success()`) are identical.
 
-You will be working in `crates/cairn-core/`. Run all commands from the repo root unless noted.
+You will be working in `crates/cairn-pty/`. Run all commands from the repo root unless noted.
 
 ## File Structure
 
 ```
-crates/cairn-core/
+crates/cairn-pty/
 ├── Cargo.toml                                 (modified: dep swap)
 ├── src/pty/
 │   ├── types.rs                               (modified: comment update only)
@@ -40,7 +40,7 @@ Only `worker.rs` undergoes substantive change. The trait, error type, types, sub
 - [ ] **Step 1: Confirm current state is green**
 
 ```bash
-cargo test -p cairn-core
+cargo test -p cairn-pty
 ```
 
 Expected: all tests pass.
@@ -61,13 +61,13 @@ If the working tree is not clean, stop and resolve before proceeding.
 ## Task 1: Swap the PTY dependency
 
 **Files:**
-- Modify: `crates/cairn-core/Cargo.toml`
+- Modify: `crates/cairn-pty/Cargo.toml`
 
 **Rationale:** `pty-process` provides Unix-native async PTY I/O and integrates with `tokio::process::Child` for reactor-driven wait. Adding it alongside portable-pty is fine — we don't remove portable-pty until Task 5, after the rewrite compiles and tests pass on the new path.
 
 - [ ] **Step 1: Add `pty-process` to `[dependencies]`**
 
-Open `crates/cairn-core/Cargo.toml` and add a single line in the `[dependencies]` block, immediately after the existing `portable-pty` line:
+Open `crates/cairn-pty/Cargo.toml` and add a single line in the `[dependencies]` block, immediately after the existing `portable-pty` line:
 
 ```toml
 pty-process = { version = "0.4", features = ["async"] }
@@ -94,7 +94,7 @@ pty-process = { version = "0.4", features = ["async"] }
 - [ ] **Step 2: Verify the crate still compiles**
 
 ```bash
-cargo check -p cairn-core
+cargo check -p cairn-pty
 ```
 
 Expected: success (no errors, possibly an "unused dependency" warning for `pty-process` which we will resolve in Task 3).
@@ -102,7 +102,7 @@ Expected: success (no errors, possibly an "unused dependency" warning for `pty-p
 - [ ] **Step 3: Verify all tests still pass**
 
 ```bash
-cargo test -p cairn-core
+cargo test -p cairn-pty
 ```
 
 Expected: all tests pass (same as pre-flight).
@@ -110,7 +110,7 @@ Expected: all tests pass (same as pre-flight).
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/cairn-core/Cargo.toml
+git add crates/cairn-pty/Cargo.toml
 git commit -m "$(cat <<'EOF'
 Add pty-process dependency alongside portable-pty
 
@@ -126,7 +126,7 @@ EOF
 ## Task 2: Update `ExitStatus` re-export to `std::process::ExitStatus`
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
 
 **Rationale:** `pty_process::Command::spawn` returns a `tokio::process::Child`, whose `wait()` resolves to `std::process::ExitStatus`. We change the public re-export to match. The methods callers use (`.success()`) are identical on both types, so the existing tests are source-compatible.
 
@@ -134,7 +134,7 @@ This task does NOT yet rewrite the worker — only the type alias. The worker st
 
 - [ ] **Step 1: Replace the re-export and the synthetic exit-status construction site**
 
-Open `crates/cairn-core/src/pty/ghostty/worker.rs`.
+Open `crates/cairn-pty/src/pty/ghostty/worker.rs`.
 
 Replace line 16:
 
@@ -183,7 +183,7 @@ pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
 }
 ```
 
-Now find the matching call site in `crates/cairn-core/src/pty/ghostty/mod.rs` (around line 79):
+Now find the matching call site in `crates/cairn-pty/src/pty/ghostty/mod.rs` (around line 79):
 
 ```rust
             if rx.changed().await.is_err() {
@@ -210,7 +210,7 @@ No new function in `mod.rs` is needed — the helper lives in `worker.rs` and is
 - [ ] **Step 2: Verify compilation**
 
 ```bash
-cargo check -p cairn-core
+cargo check -p cairn-pty
 ```
 
 Expected: success. (If you see "no method `with_exit_code` on `ExitStatus`" you missed a call site — grep for `with_exit_code` and replace it with the helper.)
@@ -218,7 +218,7 @@ Expected: success. (If you see "no method `with_exit_code` on `ExitStatus`" you 
 - [ ] **Step 3: Verify all tests still pass**
 
 ```bash
-cargo test -p cairn-core
+cargo test -p cairn-pty
 ```
 
 Expected: all tests pass.
@@ -226,7 +226,7 @@ Expected: all tests pass.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/
+git add crates/cairn-pty/src/pty/ghostty/
 git commit -m "$(cat <<'EOF'
 Switch ExitStatus re-export to std::process::ExitStatus
 
@@ -242,7 +242,7 @@ EOF
 ## Task 3: Rewrite `worker.rs` for `pty-process`
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs` (substantive rewrite)
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs` (substantive rewrite)
 
 This is the load-bearing task. It collapses three threads into one and replaces the portable-pty surface with pty-process. The strategy: rewrite the file in place, then verify by running the existing test suite (which encodes all the behavior we need to preserve).
 
@@ -258,7 +258,7 @@ All five changes land in one rewrite of `worker.rs`. Multiple sub-steps follow.
 
 - [ ] **Step 1: Replace the file contents wholesale**
 
-Open `crates/cairn-core/src/pty/ghostty/worker.rs` and replace its entire contents with:
+Open `crates/cairn-pty/src/pty/ghostty/worker.rs` and replace its entire contents with:
 
 ```rust
 //! Session worker thread: bootstraps the current-thread tokio runtime,
@@ -660,7 +660,7 @@ pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
 - [ ] **Step 2: Verify compilation**
 
 ```bash
-cargo check -p cairn-core 2>&1 | tail -40
+cargo check -p cairn-pty 2>&1 | tail -40
 ```
 
 Expected: success. If compilation fails:
@@ -673,7 +673,7 @@ If a fix takes more than two iterations to find, stop and ask the user — the d
 - [ ] **Step 3: Run the lifecycle integration tests**
 
 ```bash
-cargo test -p cairn-core --test pty_lifecycle 2>&1 | tail -40
+cargo test -p cairn-pty --test pty_lifecycle 2>&1 | tail -40
 ```
 
 Expected: all three tests pass:
@@ -686,7 +686,7 @@ The third test is the most timing-sensitive; if it fails, the post-exit normalis
 - [ ] **Step 4: Run the I/O integration tests**
 
 ```bash
-cargo test -p cairn-core --test pty_io 2>&1 | tail -40
+cargo test -p cairn-pty --test pty_io 2>&1 | tail -40
 ```
 
 Expected: all seven tests pass:
@@ -701,24 +701,24 @@ Expected: all seven tests pass:
 If `da1_query_gets_response_without_client` fails (the test reads `reply-len=0` instead of a non-zero length), the `flush_pending_writes` call after `vt_write` is not running or the queue is empty. Trace the issue:
 
 1. Add `tracing::debug!("vt_write {} bytes, pending after = {}", chunk.len(), pending_writes.borrow().len())` after the vt_write call.
-2. Run with `RUST_LOG=cairn_core=debug cargo test --test pty_io da1_query_gets_response_without_client -- --nocapture`.
+2. Run with `RUST_LOG=cairn_pty=debug cargo test --test pty_io da1_query_gets_response_without_client -- --nocapture`.
 3. If `pending after = 0` always, the PtyWriteFn callback isn't being installed correctly — verify the `on_pty_write` call succeeded.
 4. If `pending after > 0` but bytes don't reach the child, the `pty.write_all` in flush_pending_writes is failing silently.
 
 - [ ] **Step 5: Run the resize test**
 
 ```bash
-cargo test -p cairn-core --test pty_resize 2>&1 | tail -20
+cargo test -p cairn-pty --test pty_resize 2>&1 | tail -20
 ```
 
 Expected: `resize_updates_size_query` passes.
 
 If the new `Size` size is reported but doesn't match what the kernel sees, the test may expose that we cached `current_size` but the kernel ioctl failed. Confirm `s.pty.resize(...)` returned Ok before updating `current_size`.
 
-- [ ] **Step 6: Run unit tests inside cairn-core**
+- [ ] **Step 6: Run unit tests inside cairn-pty**
 
 ```bash
-cargo test -p cairn-core --lib 2>&1 | tail -30
+cargo test -p cairn-pty --lib 2>&1 | tail -30
 ```
 
 Expected: all `pty::tests::*` cases pass, including the `ghostty_pty_is_send_sync()` compile check.
@@ -734,7 +734,7 @@ Expected: green across the workspace.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs
 git commit -m "$(cat <<'EOF'
 Rewrite session worker for pty-process (single-thread topology)
 
@@ -755,13 +755,13 @@ EOF
 ## Task 4: Update doc comment in `types.rs`
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/types.rs:18-19`
+- Modify: `crates/cairn-pty/src/pty/types.rs:18-19`
 
 The comment about why we use `std::process::Command` still references portable-pty.
 
 - [ ] **Step 1: Replace the comment**
 
-Open `crates/cairn-core/src/pty/types.rs` and find:
+Open `crates/cairn-pty/src/pty/types.rs` and find:
 
 ```rust
 /// Construct via [`SpawnOptions::new`] with a configured [`std::process::Command`].
@@ -781,7 +781,7 @@ Replace with:
 - [ ] **Step 2: Verify compilation and tests**
 
 ```bash
-cargo check -p cairn-core && cargo test -p cairn-core
+cargo check -p cairn-pty && cargo test -p cairn-pty
 ```
 
 Expected: green.
@@ -789,7 +789,7 @@ Expected: green.
 - [ ] **Step 3: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/types.rs
+git add crates/cairn-pty/src/pty/types.rs
 git commit -m "$(cat <<'EOF'
 Update SpawnOptions doc comment to reference pty-process
 
@@ -806,13 +806,13 @@ EOF
 ## Task 5: Drop `portable-pty` dependency
 
 **Files:**
-- Modify: `crates/cairn-core/Cargo.toml`
+- Modify: `crates/cairn-pty/Cargo.toml`
 
 Now that the rewrite is green, remove the no-longer-used dep.
 
 - [ ] **Step 1: Remove the line**
 
-Open `crates/cairn-core/Cargo.toml` and delete:
+Open `crates/cairn-pty/Cargo.toml` and delete:
 
 ```toml
 portable-pty = "0.9"
@@ -821,13 +821,13 @@ portable-pty = "0.9"
 - [ ] **Step 2: Verify compilation**
 
 ```bash
-cargo check -p cairn-core 2>&1 | tail -10
+cargo check -p cairn-pty 2>&1 | tail -10
 ```
 
 Expected: success. If you see `unresolved import portable_pty::...` somewhere, you missed a reference in Task 3 — grep for `portable_pty` and resolve it:
 
 ```bash
-grep -rn 'portable[_-]pty' crates/cairn-core/
+grep -rn 'portable[_-]pty' crates/cairn-pty/
 ```
 
 The output should be empty (no remaining references).
@@ -835,7 +835,7 @@ The output should be empty (no remaining references).
 - [ ] **Step 3: Verify all tests still pass**
 
 ```bash
-cargo test -p cairn-core 2>&1 | tail -20
+cargo test -p cairn-pty 2>&1 | tail -20
 ```
 
 Expected: all tests pass.
@@ -846,17 +846,17 @@ Expected: all tests pass.
 grep portable-pty Cargo.lock | head -5
 ```
 
-Expected: empty output (or only transitive references unrelated to cairn-core). If `cairn-core` still pulls portable-pty transitively, run `cargo update -p portable-pty --precise '0.0.0'` won't help — instead `cargo update` to refresh the lock.
+Expected: empty output (or only transitive references unrelated to cairn-pty). If `cairn-pty` still pulls portable-pty transitively, run `cargo update -p portable-pty --precise '0.0.0'` won't help — instead `cargo update` to refresh the lock.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/Cargo.toml Cargo.lock
+git add crates/cairn-pty/Cargo.toml Cargo.lock
 git commit -m "$(cat <<'EOF'
 Drop portable-pty dependency
 
 Migration to pty-process is complete; portable-pty is no longer used by
-cairn-core. Lockfile updated to reflect the removal.
+cairn-pty. Lockfile updated to reflect the removal.
 EOF
 )"
 ```
@@ -873,7 +873,7 @@ Verify the example binary still works end-to-end. The example exercises spawn, s
 - [ ] **Step 1: Build the example**
 
 ```bash
-cargo build -p cairn-core --example echo 2>&1 | tail -10
+cargo build -p cairn-pty --example echo 2>&1 | tail -10
 ```
 
 Expected: builds clean.
@@ -881,7 +881,7 @@ Expected: builds clean.
 - [ ] **Step 2: Run the example**
 
 ```bash
-cargo run -p cairn-core --example echo 2>&1 | tail -20
+cargo run -p cairn-pty --example echo 2>&1 | tail -20
 ```
 
 Expected output:
@@ -896,8 +896,8 @@ If the example panics, the panic message will identify which expect() failed; tr
 - [ ] **Step 3: Final formatting + lint**
 
 ```bash
-cargo fmt -p cairn-core
-cargo clippy -p cairn-core --all-targets 2>&1 | tail -40
+cargo fmt -p cairn-pty
+cargo clippy -p cairn-pty --all-targets 2>&1 | tail -40
 ```
 
 Expected: fmt produces no diff (the rewrite was already formatted); clippy is clean except for any pre-existing warnings not introduced by this migration.
@@ -924,10 +924,10 @@ If no changes resulted, skip this commit.
 
 ## Verification checklist (end of plan)
 
-- [ ] `cargo test -p cairn-core` is green.
+- [ ] `cargo test -p cairn-pty` is green.
 - [ ] `cargo test --workspace` is green.
-- [ ] `cargo build -p cairn-core --example echo` succeeds.
-- [ ] `grep -rn 'portable[_-]pty' crates/cairn-core/` returns nothing.
-- [ ] `cargo clippy -p cairn-core --all-targets` is clean for any new warnings.
+- [ ] `cargo build -p cairn-pty --example echo` succeeds.
+- [ ] `grep -rn 'portable[_-]pty' crates/cairn-pty/` returns nothing.
+- [ ] `cargo clippy -p cairn-pty --all-targets` is clean for any new warnings.
 - [ ] Thread inventory inspection (manual sanity check): in a debugger, on a running session, only one thread named `cairn-pty-session` exists. The `cairn-pty-reader` and `cairn-pty-waiter` threads from the previous architecture are gone.
 - [ ] `git log` shows one commit per task above (six commits total, or fewer if Task 6 Step 4 was a no-op).

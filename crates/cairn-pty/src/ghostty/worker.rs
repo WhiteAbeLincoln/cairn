@@ -16,7 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use super::Command;
-use crate::pty::{PtyError, SpawnOptions, Subscription, TermSize};
+use crate::{PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use std::process::ExitStatus;
 

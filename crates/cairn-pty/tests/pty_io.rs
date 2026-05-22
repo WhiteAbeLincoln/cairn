@@ -1,14 +1,14 @@
 //! Integration tests for GhosttyPty subscribe / write / scrollback I/O.
 
 use bytes::Bytes;
-use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
+use cairn_pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
 /// Read from the subscription stream until either the deadline elapses or
 /// the accumulated bytes contain the needle. Returns the accumulated bytes.
 async fn read_until_contains(
-    sub: &mut cairn_core::pty::Subscription,
+    sub: &mut cairn_pty::Subscription,
     needle: &[u8],
     deadline: Duration,
 ) -> Vec<u8> {

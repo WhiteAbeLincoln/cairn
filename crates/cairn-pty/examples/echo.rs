@@ -1,8 +1,8 @@
 //! Spawn a bash and send it an echo command, then print what came back.
 //!
-//! Run with: `nix develop --command cargo run -p cairn-core --example echo`
+//! Run with: `nix develop --command cargo run -p cairn-pty --example echo`
 
-use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions};
+use cairn_pty::{GhosttyPty, PtySession, SpawnOptions};
 
 #[tokio::main]
 async fn main() {
@@ -17,9 +17,14 @@ async fn main() {
         .expect("write");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let mut total = 0usize;
+    let mut buff = Vec::new();
     while let Ok(chunk) = sub.stream.try_recv() {
         total += chunk.len();
+        buff.extend_from_slice(&chunk);
     }
-    println!("received {total} bytes from bash");
+    println!("received {total} bytes from bash\n");
+    println!("output:\n{}\n", String::from_utf8_lossy(&buff));
+    // print escaped as well, to show newlines and control characters
+    println!("output (escaped):\n{:?}\n", String::from_utf8_lossy(&buff));
     pty.kill().expect("kill");
 }

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement the `PtySession` trait + the `GhosttyPty` concrete implementation in `crates/cairn-core/`, per `docs/superpowers/specs/2026-05-22-pty-session-trait-design.md`.
+**Goal:** Implement the `PtySession` trait + the `GhosttyPty` concrete implementation in `crates/cairn-pty/`, per `docs/superpowers/specs/2026-05-22-pty-session-trait-design.md`.
 
 **Architecture:** Single dedicated OS thread per session running a current-thread tokio runtime + `LocalSet`. The thread hosts the `!Send` libghostty-vt `Terminal`, a PTY reader task using `AsyncFd`, and a command dispatcher task. External callers hold a `Send + Sync` `Arc<GhosttyPty>` and talk to the worker via a `flume` channel.
 
@@ -13,7 +13,7 @@
 ## File Structure
 
 ```
-crates/cairn-core/
+crates/cairn-pty/
 ├── Cargo.toml                    (modified: add deps)
 ├── src/
 │   ├── lib.rs                    (modified: re-export pty surface)
@@ -32,9 +32,9 @@ crates/cairn-core/
     └── pty_resize.rs             (new: resize semantics)
 ```
 
-The existing placeholder file `crates/cairn-core/src/pty.rs` (currently `trait PtySession {}`) gets deleted in Task 2 and replaced by the `pty/` directory with `mod.rs`.
+The existing placeholder file `crates/cairn-pty/src/pty.rs` (currently `trait PtySession {}`) gets deleted in Task 2 and replaced by the `pty/` directory with `mod.rs`.
 
-**Package:** `cairn-core` (lives in `crates/cairn-core/`). Use `cargo test -p cairn-core` and `cargo build -p cairn-core` throughout this plan.
+**Package:** `cairn-pty` (lives in `crates/cairn-pty/`). Use `cargo test -p cairn-pty` and `cargo build -p cairn-pty` throughout this plan.
 
 ---
 
@@ -43,11 +43,11 @@ The existing placeholder file `crates/cairn-core/src/pty.rs` (currently `trait P
 ### Task 1: Add dependencies
 
 **Files:**
-- Modify: `crates/cairn-core/Cargo.toml`
+- Modify: `crates/cairn-pty/Cargo.toml`
 
 - [ ] **Step 1: Add new dependencies**
 
-Replace the `[dependencies]` block in `crates/cairn-core/Cargo.toml` with:
+Replace the `[dependencies]` block in `crates/cairn-pty/Cargo.toml` with:
 
 ```toml
 [dependencies]
@@ -69,13 +69,13 @@ tokio = { version = "1.52", features = ["full", "test-util", "macros"] }
 
 - [ ] **Step 2: Verify build**
 
-Run: `cargo build -p cairn-core`
+Run: `cargo build -p cairn-pty`
 Expected: clean build, all new crates downloaded and compiled.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add crates/cairn-core/Cargo.toml Cargo.lock
+git add crates/cairn-pty/Cargo.toml Cargo.lock
 git commit -m "Add deps for PtySession trait (portable-pty, flume, async-trait, bytes)"
 ```
 
@@ -84,19 +84,19 @@ git commit -m "Add deps for PtySession trait (portable-pty, flume, async-trait, 
 ### Task 2: PtyError type + module layout switch
 
 **Files:**
-- Delete: `crates/cairn-core/src/pty.rs` (the existing placeholder)
-- Create: `crates/cairn-core/src/pty/mod.rs`
-- Create: `crates/cairn-core/src/pty/error.rs`
+- Delete: `crates/cairn-pty/src/pty.rs` (the existing placeholder)
+- Create: `crates/cairn-pty/src/pty/mod.rs`
+- Create: `crates/cairn-pty/src/pty/error.rs`
 
 - [ ] **Step 1: Delete the existing placeholder file**
 
 ```bash
-git rm crates/cairn-core/src/pty.rs
+git rm crates/cairn-pty/src/pty.rs
 ```
 
 - [ ] **Step 2: Create the module entry with failing tests**
 
-Create `crates/cairn-core/src/pty/mod.rs`:
+Create `crates/cairn-pty/src/pty/mod.rs`:
 
 ```rust
 //! Pseudo-terminal session abstraction.
@@ -129,12 +129,12 @@ mod tests {
 
 - [ ] **Step 3: Run the test (expect failure)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: FAIL — `PtyError` does not exist (module not yet created).
 
 - [ ] **Step 4: Create the error module**
 
-Create `crates/cairn-core/src/pty/error.rs`:
+Create `crates/cairn-pty/src/pty/error.rs`:
 
 ```rust
 use snafu::Snafu;
@@ -167,13 +167,13 @@ impl From<std::io::Error> for PtyError {
 
 - [ ] **Step 5: Run the test (expect pass)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: PASS (both tests green).
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add -A crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/
+git add -A crates/cairn-pty/src/pty.rs crates/cairn-pty/src/pty/
 git commit -m "Switch pty to module directory layout; add PtyError"
 ```
 
@@ -182,12 +182,12 @@ git commit -m "Switch pty to module directory layout; add PtyError"
 ### Task 3: TermSize and SpawnOptions
 
 **Files:**
-- Create: `crates/cairn-core/src/pty/types.rs`
-- Modify: `crates/cairn-core/src/pty/mod.rs`
+- Create: `crates/cairn-pty/src/pty/types.rs`
+- Modify: `crates/cairn-pty/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing tests**
 
-Replace the `#[cfg(test)] mod tests` block in `crates/cairn-core/src/pty/mod.rs` with:
+Replace the `#[cfg(test)] mod tests` block in `crates/cairn-pty/src/pty/mod.rs` with:
 
 ```rust
 mod error;
@@ -246,12 +246,12 @@ mod tests {
 
 - [ ] **Step 2: Run tests (expect failure)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: FAIL — `TermSize` and `SpawnOptions` not defined.
 
 - [ ] **Step 3: Create the types module**
 
-Create `crates/cairn-core/src/pty/types.rs`:
+Create `crates/cairn-pty/src/pty/types.rs`:
 
 ```rust
 /// Terminal grid size in cells. Matches the kernel TIOCGWINSZ representation
@@ -302,13 +302,13 @@ impl SpawnOptions {
 
 - [ ] **Step 4: Run tests (expect pass)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: PASS (all six tests green).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/types.rs
+git add crates/cairn-pty/src/pty/mod.rs crates/cairn-pty/src/pty/types.rs
 git commit -m "Add TermSize and SpawnOptions with builder API"
 ```
 
@@ -317,12 +317,12 @@ git commit -m "Add TermSize and SpawnOptions with builder API"
 ### Task 4: Subscription type
 
 **Files:**
-- Create: `crates/cairn-core/src/pty/subscription.rs`
-- Modify: `crates/cairn-core/src/pty/mod.rs`
+- Create: `crates/cairn-pty/src/pty/subscription.rs`
+- Modify: `crates/cairn-pty/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Update `crates/cairn-core/src/pty/mod.rs` — replace the `mod`/`pub use` lines and append a test:
+Update `crates/cairn-pty/src/pty/mod.rs` — replace the `mod`/`pub use` lines and append a test:
 
 ```rust
 mod error;
@@ -358,12 +358,12 @@ mod tests {
 
 - [ ] **Step 2: Run tests (expect failure)**
 
-Run: `cargo test -p cairn-core pty::tests::subscription_constructs_from_parts`
+Run: `cargo test -p cairn-pty pty::tests::subscription_constructs_from_parts`
 Expected: FAIL — `Subscription` does not exist.
 
 - [ ] **Step 3: Create the subscription module**
 
-Create `crates/cairn-core/src/pty/subscription.rs`:
+Create `crates/cairn-pty/src/pty/subscription.rs`:
 
 ```rust
 use bytes::Bytes;
@@ -389,13 +389,13 @@ pub struct Subscription {
 
 - [ ] **Step 4: Run tests (expect pass)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: PASS (all tests green).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/subscription.rs
+git add crates/cairn-pty/src/pty/mod.rs crates/cairn-pty/src/pty/subscription.rs
 git commit -m "Add Subscription type bundling snapshot + broadcast receiver"
 ```
 
@@ -406,12 +406,12 @@ git commit -m "Add Subscription type bundling snapshot + broadcast receiver"
 ### Task 5: PtySession trait
 
 **Files:**
-- Create: `crates/cairn-core/src/pty/session.rs`
-- Modify: `crates/cairn-core/src/pty/mod.rs`
+- Create: `crates/cairn-pty/src/pty/session.rs`
+- Modify: `crates/cairn-pty/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Update `crates/cairn-core/src/pty/mod.rs`:
+Update `crates/cairn-pty/src/pty/mod.rs`:
 
 ```rust
 mod error;
@@ -470,12 +470,12 @@ Add a new integration-style unit test at the bottom of the `tests` module:
 
 - [ ] **Step 2: Run tests (expect failure)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: FAIL — `PtySession` not defined.
 
 - [ ] **Step 3: Create the trait**
 
-Create `crates/cairn-core/src/pty/session.rs`:
+Create `crates/cairn-pty/src/pty/session.rs`:
 
 ```rust
 use bytes::Bytes;
@@ -515,13 +515,13 @@ pub trait PtySession: Send + Sync {
 
 - [ ] **Step 4: Run tests (expect pass)**
 
-Run: `cargo test -p cairn-core pty::tests`
+Run: `cargo test -p cairn-pty pty::tests`
 Expected: PASS (all tests green).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/session.rs
+git add crates/cairn-pty/src/pty/mod.rs crates/cairn-pty/src/pty/session.rs
 git commit -m "Add PtySession async trait with size/resize/subscribe/write"
 ```
 
@@ -532,12 +532,12 @@ git commit -m "Add PtySession async trait with size/resize/subscribe/write"
 ### Task 6: GhosttyPty struct and Command enum
 
 **Files:**
-- Create: `crates/cairn-core/src/pty/ghostty/mod.rs`
-- Modify: `crates/cairn-core/src/pty/mod.rs`
+- Create: `crates/cairn-pty/src/pty/ghostty/mod.rs`
+- Modify: `crates/cairn-pty/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Update `crates/cairn-core/src/pty/mod.rs` to add the ghostty module and re-export:
+Update `crates/cairn-pty/src/pty/mod.rs` to add the ghostty module and re-export:
 
 ```rust
 mod error;
@@ -565,12 +565,12 @@ Append a test to the existing `tests` module:
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core pty::tests::ghostty_pty_is_send_sync`
+Run: `cargo test -p cairn-pty pty::tests::ghostty_pty_is_send_sync`
 Expected: FAIL — `GhosttyPty` not defined.
 
 - [ ] **Step 3: Create the ghostty module with placeholder struct**
 
-Create `crates/cairn-core/src/pty/ghostty/mod.rs`:
+Create `crates/cairn-pty/src/pty/ghostty/mod.rs`:
 
 ```rust
 //! `libghostty-vt`-backed [`PtySession`] implementation.
@@ -622,7 +622,7 @@ impl GhosttyPty {
 }
 ```
 
-Create the empty worker submodule file `crates/cairn-core/src/pty/ghostty/worker.rs`:
+Create the empty worker submodule file `crates/cairn-pty/src/pty/ghostty/worker.rs`:
 
 ```rust
 //! Session worker thread: bootstraps the current-thread tokio runtime,
@@ -633,13 +633,13 @@ Create the empty worker submodule file `crates/cairn-core/src/pty/ghostty/worker
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core pty::tests::ghostty_pty_is_send_sync`
+Run: `cargo test -p cairn-pty pty::tests::ghostty_pty_is_send_sync`
 Expected: PASS — `flume::Sender` is `Send + Sync`, so `GhosttyPty` inherits it.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs
+git add crates/cairn-pty/src/pty/mod.rs crates/cairn-pty/src/pty/ghostty/mod.rs crates/cairn-pty/src/pty/ghostty/worker.rs
 git commit -m "Add GhosttyPty skeleton with Command enum and worker module stub"
 ```
 
@@ -648,20 +648,20 @@ git commit -m "Add GhosttyPty skeleton with Command enum and worker module stub"
 ### Task 7: Spawn a child process (proof of life)
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/mod.rs`
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Create: `crates/cairn-core/tests/pty_lifecycle.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/mod.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Create: `crates/cairn-pty/tests/pty_lifecycle.rs`
 
 This task does the minimum to spawn a child via `portable-pty` and `wait()` for it. No reader task, no Terminal, no commands yet — just proving the worker thread bootstraps and a child exits.
 
 - [ ] **Step 1: Write failing integration test**
 
-Create `crates/cairn-core/tests/pty_lifecycle.rs`:
+Create `crates/cairn-pty/tests/pty_lifecycle.rs`:
 
 ```rust
 //! Integration tests for GhosttyPty spawn / wait / kill lifecycle.
 
-use cairn_core::pty::{GhosttyPty, SpawnOptions, TermSize};
+use cairn_pty::pty::{GhosttyPty, SpawnOptions, TermSize};
 
 #[tokio::test]
 async fn spawn_true_exits_cleanly() {
@@ -675,12 +675,12 @@ async fn spawn_true_exits_cleanly() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_lifecycle`
+Run: `cargo test -p cairn-pty --test pty_lifecycle`
 Expected: FAIL — `GhosttyPty::spawn` and `GhosttyPty::wait` not implemented.
 
 - [ ] **Step 3: Implement worker bootstrap and lifecycle plumbing**
 
-Replace `crates/cairn-core/src/pty/ghostty/worker.rs` with:
+Replace `crates/cairn-pty/src/pty/ghostty/worker.rs` with:
 
 ```rust
 //! Session worker thread: bootstraps the current-thread tokio runtime,
@@ -796,7 +796,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 }
 ```
 
-Replace `crates/cairn-core/src/pty/ghostty/mod.rs` with:
+Replace `crates/cairn-pty/src/pty/ghostty/mod.rs` with:
 
 ```rust
 //! `libghostty-vt`-backed [`PtySession`] implementation.
@@ -875,13 +875,13 @@ impl GhosttyPty {
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_lifecycle`
+Run: `cargo test -p cairn-pty --test pty_lifecycle`
 Expected: PASS — `true` exits 0.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_lifecycle.rs
+git add crates/cairn-pty/src/pty/ghostty/mod.rs crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_lifecycle.rs
 git commit -m "GhosttyPty spawns child via portable-pty and reports exit status"
 ```
 
@@ -890,13 +890,13 @@ git commit -m "GhosttyPty spawns child via portable-pty and reports exit status"
 ### Task 8: Implement kill()
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/mod.rs`
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/tests/pty_lifecycle.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/mod.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/tests/pty_lifecycle.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Append to `crates/cairn-core/tests/pty_lifecycle.rs`:
+Append to `crates/cairn-pty/tests/pty_lifecycle.rs`:
 
 ```rust
 #[tokio::test]
@@ -919,14 +919,14 @@ async fn kill_terminates_long_running_child() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_lifecycle kill_terminates_long_running_child`
+Run: `cargo test -p cairn-pty --test pty_lifecycle kill_terminates_long_running_child`
 Expected: FAIL — `pty.kill()` does not exist.
 
 - [ ] **Step 3: Implement kill via Command::Shutdown plus child kill**
 
 The trick: `Command::Shutdown` only breaks the dispatcher; the child also needs to receive a kill signal. Easiest approach is to give the worker access to a `Child` clone via the shutdown handler.
 
-Update `crates/cairn-core/src/pty/ghostty/worker.rs` — wrap `child` in a way the dispatcher can reach it. Replace the section starting `let mut child = ...` through the end of the `spawn(move || ...)` closure with:
+Update `crates/cairn-pty/src/pty/ghostty/worker.rs` — wrap `child` in a way the dispatcher can reach it. Replace the section starting `let mut child = ...` through the end of the `spawn(move || ...)` closure with:
 
 ```rust
     let mut child = pty_pair
@@ -983,7 +983,7 @@ Update `crates/cairn-core/src/pty/ghostty/worker.rs` — wrap `child` in a way t
         .map_err(|e| PtyError::Io { source: e })?;
 ```
 
-Add the `kill` method to `crates/cairn-core/src/pty/ghostty/mod.rs`. Inside `impl GhosttyPty { ... }`:
+Add the `kill` method to `crates/cairn-pty/src/pty/ghostty/mod.rs`. Inside `impl GhosttyPty { ... }`:
 
 ```rust
     /// Send a kill signal to the child and tear down the session.
@@ -997,13 +997,13 @@ Add the `kill` method to `crates/cairn-core/src/pty/ghostty/mod.rs`. Inside `imp
 
 - [ ] **Step 4: Run tests (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_lifecycle`
+Run: `cargo test -p cairn-pty --test pty_lifecycle`
 Expected: PASS — both lifecycle tests green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_lifecycle.rs
+git add crates/cairn-pty/src/pty/ghostty/mod.rs crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_lifecycle.rs
 git commit -m "Implement GhosttyPty::kill via Shutdown command + portable-pty killer"
 ```
 
@@ -1014,28 +1014,28 @@ git commit -m "Implement GhosttyPty::kill via Shutdown command + portable-pty ki
 ### Task 9: PTY reader task broadcasts raw bytes
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/src/pty/ghostty/mod.rs`
-- Create: `crates/cairn-core/tests/pty_io.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/mod.rs`
+- Create: `crates/cairn-pty/tests/pty_io.rs`
 
 This task adds the reader task that pumps PTY output into a broadcast channel. Subscribers still use `Command::Subscribe`, but for this task only we implement subscribe enough to expose the broadcast receiver; the snapshot stays empty until Task 11 wires libghostty-vt.
 
 - [ ] **Step 1: Write failing integration test**
 
-Create `crates/cairn-core/tests/pty_io.rs`:
+Create `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 //! Integration tests for GhosttyPty subscribe / write / scrollback I/O.
 
 use bytes::Bytes;
-use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
+use cairn_pty::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
 /// Read from the subscription stream until either the deadline elapses or
 /// the accumulated bytes contain the needle. Returns the accumulated bytes.
 async fn read_until_contains(
-    sub: &mut cairn_core::pty::Subscription,
+    sub: &mut cairn_pty::pty::Subscription,
     needle: &[u8],
     deadline: Duration,
 ) -> Vec<u8> {
@@ -1082,12 +1082,12 @@ async fn echo_output_is_broadcast_to_subscribers() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_io`
+Run: `cargo test -p cairn-pty --test pty_io`
 Expected: FAIL — `subscribe()` returns `PtyError::Closed`.
 
 - [ ] **Step 3: Add reader task and broadcast wiring**
 
-Replace `crates/cairn-core/src/pty/ghostty/worker.rs` with:
+Replace `crates/cairn-pty/src/pty/ghostty/worker.rs` with:
 
 ```rust
 //! Session worker thread: bootstraps the current-thread tokio runtime,
@@ -1245,7 +1245,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 }
 ```
 
-Add the `PtySession` impl to `crates/cairn-core/src/pty/ghostty/mod.rs` (append below the existing `impl GhosttyPty { ... }`):
+Add the `PtySession` impl to `crates/cairn-pty/src/pty/ghostty/mod.rs` (append below the existing `impl GhosttyPty { ... }`):
 
 ```rust
 #[async_trait::async_trait]
@@ -1290,13 +1290,13 @@ impl super::PtySession for GhosttyPty {
 
 - [ ] **Step 4: Run tests (expect pass)**
 
-Run: `cargo test -p cairn-core`
+Run: `cargo test -p cairn-pty`
 Expected: PASS — all unit tests + lifecycle + io tests green. The `printf` child's output is broadcast and the subscriber sees `hello-cairn`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/mod.rs crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Reader thread broadcasts PTY bytes; PtySession trait impl on GhosttyPty"
 ```
 
@@ -1305,12 +1305,12 @@ git commit -m "Reader thread broadcasts PTY bytes; PtySession trait impl on Ghos
 ### Task 10: Implement size() via MasterPty::get_size
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/tests/pty_io.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/tests/pty_io.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Append to `crates/cairn-core/tests/pty_io.rs`:
+Append to `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 #[tokio::test]
@@ -1328,12 +1328,12 @@ async fn size_reports_configured_dimensions() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_io size_reports_configured_dimensions`
+Run: `cargo test -p cairn-pty --test pty_io size_reports_configured_dimensions`
 Expected: FAIL — `Size` command still returns `Closed`.
 
 - [ ] **Step 3: Implement Size dispatch**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, replace the `Command::Size { reply }` arm in the dispatcher loop with:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, replace the `Command::Size { reply }` arm in the dispatcher loop with:
 
 ```rust
                         Command::Size { reply } => {
@@ -1350,13 +1350,13 @@ In `crates/cairn-core/src/pty/ghostty/worker.rs`, replace the `Command::Size { r
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_io`
+Run: `cargo test -p cairn-pty --test pty_io`
 Expected: PASS — `size()` returns 132×50.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Implement GhosttyPty::size via MasterPty::get_size"
 ```
 
@@ -1365,12 +1365,12 @@ git commit -m "Implement GhosttyPty::size via MasterPty::get_size"
 ### Task 11: Implement write() to PTY master
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/tests/pty_io.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/tests/pty_io.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Append to `crates/cairn-core/tests/pty_io.rs`:
+Append to `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 #[tokio::test]
@@ -1400,12 +1400,12 @@ async fn write_delivers_bytes_to_child_stdin() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_io write_delivers_bytes_to_child_stdin`
+Run: `cargo test -p cairn-pty --test pty_io write_delivers_bytes_to_child_stdin`
 Expected: FAIL — `Write` command returns `Closed`.
 
 - [ ] **Step 3: Hold a writer and implement Write dispatch**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, inside the `local.block_on(...)` block, add a writer setup right after `let bcast_tx = Rc::new(bcast_tx);`:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, inside the `local.block_on(...)` block, add a writer setup right after `let bcast_tx = Rc::new(bcast_tx);`:
 
 ```rust
                 let writer = master
@@ -1441,13 +1441,13 @@ You'll also need `use std::cell::RefCell;` at the top of the file (or just keep 
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_io`
+Run: `cargo test -p cairn-pty --test pty_io`
 Expected: PASS — `cat` echo round-trip works.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Implement GhosttyPty::write via PTY master writer"
 ```
 
@@ -1456,17 +1456,17 @@ git commit -m "Implement GhosttyPty::write via PTY master writer"
 ### Task 12: Implement resize()
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Create: `crates/cairn-core/tests/pty_resize.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Create: `crates/cairn-pty/tests/pty_resize.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Create `crates/cairn-core/tests/pty_resize.rs`:
+Create `crates/cairn-pty/tests/pty_resize.rs`:
 
 ```rust
 //! Integration tests for GhosttyPty resize semantics.
 
-use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
+use cairn_pty::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
 
 #[tokio::test]
 async fn resize_updates_size_query() {
@@ -1489,12 +1489,12 @@ async fn resize_updates_size_query() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_resize`
+Run: `cargo test -p cairn-pty --test pty_resize`
 Expected: FAIL — `Resize` command returns `Closed`.
 
 - [ ] **Step 3: Implement Resize dispatch**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, replace the `Command::Resize { reply, .. }` arm with:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, replace the `Command::Resize { reply, .. }` arm with:
 
 ```rust
                         Command::Resize { size, reply } => {
@@ -1514,13 +1514,13 @@ In `crates/cairn-core/src/pty/ghostty/worker.rs`, replace the `Command::Resize {
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_resize`
+Run: `cargo test -p cairn-pty --test pty_resize`
 Expected: PASS — size reports the new dimensions.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_resize.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_resize.rs
 git commit -m "Implement GhosttyPty::resize (kernel side; VT side added in Task 14)"
 ```
 
@@ -1531,7 +1531,7 @@ git commit -m "Implement GhosttyPty::resize (kernel side; VT side added in Task 
 ### Task 13: Feed PTY bytes into a Terminal instance
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
 
 This task adds the libghostty-vt `Terminal` to the worker thread and feeds it the same bytes the broadcast sees. The terminal's state isn't queried yet (Task 14 uses Formatter for snapshots); this is just plumbing.
 
@@ -1545,7 +1545,7 @@ This task adds the libghostty-vt `Terminal` to the worker thread and feeds it th
 
 - [ ] **Step 1: Write regression guard test**
 
-Append to `crates/cairn-core/tests/pty_io.rs`:
+Append to `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 #[tokio::test]
@@ -1569,12 +1569,12 @@ async fn spawn_succeeds_with_terminal_attached() {
 
 - [ ] **Step 2: Confirm test passes before changes**
 
-Run: `cargo test -p cairn-core --test pty_io spawn_succeeds_with_terminal_attached`
+Run: `cargo test -p cairn-pty --test pty_io spawn_succeeds_with_terminal_attached`
 Expected: PASS (no code changes yet — the test merely captures current behavior so the Step 3 changes can be verified non-regressive).
 
 - [ ] **Step 3: Add Terminal to the worker**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, inside the `local.block_on(...)` block, add the Terminal alongside the writer setup. After `let writer = match writer { ... }` insert:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, inside the `local.block_on(...)` block, add the Terminal alongside the writer setup. After `let writer = match writer { ... }` insert:
 
 ```rust
                 // Owned VT state for this session. Terminal is !Send + !Sync
@@ -1617,13 +1617,13 @@ Note: the `terminal` `Rc` is also needed by the dispatcher loop in Task 14; that
 
 - [ ] **Step 4: Run all tests**
 
-Run: `cargo test -p cairn-core`
+Run: `cargo test -p cairn-pty`
 Expected: PASS — all existing tests still green; Terminal is attached but its state isn't yet observed externally.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Attach libghostty-vt Terminal to PTY reader; feed bytes via vt_write"
 ```
 
@@ -1632,8 +1632,8 @@ git commit -m "Attach libghostty-vt Terminal to PTY reader; feed bytes via vt_wr
 ### Task 14: Snapshot via Formatter in subscribe()
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/tests/pty_io.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/tests/pty_io.rs`
 
 This task wires the Formatter so `Subscription::snapshot` reflects current Terminal state, and also extends `Resize` to update the Terminal grid in lockstep with the kernel.
 
@@ -1641,7 +1641,7 @@ This task wires the Formatter so `Subscription::snapshot` reflects current Termi
 
 - [ ] **Step 1: Write failing test**
 
-Append to `crates/cairn-core/tests/pty_io.rs`:
+Append to `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 #[tokio::test]
@@ -1680,12 +1680,12 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_io late_subscriber_sees_prior_output_in_snapshot`
+Run: `cargo test -p cairn-pty --test pty_io late_subscriber_sees_prior_output_in_snapshot`
 Expected: FAIL — snapshot is currently empty.
 
 - [ ] **Step 3: Wire Formatter into Subscribe and Resize into Terminal**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, inside the dispatcher loop, replace the `Command::Subscribe { reply }` arm with:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, inside the dispatcher loop, replace the `Command::Subscribe { reply }` arm with:
 
 ```rust
                         Command::Subscribe { reply } => {
@@ -1735,7 +1735,7 @@ Replace the `Command::Resize { size, reply }` arm with:
                         }
 ```
 
-Add a `format_snapshot` helper at the bottom of `crates/cairn-core/src/pty/ghostty/worker.rs`:
+Add a `format_snapshot` helper at the bottom of `crates/cairn-pty/src/pty/ghostty/worker.rs`:
 
 ```rust
 /// Serialize the current Terminal state as a self-contained VT escape
@@ -1760,13 +1760,13 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 
 - [ ] **Step 4: Run tests**
 
-Run: `cargo test -p cairn-core`
+Run: `cargo test -p cairn-pty`
 Expected: PASS — late subscriber's snapshot contains `late-join-marker`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Atomic snapshot + subscribe via libghostty-vt Formatter; resize updates VT grid"
 ```
 
@@ -1775,8 +1775,8 @@ git commit -m "Atomic snapshot + subscribe via libghostty-vt Formatter; resize u
 ### Task 15: Wire PtyWriteFn for terminal queries
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/tests/pty_io.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/tests/pty_io.rs`
 
 The Terminal needs a callback (`PtyWriteFn`) that writes response bytes back into the PTY master. The callback and the `Command::Write` handler share the same writer via `Rc<RefCell<...>>`.
 
@@ -1784,7 +1784,7 @@ The Terminal needs a callback (`PtyWriteFn`) that writes response bytes back int
 
 - [ ] **Step 1: Write failing test**
 
-Append to `crates/cairn-core/tests/pty_io.rs`:
+Append to `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 #[tokio::test]
@@ -1822,12 +1822,12 @@ async fn da1_query_gets_response_without_client() {
 
 - [ ] **Step 2: Run test (expect failure)**
 
-Run: `cargo test -p cairn-core --test pty_io da1_query_gets_response_without_client`
+Run: `cargo test -p cairn-pty --test pty_io da1_query_gets_response_without_client`
 Expected: FAIL — without `PtyWriteFn`, nothing answers the DA1 query, so `read` times out and the script prints `reply-len=0`.
 
 - [ ] **Step 3: Install PtyWriteFn**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, modify Terminal construction. The writer is constructed *before* the Terminal so it can be captured by the callback:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, modify Terminal construction. The writer is constructed *before* the Terminal so it can be captured by the callback:
 
 ```rust
                 // Writer FIRST so the Terminal's PtyWriteFn can capture it.
@@ -1870,13 +1870,13 @@ In `crates/cairn-core/src/pty/ghostty/worker.rs`, modify Terminal construction. 
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_io da1_query_gets_response_without_client`
+Run: `cargo test -p cairn-pty --test pty_io da1_query_gets_response_without_client`
 Expected: PASS — script reports non-zero reply length.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Wire libghostty-vt PtyWriteFn so terminal queries get authoritative responses"
 ```
 
@@ -1887,14 +1887,14 @@ git commit -m "Wire libghostty-vt PtyWriteFn so terminal queries get authoritati
 ### Task 16: Process death closes subscribers
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/tests/pty_io.rs`
+- Modify: `crates/cairn-pty/src/pty/ghostty/worker.rs`
+- Modify: `crates/cairn-pty/tests/pty_io.rs`
 
 When the child exits and the PTY reader sees EOF, existing subscribers should observe `RecvError::Closed` (caused by `bcast_tx` being dropped).
 
 - [ ] **Step 1: Write failing test**
 
-Append to `crates/cairn-core/tests/pty_io.rs`:
+Append to `crates/cairn-pty/tests/pty_io.rs`:
 
 ```rust
 #[tokio::test]
@@ -1925,12 +1925,12 @@ async fn subscribers_observe_close_on_child_exit() {
 
 - [ ] **Step 2: Run test (expect failure or pass)**
 
-Run: `cargo test -p cairn-core --test pty_io subscribers_observe_close_on_child_exit`
+Run: `cargo test -p cairn-pty --test pty_io subscribers_observe_close_on_child_exit`
 Expected: This may already PASS if `bcast_tx` is dropped naturally when the worker async block ends. If so, keep the test as regression coverage and skip Step 3. If it FAILs (subscribers never see Closed), continue to Step 3.
 
 - [ ] **Step 3 (only if Step 2 failed): Explicitly close broadcast on reader EOF**
 
-In `crates/cairn-core/src/pty/ghostty/worker.rs`, after the dispatcher loop and reader task complete, drop the broadcast sender explicitly:
+In `crates/cairn-pty/src/pty/ghostty/worker.rs`, after the dispatcher loop and reader task complete, drop the broadcast sender explicitly:
 
 ```rust
                 // Explicit teardown: drop broadcast sender so subscribers
@@ -1941,13 +1941,13 @@ In `crates/cairn-core/src/pty/ghostty/worker.rs`, after the dispatcher loop and 
 
 - [ ] **Step 4: Run test (expect pass)**
 
-Run: `cargo test -p cairn-core --test pty_io`
+Run: `cargo test -p cairn-pty --test pty_io`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-pty/src/pty/ghostty/worker.rs crates/cairn-pty/tests/pty_io.rs
 git commit -m "Subscribers observe Closed when child exits"
 ```
 
@@ -1956,17 +1956,17 @@ git commit -m "Subscribers observe Closed when child exits"
 ### Task 17: Operations after exit return Closed
 
 **Files:**
-- Modify: `crates/cairn-core/tests/pty_lifecycle.rs`
+- Modify: `crates/cairn-pty/tests/pty_lifecycle.rs`
 
 This is a regression test, no new code — the existing `cmd_tx` disconnect handling already returns `PtyError::Closed` when the worker drops the receiver. We pin the behavior.
 
 - [ ] **Step 1: Write test**
 
-Append to `crates/cairn-core/tests/pty_lifecycle.rs`:
+Append to `crates/cairn-pty/tests/pty_lifecycle.rs`:
 
 ```rust
 use bytes::Bytes;
-use cairn_core::pty::{PtyError, PtySession};
+use cairn_pty::pty::{PtyError, PtySession};
 
 #[tokio::test]
 async fn write_after_exit_returns_closed() {
@@ -1989,13 +1989,13 @@ async fn write_after_exit_returns_closed() {
 
 - [ ] **Step 2: Run test**
 
-Run: `cargo test -p cairn-core --test pty_lifecycle write_after_exit_returns_closed`
+Run: `cargo test -p cairn-pty --test pty_lifecycle write_after_exit_returns_closed`
 Expected: PASS — `cmd_tx` channel is closed once the worker thread exits, so `send_async` errors and we map it to `Closed`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add crates/cairn-core/tests/pty_lifecycle.rs
+git add crates/cairn-pty/tests/pty_lifecycle.rs
 git commit -m "Regression: operations after exit return PtyError::Closed"
 ```
 
@@ -2006,11 +2006,11 @@ git commit -m "Regression: operations after exit return PtyError::Closed"
 ### Task 18: Re-export pty module at crate root
 
 **Files:**
-- Modify: `crates/cairn-core/src/lib.rs`
+- Modify: `crates/cairn-pty/src/lib.rs`
 
 - [ ] **Step 1: Update lib.rs**
 
-Replace the contents of `crates/cairn-core/src/lib.rs` with:
+Replace the contents of `crates/cairn-pty/src/lib.rs` with:
 
 ```rust
 //! Core types and abstractions for cairn agent harnessing.
@@ -2020,18 +2020,18 @@ pub mod pty;
 
 - [ ] **Step 2: Verify integration tests still pick up the path**
 
-Run: `cargo test -p cairn-core`
-Expected: PASS — all tests green (they already import via `cairn_core::pty::...`).
+Run: `cargo test -p cairn-pty`
+Expected: PASS — all tests green (they already import via `cairn_pty::pty::...`).
 
 - [ ] **Step 3: Verify docs build**
 
-Run: `cargo doc -p cairn-core --no-deps`
+Run: `cargo doc -p cairn-pty --no-deps`
 Expected: clean doc build, no warnings about unresolved links.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/cairn-core/src/lib.rs
+git add crates/cairn-pty/src/lib.rs
 git commit -m "Expose pty module at crate root"
 ```
 
@@ -2045,30 +2045,30 @@ git commit -m "Expose pty module at crate root"
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cargo test -p cairn-core --all-features`
+Run: `cargo test -p cairn-pty --all-features`
 Expected: PASS — every test green.
 
 - [ ] **Step 2: Run clippy**
 
-Run: `cargo clippy -p cairn-core --all-targets -- -D warnings`
+Run: `cargo clippy -p cairn-pty --all-targets -- -D warnings`
 Expected: clean (no warnings, no errors).
 
 - [ ] **Step 3: Run rustfmt**
 
-Run: `cargo fmt -p cairn-core --check`
-Expected: clean. If not, run `cargo fmt -p cairn-core` and commit the format fixes:
+Run: `cargo fmt -p cairn-pty --check`
+Expected: clean. If not, run `cargo fmt -p cairn-pty` and commit the format fixes:
 
 ```bash
-git add crates/cairn-core/src/
+git add crates/cairn-pty/src/
 git commit -m "cargo fmt"
 ```
 
 - [ ] **Step 4: Manual smoke test (optional but recommended)**
 
-Write a tiny example in `crates/cairn-core/examples/echo.rs`:
+Write a tiny example in `crates/cairn-pty/examples/echo.rs`:
 
 ```rust
-use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions};
+use cairn_pty::pty::{GhosttyPty, PtySession, SpawnOptions};
 
 #[tokio::main]
 async fn main() {
@@ -2091,13 +2091,13 @@ async fn main() {
 }
 ```
 
-Run: `cargo run -p cairn-core --example echo`
+Run: `cargo run -p cairn-pty --example echo`
 Expected: prints a non-zero snapshot length, prints a byte count after the `echo` round-trip.
 
 - [ ] **Step 5: Commit the example (if you added it)**
 
 ```bash
-git add crates/cairn-core/examples/echo.rs
+git add crates/cairn-pty/examples/echo.rs
 git commit -m "Add echo example demonstrating GhosttyPty usage"
 ```
 

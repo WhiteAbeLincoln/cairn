@@ -1,6 +1,6 @@
 //! Integration tests for GhosttyPty resize semantics.
 
-use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
+use cairn_pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
 
 #[tokio::test]
 async fn resize_updates_size_query() {

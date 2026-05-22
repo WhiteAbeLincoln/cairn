@@ -1,7 +1,7 @@
 //! Integration tests for GhosttyPty spawn / wait / kill lifecycle.
 
 use bytes::Bytes;
-use cairn_core::pty::{GhosttyPty, PtyError, PtySession, SpawnOptions, TermSize};
+use cairn_pty::{GhosttyPty, PtyError, PtySession, SpawnOptions, TermSize};
 use tokio::sync::broadcast::error::RecvError;
 
 #[tokio::test]
