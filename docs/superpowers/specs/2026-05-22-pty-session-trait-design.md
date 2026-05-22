@@ -80,14 +80,22 @@ pub struct Subscription {
     pub stream: broadcast::Receiver<Bytes>,
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, snafu::Snafu)]
 pub enum PtyError {
-    #[error("pty session has exited")]
+    #[snafu(display("pty session has exited"))]
     Closed,
-    #[error("pty io: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("terminal backend error: {0}")]
-    Backend(Box<dyn std::error::Error + Send + Sync + 'static>),
+    #[snafu(display("pty io: {source}"))]
+    Io { source: std::io::Error },
+    #[snafu(display("terminal backend error: {source}"))]
+    Backend {
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+}
+
+impl From<std::io::Error> for PtyError {
+    fn from(source: std::io::Error) -> Self {
+        Self::Io { source }
+    }
 }
 ```
 
@@ -382,11 +390,13 @@ Already present in `crates/cairn-core/Cargo.toml`:
 - `tokio = { version = "1.52", features = ["full"] }` (`full` includes
   `net`, which provides `AsyncFd` on Unix)
 
+Already present via workspace inheritance:
+- `snafu` (workspace error convention — used for `PtyError`)
+
 New dependencies to add:
 ```toml
 async-trait = "0.1"
 bytes = "1"
 flume = "0.12"           # sync↔async channel for command dispatch
 portable-pty = "0.9"     # PTY abstraction + child spawn
-thiserror = "2"
 ```
