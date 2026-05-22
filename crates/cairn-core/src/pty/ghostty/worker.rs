@@ -1,13 +1,18 @@
 //! Session worker thread: bootstraps the current-thread tokio runtime,
-//! runs the PTY reader task and the command dispatcher on a `LocalSet`.
+//! runs a single LocalSet task that multiplexes PTY I/O, command dispatch,
+//! and child exit via tokio::select!.
+//!
+//! See docs/superpowers/specs/2026-05-22-pty-session-trait-design.md for
+//! the architectural rationale (single thread per session, Unix-only,
+//! pty-process for AsyncRead/AsyncWrite and tokio::process::Child).
 
 use std::cell::RefCell;
-use std::io::Read;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use bytes::Bytes;
 use libghostty_vt::{Terminal, TerminalOptions};
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use super::Command;
@@ -28,407 +33,432 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
 
-    // Capture broadcast capacity before opts fields are consumed individually.
     // Clamp to at least 1: broadcast::channel(0) panics, and capacity is just
     // a tuning knob — silently promoting 0 → 1 is more forgiving than erroring.
     let broadcast_capacity = opts.broadcast_capacity.max(1);
-
-    // Capture size before opts fields are consumed by the builder loop below.
-    // TermSize is Copy, so this is a plain copy of two u16 values.
     let initial_size = opts.size;
-
-    // Capture scrollback_lines before opts.command is consumed by CommandBuilder.
     let scrollback_lines = opts.scrollback_lines;
 
-    // Synchronously open the PTY and spawn the child on this thread so spawn
-    // errors surface to the caller rather than getting buried in the worker.
-    let pty_system = native_pty_system();
-    let pty_pair = pty_system
-        .openpty(PtySize {
-            rows: opts.size.rows,
-            cols: opts.size.cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| PtyError::Backend { source: e.into() })?;
-
-    // Translate std::process::Command into portable_pty::CommandBuilder.
-    // portable-pty wants its own builder type; we copy program + args + env.
-    let mut builder = CommandBuilder::new(opts.command.get_program());
-    for arg in opts.command.get_args() {
-        builder.arg(arg);
-    }
-    for (k, v) in opts.command.get_envs() {
-        if let Some(v) = v {
-            builder.env(k, v);
-        } else {
-            builder.env_remove(k);
-        }
-    }
-    if let Some(cwd) = opts.command.get_current_dir() {
-        builder.cwd(cwd);
-    }
-
-    let mut child = pty_pair
-        .slave
-        .spawn_command(builder)
-        .map_err(|e| PtyError::Backend { source: e.into() })?;
-
-    // The slave side can be dropped after spawn — the child holds its own
-    // open fd to it. Keeping it open in the parent prevents EOF detection.
-    drop(pty_pair.slave);
-
-    // Clone a killer handle before moving `child` into the waiter thread.
-    // The session thread uses this to signal the child on Shutdown without
-    // needing to reach across thread ownership into the waiter.
-    let mut killer = child.clone_killer();
-
-    // Clone a reader handle BEFORE moving `master` into the session thread.
-    // try_clone_reader() takes &self, so we can do this before the move.
-    let reader = pty_pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| PtyError::Backend { source: e.into() })?;
-
-    let master = pty_pair.master;
-
-    // Spawn a dedicated waiter thread so the child's exit status is published
-    // independently of the command-loop thread. This lets GhosttyPty::wait()
-    // resolve even when no Shutdown command is ever sent — the command loop is
-    // a separate concern from child lifetime.
-    std::thread::Builder::new()
-        .name("cairn-pty-waiter".into())
-        .spawn(move || {
-            let portable_status = child.wait().unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
-                portable_pty::ExitStatus::with_exit_code(1)
-            });
-            // Convert from portable_pty::ExitStatus to std::process::ExitStatus
-            let status = convert_portable_exit_status(portable_status);
-            let _ = exit_tx.send(Some(status));
-        })
-        .map_err(|e| PtyError::Io { source: e })?;
-
-    // Build the runtime on this (parent) thread so construction failures
-    // surface to the caller via spawn() rather than panicking in the
-    // worker thread. Runtime is Send; we move it into the closure.
+    // pty_process::Pty::new() wraps the PTY master fd in
+    // tokio::io::unix::AsyncFd, which requires an active tokio runtime
+    // context. tokio::process::Command::spawn() likewise needs one. We open
+    // the PTY and spawn the child on the worker thread (inside block_on) so
+    // the runtime context is always present. A oneshot channel carries spawn
+    // errors back to the caller synchronously via thread::join.
+    //
+    // We build the Runtime here so that its construction error surfaces to
+    // the caller, but we do NOT call rt.enter() from this (potentially async)
+    // thread to avoid the "cannot drop runtime in async context" panic that
+    // tokio raises when a current_thread Runtime is dropped from an async task.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
 
-    // Set up the flume channel that bridges the blocking reader thread into
-    // the async LocalSet. The sender lives in the reader thread; the receiver
-    // is drained by a spawned local task inside the LocalSet.
-    let (chunk_tx, chunk_rx) = flume::unbounded::<Bytes>();
-
-    // Pre-spawn the blocking PTY reader thread before entering the LocalSet so
-    // that any spawn failure propagates cleanly to the caller of `spawn()`.
-    // The thread terminates on EOF (read returns 0) or on any I/O error.
-    std::thread::Builder::new()
-        .name("cairn-pty-reader".into())
-        .spawn(move || {
-            let mut reader = reader;
-            let mut buf = vec![0u8; 65536];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break, // EOF — child has closed the PTY
-                    Ok(n) => {
-                        let chunk = Bytes::copy_from_slice(&buf[..n]);
-                        if chunk_tx.send(chunk).is_err() {
-                            // Receiver dropped — LocalSet has shut down.
-                            break;
-                        }
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "PTY reader error; exiting reader thread");
-                        break;
-                    }
-                }
-            }
-        })
-        .map_err(|e| PtyError::Io { source: e })?;
-
-    // Clone exit_rx so the session thread can check whether the child has
-    // already exited before dispatching commands. This ensures all post-exit
-    // operations return PtyError::Closed rather than leaking underlying Io
-    // errors (e.g. EIO on a broken-pipe write to a dead PTY master).
-    let exit_rx_for_session = exit_rx.clone();
+    // Oneshot channel: worker thread sends Ok(SessionState) or Err(PtyError)
+    // before entering the session loop. std::sync::mpsc because we join() the
+    // thread on the blocking parent path and don't need async.
+    let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<(), PtyError>>();
 
     std::thread::Builder::new()
         .name("cairn-pty-session".into())
         .spawn(move || {
-            // Keep the master fd alive for the lifetime of this thread; it
-            // closes when this thread exits and `master` drops here.
-            let master = master;
             let local = tokio::task::LocalSet::new();
-
             local.block_on(&rt, async move {
-                let exit_rx = exit_rx_for_session;
-                // Take the writer FIRST so the Terminal's on_pty_write callback
-                // can capture a clone of the same Rc. Both the callback (which
-                // fires synchronously within vt_write) and the Command::Write
-                // handler share ownership of the writer via Rc. borrow_mut() is
-                // always short and synchronous — never held across an .await —
-                // so there is no borrow-collision risk on this single-threaded
-                // LocalSet.
-                // Wrap the writer in Option for the same reason bcast_tx is
-                // wrapped: the chunk-forwarder task sets it to None on EOF so
-                // that Command::Write can return PtyError::Closed immediately
-                // rather than returning an I/O EIO error after the child exits.
-                let writer: Rc<RefCell<Option<Box<dyn std::io::Write + Send>>>> =
-                    match master.take_writer() {
-                        Ok(w) => Rc::new(RefCell::new(Some(w))),
-                        Err(e) => {
-                            tracing::error!(error = %e, "failed to take PTY writer");
-                            return;
-                        }
-                    };
-
-                // Owned VT state for this session. Terminal is !Send + !Sync
-                // and stays pinned to this thread (the LocalSet guarantees it).
-                // Rc allows the terminal to be shared between the chunk-forwarder
-                // task and the dispatcher loop without crossing thread boundaries.
+                // Now inside the runtime context: open PTY, spawn child.
                 //
-                // The Terminal is constructed before being wrapped in Rc so that
-                // on_pty_write can be installed via &mut Terminal. The closure
-                // captures a clone of the writer Rc so that VT query responses
-                // (DA1, DSR, etc.) are written directly back into the PTY master.
-                let mut terminal = match Terminal::new(TerminalOptions {
-                    cols: initial_size.cols,
-                    rows: initial_size.rows,
-                    max_scrollback: scrollback_lines,
-                }) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::error!(error = ?e, "failed to construct libghostty-vt Terminal");
-                        // Drain any commands that arrived (or will arrive briefly) so callers
-                        // get a clean error rather than hanging. The waiter thread + watch
-                        // channel still signal exit normally via the child.
-                        while let Ok(cmd) = cmd_rx.try_recv() {
-                            let construction_err = || PtyError::Backend {
-                                source: Box::new(std::io::Error::other(
-                                    "VT terminal construction failed",
-                                )),
-                            };
-                            match cmd {
-                                Command::Shutdown => {}
-                                Command::Subscribe { reply } => {
-                                    let _ = reply.send(Err(construction_err()));
-                                }
-                                Command::Resize { reply, .. } => {
-                                    let _ = reply.send(Err(construction_err()));
-                                }
-                                Command::Size { reply } => {
-                                    let _ = reply.send(Err(construction_err()));
-                                }
-                                Command::Write { reply, .. } => {
-                                    let _ = reply.send(Err(construction_err()));
-                                }
-                            }
-                        }
-                        return;
-                    }
+                // pty-process 0.4: Pty::new() wraps the master in AsyncFd;
+                // pts() returns the slave Pts used for spawn.
+                let pty = match pty_process::Pty::new()
+                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
+                {
+                    Ok(p) => p,
+                    Err(e) => { let _ = init_tx.send(Err(e)); return; }
                 };
 
-                let writer_for_pty_write = writer.clone();
-                if let Err(e) = terminal.on_pty_write(move |_term, data| {
-                    use std::io::Write;
-                    let mut w = writer_for_pty_write.borrow_mut();
-                    if let Some(w) = w.as_mut()
-                        && let Err(err) = w.write_all(data)
-                    {
-                        tracing::warn!(error = %err, "PtyWriteFn failed to write response bytes");
-                    }
-                    // If writer is None (child exited), silently drop the response —
-                    // no one is reading it anyway.
-                }) {
-                    tracing::error!(error = ?e, "failed to install PtyWriteFn callback");
-                    return;
+                // On macOS, TIOCSWINSZ on the master PTY fd fails with ENOTTY
+                // until the slave side has been opened at least once. Open pts
+                // first so that resize() succeeds.
+                let pts = match pty.pts()
+                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
+                {
+                    Ok(p) => p,
+                    Err(e) => { let _ = init_tx.send(Err(e)); return; }
+                };
+
+                if let Err(e) = pty.resize(pty_process::Size::new(initial_size.rows, initial_size.cols))
+                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
+                {
+                    let _ = init_tx.send(Err(e)); return;
                 }
 
-                let terminal = Rc::new(RefCell::new(terminal));
-
-                let (bcast_tx, _) = broadcast::channel::<Bytes>(broadcast_capacity);
-
-                // Wrap the broadcast sender in an Rc<RefCell<Option<…>>> so that
-                // the forwarder task (which runs on the same LocalSet thread) can
-                // drop it — by setting the Option to None — when the PTY reader
-                // thread exits on child-process EOF. Setting it to None while the
-                // dispatcher is still alive causes all existing broadcast::Receiver
-                // handles to observe RecvError::Closed promptly, even if the
-                // GhosttyPty handle (and therefore cmd_tx) is still live.
-                //
-                // Late subscribers (after child exit) receive a snapshot plus a
-                // broadcast receiver that immediately returns RecvError::Closed.
-                let bcast_tx = Rc::new(RefCell::new(Some(bcast_tx)));
-
-                // Forward bytes from the blocking reader thread into the broadcast
-                // channel, AND feed them into the Terminal so its screen state
-                // stays current. Runs as a LocalSet task so it yields between
-                // chunks and doesn't starve the command dispatcher.
-                let bcast_tx_for_reader = bcast_tx.clone();
-                let terminal_for_reader = terminal.clone();
-                let writer_for_forwarder = writer.clone();
-                tokio::task::spawn_local(async move {
-                    while let Ok(chunk) = chunk_rx.recv_async().await {
-                        // borrow_mut is held only across this synchronous call —
-                        // never across an .await — so other LocalSet tasks that
-                        // borrow terminal or bcast_tx cannot collide with this one.
-                        terminal_for_reader.borrow_mut().vt_write(&chunk);
-                        if let Some(tx) = bcast_tx_for_reader.borrow().as_ref() {
-                            let _ = tx.send(chunk);
-                        }
-                    }
-                    // PTY reader thread exited (child closed its end / EOF).
-                    // Drop the broadcast sender so existing subscribers see Closed
-                    // promptly. The Rc on the dispatcher side becomes the only ref,
-                    // but with None inside, so the underlying sender is gone.
-                    *bcast_tx_for_reader.borrow_mut() = None;
-                    // Null the writer at the same time so Command::Write returns
-                    // PtyError::Closed rather than EIO when the child is gone.
-                    *writer_for_forwarder.borrow_mut() = None;
-                });
-
-                // Command dispatcher: runs until Shutdown, cmd_rx disconnects,
-                // or the GhosttyPty handle is dropped. The broadcast sender lives
-                // in `bcast_tx` (Option), set to None by the forwarder when the
-                // child exits — independent of when the handle is dropped.
-                while let Ok(cmd) = cmd_rx.recv_async().await {
-                    // Normalise post-exit operations: if the child has already
-                    // exited, reply Closed to everything except Shutdown (which
-                    // is a no-op cleanup path). This prevents callers from seeing
-                    // raw Io errors (EIO, broken-pipe) that leak from the dead
-                    // PTY master fd — the session contract is simply "Closed".
-                    let is_exited = exit_rx.borrow().is_some();
-                    if is_exited {
-                        match cmd {
-                            Command::Shutdown => break,
-                            // Subscribe is intentionally allowed after exit: it
-                            // returns the terminal snapshot plus a stream that
-                            // immediately closes, letting callers read the final
-                            // screen state. Fall through to the normal handler.
-                            Command::Subscribe { .. } => {}
-                            Command::Resize { reply, .. } => {
-                                let _ = reply.send(Err(PtyError::Closed));
-                                continue;
-                            }
-                            Command::Size { reply } => {
-                                let _ = reply.send(Err(PtyError::Closed));
-                                continue;
-                            }
-                            Command::Write { reply, .. } => {
-                                let _ = reply.send(Err(PtyError::Closed));
-                                continue;
-                            }
-                        }
-                    }
-                    match cmd {
-                        Command::Shutdown => {
-                            // Best-effort kill; the waiter thread observes the
-                            // child exit and publishes the status regardless.
-                            if let Err(e) = killer.kill() {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to kill child on shutdown; \
-                                     it may have already exited"
-                                );
-                            }
-                            break;
-                        }
-                        Command::Subscribe { reply } => {
-                            // Atomic: format current Terminal state, then
-                            // subscribe to subsequent bytes. broadcast::Receiver
-                            // only sees messages sent after creation, so no
-                            // overlap with the snapshot.
-                            let snapshot = match format_snapshot(&terminal.borrow()) {
-                                Ok(bytes) => bytes,
-                                Err(e) => {
-                                    let _ = reply.send(Err(e));
-                                    continue;
-                                }
-                            };
-                            // If bcast_tx is None (child already exited), create
-                            // a temporary sender just to produce a subscriber whose
-                            // channel is immediately closed (the sender drops at
-                            // the end of this arm). Callers will see RecvError::Closed
-                            // on the first recv(), which is the correct behavior for
-                            // a dead session.
-                            let stream = match bcast_tx.borrow().as_ref() {
-                                Some(tx) => tx.subscribe(),
-                                None => {
-                                    let (tmp_tx, rx) = broadcast::channel::<Bytes>(1);
-                                    drop(tmp_tx);
-                                    rx
-                                }
-                            };
-                            let sub = Subscription { snapshot, stream };
-                            let _ = reply.send(Ok(sub));
-                        }
-                        Command::Resize { size, reply } => {
-                            // Update VT state first, then the kernel-side PTY
-                            // (which delivers SIGWINCH to the child). Terminal
-                            // is updated first so that any subsequent
-                            // subscribe() after a resize sees the new dimensions
-                            // in the snapshot. If the kernel resize fails after
-                            // the VT resize succeeds (e.g. EINVAL on an invalid
-                            // size), the two will be out of sync — this is rare
-                            // but possible. Callers receive the kernel-side
-                            // error in that case.
-                            if let Err(e) = terminal.borrow_mut().resize(size.cols, size.rows, 0, 0)
-                            {
-                                let _ = reply.send(Err(PtyError::Backend {
-                                    source: Box::new(e),
-                                }));
-                                continue;
-                            }
-                            let result = master
-                                .resize(PtySize {
-                                    rows: size.rows,
-                                    cols: size.cols,
-                                    pixel_width: 0,
-                                    pixel_height: 0,
-                                })
-                                .map_err(|e| PtyError::Backend { source: e.into() });
-                            let _ = reply.send(result);
-                        }
-                        Command::Size { reply } => {
-                            let result = master
-                                .get_size()
-                                .map(|s| TermSize {
-                                    cols: s.cols,
-                                    rows: s.rows,
-                                })
-                                .map_err(|e| PtyError::Backend { source: e.into() });
-                            let _ = reply.send(result);
-                        }
-                        Command::Write { data, reply } => {
-                            use std::io::Write;
-                            let result = (|| -> Result<(), PtyError> {
-                                let mut w = writer.borrow_mut();
-                                let w = w.as_mut().ok_or(PtyError::Closed)?;
-                                w.write_all(&data)?;
-                                w.flush()?;
-                                Ok(())
-                            })();
-                            let _ = reply.send(result);
-                        }
+                // Translate std::process::Command into pty_process::Command.
+                // pty-process wraps tokio::process::Command; we copy program
+                // + args + env + cwd by hand.
+                let mut builder = pty_process::Command::new(opts.command.get_program());
+                for arg in opts.command.get_args() {
+                    builder.arg(arg);
+                }
+                for (k, v) in opts.command.get_envs() {
+                    if let Some(v) = v {
+                        builder.env(k, v);
+                    } else {
+                        builder.env_remove(k);
                     }
                 }
+                if let Some(cwd) = opts.command.get_current_dir() {
+                    builder.current_dir(cwd);
+                }
+
+                // spawn() takes &Pts; Pts can be dropped after child starts.
+                let child = match builder.spawn(&pts)
+                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
+                {
+                    Ok(c) => c,
+                    Err(e) => { let _ = init_tx.send(Err(e)); return; }
+                };
+
+                // CRITICAL: drop our copy of the slave fd. The child holds its own
+                // dup'd fd via stdin/stdout/stderr inheritance, so the child can
+                // still use the TTY — but the master only sees EOF when ALL slave
+                // fds are closed. If we keep our pts alive, pty.read never returns
+                // EOF after the child exits, deadlocking the post-exit cleanup path.
+                drop(pts);
+
+                // Signal success to the parent; parent unblocks once this is sent.
+                let _ = init_tx.send(Ok(()));
+
+                run_session(SessionState {
+                    pty,
+                    child,
+                    cmd_rx,
+                    exit_tx,
+                    broadcast_capacity,
+                    initial_size,
+                    scrollback_lines,
+                }).await;
             });
         })
         .map_err(|e| PtyError::Io { source: e })?;
 
+    // Block until the worker thread finishes PTY setup. This preserves the
+    // original contract: spawn() returns Ok only after the child is running.
+    match init_rx.recv() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => {
+            // Thread panicked before sending; surface a generic error.
+            return Err(PtyError::Backend {
+                source: Box::new(std::io::Error::other(
+                    "worker thread exited before PTY was ready",
+                )),
+            });
+        }
+    }
+
     Ok(WorkerHandles { cmd_tx, exit_rx })
+}
+
+struct SessionState {
+    pty: pty_process::Pty,
+    child: tokio::process::Child,
+    cmd_rx: flume::Receiver<Command>,
+    exit_tx: tokio::sync::watch::Sender<Option<ExitStatus>>,
+    broadcast_capacity: usize,
+    initial_size: TermSize,
+    scrollback_lines: usize,
+}
+
+/// Main session loop. Runs inside the LocalSet on the dedicated thread.
+///
+/// Single tokio::select! across:
+///   - pty.read(...)               (PTY readable → vt_write + broadcast)
+///   - cmd_rx.recv_async()         (external commands → dispatch)
+///   - child.wait()                (child exit → publish status + tear down)
+async fn run_session(mut s: SessionState) {
+    // Pending writes from the libghostty-vt PtyWriteFn callback. The callback
+    // is synchronous (fires inside terminal.vt_write); pty.write_all is async.
+    // We queue bytes in the callback and drain them on the same task after
+    // each vt_write call. Rc<RefCell<...>> is safe because the LocalSet is
+    // single-threaded; borrow_mut is held only across sync code.
+    let pending_writes: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
+
+    // Construct the VT emulator. The PtyWriteFn closure captures a clone of
+    // pending_writes and pushes; the main loop drains and forwards to pty.
+    let mut terminal = match Terminal::new(TerminalOptions {
+        cols: s.initial_size.cols,
+        rows: s.initial_size.rows,
+        max_scrollback: s.scrollback_lines,
+    }) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::error!(error = ?e, "failed to construct libghostty-vt Terminal");
+            drain_commands_with_construction_error(&s.cmd_rx);
+            return;
+        }
+    };
+
+    let pending_for_cb = pending_writes.clone();
+    if let Err(e) = terminal.on_pty_write(move |_term, data| {
+        pending_for_cb
+            .borrow_mut()
+            .push_back(Bytes::copy_from_slice(data));
+    }) {
+        tracing::error!(error = ?e, "failed to install PtyWriteFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+    let terminal = Rc::new(RefCell::new(terminal));
+
+    let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
+    // Option so the EOF/exit path can drop the sender promptly, surfacing
+    // RecvError::Closed to existing subscribers even if cmd_rx is still alive.
+    let bcast_tx: Rc<RefCell<Option<broadcast::Sender<Bytes>>>> =
+        Rc::new(RefCell::new(Some(bcast_tx)));
+
+    // Cached size; updated on every successful resize. pty_process::Pty has
+    // no get_size shortcut and we always set the size ourselves, so caching
+    // is authoritative.
+    let mut current_size = s.initial_size;
+
+    let mut buf = vec![0u8; 65536];
+    // Track whether we have already published the exit status, to keep
+    // behavior identical when EOF on the PTY fires before SIGCHLD propagates.
+    // Used as the guard on the `child.wait()` select branch so we never
+    // poll wait twice.
+    let mut exit_published = false;
+    // Track whether the PTY master has hit EOF/error. Used to disable the
+    // pty.read branch in select! so we don't spin on a dead fd. The
+    // dispatcher loop continues processing commands (returning Closed via
+    // post-exit normalisation) until the caller drops GhosttyPty, at which
+    // point cmd_rx disconnects and we exit.
+    let mut pty_closed = false;
+
+    loop {
+        // tokio::select! creates each branch's future fresh per iteration.
+        // The `&mut self` borrows that pty.read / child.wait require are
+        // local to a single iteration — when one branch wins, select! drops
+        // the others before running the matched arm, releasing borrows so
+        // the arm can call &mut methods on the same object freely.
+        tokio::select! {
+            // ── PTY readable (disabled once we've seen EOF)
+            res = s.pty.read(&mut buf), if !pty_closed => {
+                match res {
+                    Ok(0) => {
+                        // EOF — child closed slave. Mark pty_closed so we
+                        // stop polling read; close the broadcast so existing
+                        // subscribers observe Closed; await child exit if
+                        // not already published. Loop continues so callers
+                        // can still receive Closed replies via cmd_rx.
+                        pty_closed = true;
+                        *bcast_tx.borrow_mut() = None;
+                        if !exit_published {
+                            if let Ok(status) = s.child.wait().await {
+                                let _ = s.exit_tx.send(Some(status));
+                                exit_published = true;
+                            }
+                        }
+                    }
+                    Ok(n) => {
+                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                        // borrow_mut is held only across these sync calls — never
+                        // across an .await — so no LocalSet task collision risk.
+                        terminal.borrow_mut().vt_write(&chunk);
+                        if let Some(tx) = bcast_tx.borrow().as_ref() {
+                            let _ = tx.send(chunk);
+                        }
+                        // Flush any queued PtyWriteFn responses (DA1, DSR, etc.).
+                        flush_pending_writes(&pending_writes, &mut s.pty).await;
+                    }
+                    Err(_) => {
+                        // Treat I/O errors the same as EOF: stop reading,
+                        // close broadcast, drain remaining commands as Closed.
+                        pty_closed = true;
+                        *bcast_tx.borrow_mut() = None;
+                        if !exit_published {
+                            if let Ok(status) = s.child.wait().await {
+                                let _ = s.exit_tx.send(Some(status));
+                                exit_published = true;
+                            }
+                        }
+                    }
+                }
+            },
+
+            // ── External command
+            recv = s.cmd_rx.recv_async() => {
+                let cmd = match recv {
+                    Ok(c) => c,
+                    Err(_) => break, // all GhosttyPty handles dropped
+                };
+                if exit_published {
+                    // Post-exit normalisation: reply Closed to everything except
+                    // Shutdown (no-op) and Subscribe (still returns final state).
+                    match cmd {
+                        Command::Shutdown => break,
+                        Command::Subscribe { .. } => {} // fall through to normal handler
+                        Command::Resize { reply, .. } => {
+                            let _ = reply.send(Err(PtyError::Closed));
+                            continue;
+                        }
+                        Command::Size { reply } => {
+                            let _ = reply.send(Err(PtyError::Closed));
+                            continue;
+                        }
+                        Command::Write { reply, .. } => {
+                            let _ = reply.send(Err(PtyError::Closed));
+                            continue;
+                        }
+                    }
+                }
+                match cmd {
+                    Command::Shutdown => {
+                        // Best-effort kill; the child's wait will resolve
+                        // shortly after the signal lands.
+                        if let Err(e) = s.child.start_kill() {
+                            tracing::warn!(
+                                error = %e,
+                                "failed to signal child on shutdown; \
+                                 it may have already exited"
+                            );
+                        }
+                        // Await wait here so we publish status before
+                        // teardown. select! has already dropped the
+                        // wait-branch future for this iteration, so s.child
+                        // is freely borrowable.
+                        if !exit_published {
+                            if let Ok(status) = s.child.wait().await {
+                                let _ = s.exit_tx.send(Some(status));
+                            }
+                        }
+                        break;
+                    }
+                    Command::Subscribe { reply } => {
+                        let snapshot = match format_snapshot(&terminal.borrow()) {
+                            Ok(bytes) => bytes,
+                            Err(e) => { let _ = reply.send(Err(e)); continue; }
+                        };
+                        let stream = match bcast_tx.borrow().as_ref() {
+                            Some(tx) => tx.subscribe(),
+                            None => {
+                                // Session post-exit: produce a stream that
+                                // immediately closes on first recv.
+                                let (tmp_tx, rx) = broadcast::channel::<Bytes>(1);
+                                drop(tmp_tx);
+                                rx
+                            }
+                        };
+                        let _ = reply.send(Ok(Subscription { snapshot, stream }));
+                    }
+                    Command::Resize { size, reply } => {
+                        let res = (|| -> Result<(), PtyError> {
+                            terminal
+                                .borrow_mut()
+                                .resize(size.cols, size.rows, 0, 0)
+                                .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+                            s.pty
+                                .resize(pty_process::Size::new(size.rows, size.cols))
+                                .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+                            Ok(())
+                        })();
+                        if res.is_ok() {
+                            current_size = size;
+                        }
+                        let _ = reply.send(res);
+                    }
+                    Command::Size { reply } => {
+                        let _ = reply.send(Ok(current_size));
+                    }
+                    Command::Write { data, reply } => {
+                        let res = s.pty.write_all(&data).await.map_err(PtyError::from);
+                        let _ = reply.send(res);
+                    }
+                }
+            },
+
+            // ── Child exited (independently of EOF on the PTY master).
+            // Guarded by `if !exit_published` so the branch is dormant once
+            // exit has been reported; tokio::select! skips the branch on
+            // subsequent iterations without polling s.child again.
+            //
+            // Don't break here — the PTY may still have buffered output, and
+            // we want to keep handling commands (returning Closed via
+            // post-exit normalisation) until the caller drops GhosttyPty.
+            status = s.child.wait(), if !exit_published => {
+                match status {
+                    Ok(s_val) => { let _ = s.exit_tx.send(Some(s_val)); }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
+                        let _ = s.exit_tx.send(Some(synthetic_exit_status(1)));
+                    }
+                }
+                exit_published = true;
+            },
+        }
+    }
+
+    // Teardown:
+    //  - drop bcast_tx → existing subscribers observe RecvError::Closed.
+    //    (Already None'd in the pty.read EOF arm when applicable; the
+    //    explicit assign here covers the case where we exited via cmd_rx
+    //    disconnect before EOF, e.g. GhosttyPty dropped while child alive.)
+    //  - cmd_rx falls out of scope when SessionState drops → cmd_tx sends fail
+    //    on the GhosttyPty side, which we map to PtyError::Closed.
+    *bcast_tx.borrow_mut() = None;
+}
+
+/// Drain queued PtyWriteFn output to the PTY master.
+///
+/// Called after every successful `terminal.vt_write` in case the VT parsed a
+/// query (DA1/DSR/DECRQM/...) and produced a response. Drains are short and
+/// synchronous most of the time; only blocks if the kernel write buffer is
+/// full, which is rare for query responses (tens of bytes).
+async fn flush_pending_writes(
+    pending: &Rc<RefCell<VecDeque<Bytes>>>,
+    pty: &mut pty_process::Pty,
+) {
+    loop {
+        let chunk = pending.borrow_mut().pop_front();
+        let Some(chunk) = chunk else { return; };
+        if let Err(e) = pty.write_all(&chunk).await {
+            tracing::warn!(error = %e, "PtyWriteFn flush failed; dropping response");
+            return;
+        }
+    }
+}
+
+/// Reply Closed (via Backend wrapping a synthetic IO error) to any commands
+/// the caller has queued before they discover the worker has failed to start.
+/// Called from the Terminal-construction error paths.
+fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
+    let make_err = || PtyError::Backend {
+        source: Box::new(std::io::Error::other("VT terminal construction failed")),
+    };
+    while let Ok(cmd) = cmd_rx.try_recv() {
+        match cmd {
+            Command::Shutdown => {}
+            Command::Subscribe { reply } => {
+                let _ = reply.send(Err(make_err()));
+            }
+            Command::Resize { reply, .. } => {
+                let _ = reply.send(Err(make_err()));
+            }
+            Command::Size { reply } => {
+                let _ = reply.send(Err(make_err()));
+            }
+            Command::Write { reply, .. } => {
+                let _ = reply.send(Err(make_err()));
+            }
+        }
+    }
 }
 
 /// Serialize the current Terminal state as a self-contained VT escape
 /// sequence stream. Clients feed this to their local emulator (xterm.js,
 /// ghostty-web, etc.) to reconstruct the visible screen + scrollback.
 ///
-/// `None` is passed to `format_alloc` so that libghostty uses its own
-/// default (C) allocator; the returned `Bytes` are immediately copied into
-/// a `bytes::Bytes`, and the libghostty allocation is freed on drop.
+/// `None` is passed to `format_alloc` so libghostty uses its own default (C)
+/// allocator; the returned bytes are immediately copied into a `bytes::Bytes`,
+/// and the libghostty allocation is freed on drop.
 fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError> {
     use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
 
@@ -437,41 +467,20 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
         trim: false,
         unwrap: false,
     };
-    let mut formatter = Formatter::new(terminal, opts).map_err(|e| PtyError::Backend {
-        source: Box::new(e),
-    })?;
-
-    // Pass None to use libghostty's default allocator. The returned
-    // `libghostty_vt::alloc::Bytes` derefs to `[u8]`; we copy into a
-    // heap-owned `bytes::Bytes` so the caller has no lifetime dependency
-    // on the libghostty allocation.
+    let mut formatter = Formatter::new(terminal, opts)
+        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
     let vt_bytes = formatter
         .format_alloc(None::<&libghostty_vt::alloc::Allocator<()>>)
-        .map_err(|e| PtyError::Backend {
-            source: Box::new(e),
-        })?;
-
+        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
     Ok(Bytes::copy_from_slice(&vt_bytes))
 }
 
 /// Construct a synthetic `std::process::ExitStatus` with the given exit code.
 ///
-/// Used when `child.wait()` itself fails (rare; usually wait failures imply
-/// the parent has lost track of the child, not that the child is healthy).
-/// We surface this as a failing exit so callers see the session as broken.
+/// Used when `child.wait()` itself fails (rare). We surface this as a failing
+/// exit so callers see the session as broken rather than reporting success.
 #[cfg(unix)]
 pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
-    ExitStatus::from_raw((code & 0xff) << 8)
-}
-
-/// Convert a `portable_pty::ExitStatus` to `std::process::ExitStatus`.
-///
-/// portable_pty tracks both exit codes and signals; we convert to std's
-/// representation using Unix raw exit status encoding.
-#[cfg(unix)]
-fn convert_portable_exit_status(status: portable_pty::ExitStatus) -> ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    let code = status.exit_code();
-    ExitStatus::from_raw((code as i32 & 0xff) << 8)
+    ExitStatus::from_raw(((code & 0xff) as i32) << 8)
 }
