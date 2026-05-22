@@ -77,7 +77,8 @@ mod tests {
 
     #[test]
     fn spawn_options_builder_scrollback() {
-        let opts = SpawnOptions::new(tokio::process::Command::new("true")).with_scrollback_lines(500);
+        let opts =
+            SpawnOptions::new(tokio::process::Command::new("true")).with_scrollback_lines(500);
         assert_eq!(opts.scrollback_lines, 500);
     }
 

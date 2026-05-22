@@ -67,16 +67,13 @@ impl GhosttyPty {
     pub async fn wait(&self) -> ExitStatus {
         let mut rx = self.exit_rx.clone();
         loop {
-            if let Some(status) = rx.borrow().clone() {
+            if let Some(status) = *rx.borrow() {
                 return status;
             }
             // changed() returns Err only when the sender is dropped, which
             // happens after a final `Some(status)` is sent — so loop back.
             if rx.changed().await.is_err() {
-                return rx
-                    .borrow()
-                    .clone()
-                    .unwrap_or_else(|| worker::synthetic_exit_status(1));
+                return (*rx.borrow()).unwrap_or_else(|| worker::synthetic_exit_status(1));
             }
         }
     }

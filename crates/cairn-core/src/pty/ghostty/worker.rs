@@ -68,27 +68,37 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 //
                 // pty-process 0.4: Pty::new() wraps the master in AsyncFd;
                 // pts() returns the slave Pts used for spawn.
-                let pty = match pty_process::Pty::new()
-                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
-                {
+                let pty = match pty_process::Pty::new().map_err(|e| PtyError::Backend {
+                    source: Box::new(e),
+                }) {
                     Ok(p) => p,
-                    Err(e) => { let _ = init_tx.send(Err(e)); return; }
+                    Err(e) => {
+                        let _ = init_tx.send(Err(e));
+                        return;
+                    }
                 };
 
                 // On macOS, TIOCSWINSZ on the master PTY fd fails with ENOTTY
                 // until the slave side has been opened at least once. Open pts
                 // first so that resize() succeeds.
-                let pts = match pty.pts()
-                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
-                {
+                let pts = match pty.pts().map_err(|e| PtyError::Backend {
+                    source: Box::new(e),
+                }) {
                     Ok(p) => p,
-                    Err(e) => { let _ = init_tx.send(Err(e)); return; }
+                    Err(e) => {
+                        let _ = init_tx.send(Err(e));
+                        return;
+                    }
                 };
 
-                if let Err(e) = pty.resize(pty_process::Size::new(initial_size.rows, initial_size.cols))
-                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
+                if let Err(e) = pty
+                    .resize(pty_process::Size::new(initial_size.rows, initial_size.cols))
+                    .map_err(|e| PtyError::Backend {
+                        source: Box::new(e),
+                    })
                 {
-                    let _ = init_tx.send(Err(e)); return;
+                    let _ = init_tx.send(Err(e));
+                    return;
                 }
 
                 // Translate tokio::process::Command into pty_process::Command.
@@ -111,11 +121,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 }
 
                 // spawn() takes &Pts; Pts can be dropped after child starts.
-                let child = match builder.spawn(&pts)
-                    .map_err(|e| PtyError::Backend { source: Box::new(e) })
-                {
+                let child = match builder.spawn(&pts).map_err(|e| PtyError::Backend {
+                    source: Box::new(e),
+                }) {
                     Ok(c) => c,
-                    Err(e) => { let _ = init_tx.send(Err(e)); return; }
+                    Err(e) => {
+                        let _ = init_tx.send(Err(e));
+                        return;
+                    }
                 };
 
                 // CRITICAL: drop our copy of the slave fd. The child holds its own
@@ -136,7 +149,8 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     broadcast_capacity,
                     initial_size,
                     scrollback_lines,
-                }).await;
+                })
+                .await;
             });
         })
         .map_err(|e| PtyError::Io { source: e })?;
@@ -413,13 +427,12 @@ async fn run_session(mut s: SessionState) {
 /// query (DA1/DSR/DECRQM/...) and produced a response. Drains are short and
 /// synchronous most of the time; only blocks if the kernel write buffer is
 /// full, which is rare for query responses (tens of bytes).
-async fn flush_pending_writes(
-    pending: &Rc<RefCell<VecDeque<Bytes>>>,
-    pty: &mut pty_process::Pty,
-) {
+async fn flush_pending_writes(pending: &Rc<RefCell<VecDeque<Bytes>>>, pty: &mut pty_process::Pty) {
     loop {
         let chunk = pending.borrow_mut().pop_front();
-        let Some(chunk) = chunk else { return; };
+        let Some(chunk) = chunk else {
+            return;
+        };
         if let Err(e) = pty.write_all(&chunk).await {
             tracing::warn!(error = %e, "PtyWriteFn flush failed; dropping response");
             return;
@@ -468,11 +481,14 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
         trim: false,
         unwrap: false,
     };
-    let mut formatter = Formatter::new(terminal, opts)
-        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+    let mut formatter = Formatter::new(terminal, opts).map_err(|e| PtyError::Backend {
+        source: Box::new(e),
+    })?;
     let vt_bytes = formatter
         .format_alloc(None::<&libghostty_vt::alloc::Allocator<()>>)
-        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+        .map_err(|e| PtyError::Backend {
+            source: Box::new(e),
+        })?;
     Ok(Bytes::copy_from_slice(&vt_bytes))
 }
 
@@ -483,5 +499,5 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 #[cfg(unix)]
 pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
-    ExitStatus::from_raw(((code & 0xff) as i32) << 8)
+    ExitStatus::from_raw(((code & 0xff)) << 8)
 }
