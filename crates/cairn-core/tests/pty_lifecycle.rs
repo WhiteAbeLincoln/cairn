@@ -9,7 +9,11 @@ async fn spawn_true_exits_cleanly() {
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
     let status = pty.wait().await;
-    assert!(status.success(), "expected `true` to exit 0, got {:?}", status);
+    assert!(
+        status.success(),
+        "expected `true` to exit 0, got {:?}",
+        status
+    );
 }
 
 #[tokio::test]
@@ -26,7 +30,11 @@ async fn kill_terminates_long_running_child() {
 
     pty.kill().expect("kill");
     let status = pty.wait().await;
-    assert!(!status.success(), "expected non-zero exit after kill, got {:?}", status);
+    assert!(
+        !status.success(),
+        "expected non-zero exit after kill, got {:?}",
+        status
+    );
 }
 
 #[tokio::test]

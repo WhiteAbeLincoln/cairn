@@ -147,6 +147,12 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
         })
         .map_err(|e| PtyError::Io { source: e })?;
 
+    // Clone exit_rx so the session thread can check whether the child has
+    // already exited before dispatching commands. This ensures all post-exit
+    // operations return PtyError::Closed rather than leaking underlying Io
+    // errors (e.g. EIO on a broken-pipe write to a dead PTY master).
+    let exit_rx_for_session = exit_rx.clone();
+
     std::thread::Builder::new()
         .name("cairn-pty-session".into())
         .spawn(move || {
@@ -156,6 +162,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
             let local = tokio::task::LocalSet::new();
 
             local.block_on(&rt, async move {
+                let exit_rx = exit_rx_for_session;
                 // Take the writer FIRST so the Terminal's on_pty_write callback
                 // can capture a clone of the same Rc. Both the callback (which
                 // fires synchronously within vt_write) and the Command::Write
@@ -226,10 +233,10 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 if let Err(e) = terminal.on_pty_write(move |_term, data| {
                     use std::io::Write;
                     let mut w = writer_for_pty_write.borrow_mut();
-                    if let Some(w) = w.as_mut() {
-                        if let Err(err) = w.write_all(data) {
-                            tracing::warn!(error = %err, "PtyWriteFn failed to write response bytes");
-                        }
+                    if let Some(w) = w.as_mut()
+                        && let Err(err) = w.write_all(data)
+                    {
+                        tracing::warn!(error = %err, "PtyWriteFn failed to write response bytes");
                     }
                     // If writer is None (child exited), silently drop the response —
                     // no one is reading it anyway.
@@ -286,6 +293,34 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 // in `bcast_tx` (Option), set to None by the forwarder when the
                 // child exits — independent of when the handle is dropped.
                 while let Ok(cmd) = cmd_rx.recv_async().await {
+                    // Normalise post-exit operations: if the child has already
+                    // exited, reply Closed to everything except Shutdown (which
+                    // is a no-op cleanup path). This prevents callers from seeing
+                    // raw Io errors (EIO, broken-pipe) that leak from the dead
+                    // PTY master fd — the session contract is simply "Closed".
+                    let is_exited = exit_rx.borrow().is_some();
+                    if is_exited {
+                        match cmd {
+                            Command::Shutdown => break,
+                            // Subscribe is intentionally allowed after exit: it
+                            // returns the terminal snapshot plus a stream that
+                            // immediately closes, letting callers read the final
+                            // screen state. Fall through to the normal handler.
+                            Command::Subscribe { .. } => {}
+                            Command::Resize { reply, .. } => {
+                                let _ = reply.send(Err(PtyError::Closed));
+                                continue;
+                            }
+                            Command::Size { reply } => {
+                                let _ = reply.send(Err(PtyError::Closed));
+                                continue;
+                            }
+                            Command::Write { reply, .. } => {
+                                let _ = reply.send(Err(PtyError::Closed));
+                                continue;
+                            }
+                        }
+                    }
                     match cmd {
                         Command::Shutdown => {
                             // Best-effort kill; the waiter thread observes the
@@ -320,8 +355,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             let stream = match bcast_tx.borrow().as_ref() {
                                 Some(tx) => tx.subscribe(),
                                 None => {
-                                    let (tmp_tx, rx) =
-                                        broadcast::channel::<Bytes>(1);
+                                    let (tmp_tx, rx) = broadcast::channel::<Bytes>(1);
                                     drop(tmp_tx);
                                     rx
                                 }
@@ -335,9 +369,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             // the two steps. Terminal is updated first so that
                             // any subsequent subscribe() after a resize sees the
                             // new dimensions in the snapshot.
-                            if let Err(e) = terminal
-                                .borrow_mut()
-                                .resize(size.cols, size.rows, 0, 0)
+                            if let Err(e) = terminal.borrow_mut().resize(size.cols, size.rows, 0, 0)
                             {
                                 let _ = reply.send(Err(PtyError::Backend {
                                     source: Box::new(e),
@@ -399,8 +431,9 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
         trim: false,
         unwrap: false,
     };
-    let mut formatter = Formatter::new(terminal, opts)
-        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+    let mut formatter = Formatter::new(terminal, opts).map_err(|e| PtyError::Backend {
+        source: Box::new(e),
+    })?;
 
     // Pass None to use libghostty's default allocator. The returned
     // `libghostty_vt::alloc::Bytes` derefs to `[u8]`; we copy into a
@@ -408,7 +441,9 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
     // on the libghostty allocation.
     let vt_bytes = formatter
         .format_alloc(None::<&libghostty_vt::alloc::Allocator<()>>)
-        .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
+        .map_err(|e| PtyError::Backend {
+            source: Box::new(e),
+        })?;
 
     Ok(Bytes::copy_from_slice(&vt_bytes))
 }
