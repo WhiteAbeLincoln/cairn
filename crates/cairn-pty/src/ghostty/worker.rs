@@ -6,7 +6,7 @@
 //! the architectural rationale (single thread per session, Unix-only,
 //! pty-process for AsyncRead/AsyncWrite and tokio::process::Child).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -242,8 +242,10 @@ async fn run_session(mut s: SessionState) {
 
     // Cached size; updated on every successful resize. pty_process::Pty has
     // no get_size shortcut and we always set the size ourselves, so caching
-    // is authoritative.
-    let mut current_size = s.initial_size;
+    // is authoritative. Wrapped in Rc<Cell<_>> so the on_size libghostty
+    // callback (installed below) can capture a clone and read it
+    // synchronously inside vt_write.
+    let current_size: Rc<Cell<TermSize>> = Rc::new(Cell::new(s.initial_size));
 
     let mut buf = vec![0u8; 65536];
     // Track whether we have already published the exit status, to keep
@@ -387,12 +389,12 @@ async fn run_session(mut s: SessionState) {
                             Ok(())
                         })();
                         if res.is_ok() {
-                            current_size = size;
+                            current_size.set(size);
                         }
                         let _ = reply.send(res);
                     }
                     Command::Size { reply } => {
-                        let _ = reply.send(Ok(current_size));
+                        let _ = reply.send(Ok(current_size.get()));
                     }
                     Command::Write { data, reply } => {
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
