@@ -232,32 +232,45 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 
                 let (bcast_tx, _) = broadcast::channel::<Bytes>(broadcast_capacity);
 
+                // Wrap the broadcast sender in an Rc<RefCell<Option<…>>> so that
+                // the forwarder task (which runs on the same LocalSet thread) can
+                // drop it — by setting the Option to None — when the PTY reader
+                // thread exits on child-process EOF. Setting it to None while the
+                // dispatcher is still alive causes all existing broadcast::Receiver
+                // handles to observe RecvError::Closed promptly, even if the
+                // GhosttyPty handle (and therefore cmd_tx) is still live.
+                //
+                // Late subscribers (after child exit) receive a snapshot plus a
+                // broadcast receiver that immediately returns RecvError::Closed.
+                let bcast_tx = Rc::new(RefCell::new(Some(bcast_tx)));
+
                 // Forward bytes from the blocking reader thread into the broadcast
                 // channel, AND feed them into the Terminal so its screen state
                 // stays current. Runs as a LocalSet task so it yields between
                 // chunks and doesn't starve the command dispatcher.
-                // broadcast::Sender is internally Arc-backed, so cloning it
-                // directly is sufficient — no Rc wrapper needed.
                 let bcast_tx_for_reader = bcast_tx.clone();
                 let terminal_for_reader = terminal.clone();
-                // When the dispatcher loop exits (Shutdown or cmd_rx closed), the LocalSet
-                // drops and this task is cancelled — any chunks still in chunk_rx are
-                // silently discarded. That's acceptable for shutdown semantics; subscribers
-                // observe broadcast Closed when bcast_tx drops along with the LocalSet.
                 tokio::task::spawn_local(async move {
                     while let Ok(chunk) = chunk_rx.recv_async().await {
                         // borrow_mut is held only across this synchronous call —
                         // never across an .await — so other LocalSet tasks that
-                        // borrow terminal cannot collide with this one. The
-                        // on_pty_write callback fires synchronously within
-                        // vt_write and also borrows the writer — also short and
-                        // synchronous, no overlap possible.
+                        // borrow terminal or bcast_tx cannot collide with this one.
                         terminal_for_reader.borrow_mut().vt_write(&chunk);
-                        let _ = bcast_tx_for_reader.send(chunk);
+                        if let Some(tx) = bcast_tx_for_reader.borrow().as_ref() {
+                            let _ = tx.send(chunk);
+                        }
                     }
+                    // PTY reader thread exited (child closed its end / EOF).
+                    // Drop the broadcast sender so existing subscribers see Closed
+                    // promptly. The Rc on the dispatcher side becomes the only ref,
+                    // but with None inside, so the underlying sender is gone.
+                    *bcast_tx_for_reader.borrow_mut() = None;
                 });
 
-                // Command dispatcher
+                // Command dispatcher: runs until Shutdown, cmd_rx disconnects,
+                // or the GhosttyPty handle is dropped. The broadcast sender lives
+                // in `bcast_tx` (Option), set to None by the forwarder when the
+                // child exits — independent of when the handle is dropped.
                 while let Ok(cmd) = cmd_rx.recv_async().await {
                     match cmd {
                         Command::Shutdown => {
@@ -284,10 +297,22 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                                     continue;
                                 }
                             };
-                            let sub = Subscription {
-                                snapshot,
-                                stream: bcast_tx.subscribe(),
+                            // If bcast_tx is None (child already exited), create
+                            // a temporary sender just to produce a subscriber whose
+                            // channel is immediately closed (the sender drops at
+                            // the end of this arm). Callers will see RecvError::Closed
+                            // on the first recv(), which is the correct behavior for
+                            // a dead session.
+                            let stream = match bcast_tx.borrow().as_ref() {
+                                Some(tx) => tx.subscribe(),
+                                None => {
+                                    let (tmp_tx, rx) =
+                                        broadcast::channel::<Bytes>(1);
+                                    drop(tmp_tx);
+                                    rx
+                                }
                             };
+                            let sub = Subscription { snapshot, stream };
                             let _ = reply.send(Ok(sub));
                         }
                         Command::Resize { size, reply } => {

@@ -172,3 +172,28 @@ async fn da1_query_gets_response_without_client() {
 
     let _ = pty.wait().await;
 }
+
+#[tokio::test]
+async fn subscribers_observe_close_on_child_exit() {
+    let cmd = std::process::Command::new("true");
+    let opts = SpawnOptions::new(cmd);
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    let mut sub = pty.subscribe().await.expect("subscribe");
+    let _ = pty.wait().await;
+
+    // Loop draining anything still in the channel, then assert we eventually
+    // get Closed (not Lagged, not data).
+    let saw_close = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match sub.stream.recv().await {
+                Ok(_) => continue,
+                Err(RecvError::Closed) => return true,
+                Err(RecvError::Lagged(_)) => continue,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(saw_close, "subscribers did not observe Closed after child exit");
+}
