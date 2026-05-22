@@ -16,6 +16,7 @@ async-trait = "0.1"
 bytes = "1"
 flume = "0.12"
 portable-pty = "0.9"
+pty-process = { version = "0.4", features = ["async"] }
 
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full", "test-util", "macros"] }
