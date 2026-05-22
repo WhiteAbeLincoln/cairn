@@ -9,6 +9,7 @@ mod subscription;
 mod types;
 
 pub use error::PtyError;
+pub use ghostty::ExitStatus;
 pub use ghostty::GhosttyPty;
 pub use session::PtySession;
 pub use subscription::Subscription;
@@ -138,5 +139,13 @@ mod tests {
     fn ghostty_pty_is_send_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<GhosttyPty>();
+    }
+
+    #[test]
+    fn exit_status_is_publicly_reachable() {
+        // Compile-time check that ExitStatus is accessible from outside the
+        // ghostty submodule. The function need not be called — its mere
+        // existence proves the path resolves.
+        fn _accepts(_: ExitStatus) {}
     }
 }
