@@ -1,0 +1,61 @@
+# Features
+- [ ] Workspace setup
+  - environment variables, working directory, etc.
+  - setup scripts (e.g. clone git repositories)
+  - auto-install dependencies with nix
+  - micro vms?
+  - agent skills (automatically added to the working directory)
+  - sandboxing / permissions
+    - by default, agents are sandboxed to their workspace with no network access and limited resources (cpu, memory)
+    - we can allowlist specific permissions like network access or bind mounts on a per-agent basis
+    - for automations, we can allow the user to specify which permissions they require, and prompt them to approve when the automation is triggered
+- [ ] Git UI integration
+  - branch & file diffs
+- [ ] File viewer/editor
+  - monaco?
+- [ ] Terminal viewer
+  - view and access the wrapped TUI for adapters which have remote-control or interact through the TUI
+    - won't work for headless agents
+    - will require a tmux-like session manager, pty + scrollback buffer
+  - regular shell access. inherits the workspace environment (PATH, env vars, working directory).
+- [ ] Pluggable agent harness adapters
+  - Claude Code w/ remote-control MITM proxy (allows both web ui and TUI access)
+  - Claude Code streaming headless mode (TUI won't be available)
+  - PI Agent RPC (very similar to claude's streaming headless mode)
+  - PI Agent + remote control plugin?
+    - This would have to be custom-built, but since PI is so extensible we can design it to exactly fit our needs
+  - Codex...
+  - Custom runtime adapters using wasm, shell?
+    - Shell would be a stdin/stdout mode similar to Pi RPC or Claude headless, using our event abstraction
+    - Wasm needs some thought - it doesn't provide much over shell and the agent would run within the wasm
+      env which we probably don't want / isn't possible. Maybe we separate communication (wasm) from spawned process (regular pty subprocess)
+- [ ] User defined templates
+  - Define a workspace
+  - Define an agent (harness adapter + initial message)
+  - Define a workflow (chain of actions, which can include spawning agents, sending messages, running commands in workspaces, etc.) 
+  - Web-based UI
+  - Define variables which can be filled in when instantiating a template
+- [ ] Automations
+  - Triggered by external events
+    - http server for receiving events, we defer the triggers to an external system since its less complexity
+  - Actions:
+    - spawn an agent using a workspace template, provide an initial message
+    - send a message to an existing agent with a certain name, id, or tag
+    - run a command or script within the agent's workspace
+      - same sandboxing by default (but automation definition can disable per command)
+      - this lets the triggering script automatically inherit environment, which wouldn't be possible
+        if trigger process was on a different machine or required something from the environment which wasn't known by the script
+    - chain multiple actions together
+      - Use wasmtime to run wasm-based automation scripts, with host APIs for interacting with cairn (spawning agents, sending messages, running commands in workspaces, triggering an automation, etc.)
+      - Are we just re-inventing OpenClaw...
+  - Custom UI?
+    - For instance, Jira ticket management automation could define a custom UI showing active agents, links to the tickets they're working on, buttons for common actions (message agent, close ticket, etc.)
+- [ ] Chat UI
+  - Events have visibility states (full, collapsed, grouped, hidden)
+  - Users can write rules for event visibility logic
+  - Users can provide custom UI for events (e.g. to render a tool which isn't built into the default UI, or override the default UI for a certain type of event)
+  - Abstract over the harnesses event streams to provide a common interface? Parsers belong in the backend, in the agent harness adapter
+- [ ] Harness Log/Session viewer
+  - View logs from claude, PI, and any other adapters we build
+  - Uses the same chat UI as the agent messaging
+  - Drop down to raw log view for more detail
