@@ -197,6 +197,46 @@ async fn da1_query_gets_response_without_client() {
 }
 
 #[tokio::test]
+async fn da1_query_suppressed_when_client_attached() {
+    // Verifies the count >= 1 path end-to-end: with a Subscription held
+    // during the query, the worker's gate drops libghostty's default
+    // DA1 reply, the child's `read` times out, and reply-len=0 lands
+    // in the snapshot.
+    //
+    // The leading `sleep 0.2` ensures our subscribe call lands before
+    // the child issues its DA1 query, so count == 1 at query time.
+    let script = r#"
+        sleep 0.2
+        printf '\033[c'
+        read -r -n 32 -t 1 reply
+        printf 'reply-len=%d\n' "${#reply}"
+    "#;
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(script);
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    // Subscribe immediately — this is the "primary client" whose presence
+    // suppresses backend auto-replies. Hold the Subscription across the
+    // child's entire run by keeping `_sub` alive until after `wait`.
+    let _sub = pty.subscribe().await.expect("subscribe");
+
+    let _ = pty.wait().await;
+
+    // Drop _sub by ending its scope after subscribing the late observer.
+    let sub2 = pty.subscribe().await.expect("subscribe-2");
+    let text = std::str::from_utf8(&sub2.snapshot).unwrap_or("<non-utf8>");
+    assert!(
+        text.contains("reply-len="),
+        "missing reply-len marker in snapshot: {text}"
+    );
+    assert!(
+        text.contains("reply-len=0"),
+        "expected reply-len=0 (gate suppressed backend DA1 reply), got: {text}"
+    );
+}
+
+#[tokio::test]
 async fn subscribers_observe_close_on_child_exit() {
     let cmd = tokio::process::Command::new("true");
     let opts = SpawnOptions::new(cmd);

@@ -231,10 +231,20 @@ async fn run_session(mut s: SessionState) {
     };
 
     let pending_for_cb = pending_writes.clone();
+    let pc_for_pty_write = primary_count.clone();
     if let Err(e) = terminal.on_pty_write(move |_term, data| {
-        pending_for_cb
-            .borrow_mut()
-            .push_back(Bytes::copy_from_slice(data));
+        // When a primary client (Subscription holder) is attached, the
+        // client emulator is the authoritative answerer for queries
+        // libghostty's parser would otherwise auto-reply to (DA1, DA2,
+        // DA3, DSR cursor, DECRQM, XTVERSION). Suppressing the backend
+        // reply here is the load-bearing half of query delegation; the
+        // other half — broadcasting the original query bytes to the
+        // client — happens unconditionally in the PTY-read arm.
+        if pc_for_pty_write.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            pending_for_cb
+                .borrow_mut()
+                .push_back(Bytes::copy_from_slice(data));
+        }
     }) {
         tracing::error!(error = ?e, "failed to install PtyWriteFn callback");
         drain_commands_with_construction_error(&s.cmd_rx);
