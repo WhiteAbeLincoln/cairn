@@ -14,11 +14,12 @@ impl Default for TermSize {
 
 /// Options for spawning a new PTY session.
 ///
-/// Construct via [`SpawnOptions::new`] with a configured [`std::process::Command`].
-/// `std::process::Command` (not `tokio::process::Command`) because
-/// `portable-pty::SlavePty::spawn_command` expects the std variant.
+/// Construct via [`SpawnOptions::new`] with a configured
+/// [`tokio::process::Command`]. The worker translates the command's argv,
+/// env, and cwd into a `pty_process::Command` at spawn time, reading those
+/// fields via `tokio::process::Command::as_std()`.
 pub struct SpawnOptions {
-    pub command: std::process::Command,
+    pub command: tokio::process::Command,
     pub size: TermSize,
     pub broadcast_capacity: usize,
     /// Maximum scrollback lines retained by the VT emulator. The snapshot
@@ -27,7 +28,7 @@ pub struct SpawnOptions {
 }
 
 impl SpawnOptions {
-    pub fn new(command: std::process::Command) -> Self {
+    pub fn new(command: tokio::process::Command) -> Self {
         Self {
             command,
             size: TermSize::default(),

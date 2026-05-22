@@ -42,14 +42,14 @@ mod tests {
 
     #[test]
     fn spawn_options_default_capacity() {
-        let opts = SpawnOptions::new(std::process::Command::new("true"));
+        let opts = SpawnOptions::new(tokio::process::Command::new("true"));
         assert_eq!(opts.broadcast_capacity, 1024);
         assert_eq!(opts.size, TermSize { cols: 80, rows: 24 });
     }
 
     #[test]
     fn spawn_options_builder_size() {
-        let opts = SpawnOptions::new(std::process::Command::new("true")).with_size(TermSize {
+        let opts = SpawnOptions::new(tokio::process::Command::new("true")).with_size(TermSize {
             cols: 120,
             rows: 40,
         });
@@ -65,19 +65,19 @@ mod tests {
     #[test]
     fn spawn_options_builder_capacity() {
         let opts =
-            SpawnOptions::new(std::process::Command::new("true")).with_broadcast_capacity(64);
+            SpawnOptions::new(tokio::process::Command::new("true")).with_broadcast_capacity(64);
         assert_eq!(opts.broadcast_capacity, 64);
     }
 
     #[test]
     fn spawn_options_default_scrollback() {
-        let opts = SpawnOptions::new(std::process::Command::new("true"));
+        let opts = SpawnOptions::new(tokio::process::Command::new("true"));
         assert_eq!(opts.scrollback_lines, 1000);
     }
 
     #[test]
     fn spawn_options_builder_scrollback() {
-        let opts = SpawnOptions::new(std::process::Command::new("true")).with_scrollback_lines(500);
+        let opts = SpawnOptions::new(tokio::process::Command::new("true")).with_scrollback_lines(500);
         assert_eq!(opts.scrollback_lines, 500);
     }
 

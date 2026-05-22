@@ -37,7 +37,7 @@ async fn read_until_contains(
 
 #[tokio::test]
 async fn echo_output_is_broadcast_to_subscribers() {
-    let mut cmd = std::process::Command::new("printf");
+    let mut cmd = tokio::process::Command::new("printf");
     cmd.arg("hello-cairn");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
@@ -58,7 +58,7 @@ async fn echo_output_is_broadcast_to_subscribers() {
 
 #[tokio::test]
 async fn size_reports_configured_dimensions() {
-    let mut cmd = std::process::Command::new("sleep");
+    let mut cmd = tokio::process::Command::new("sleep");
     cmd.arg("5");
     let opts = SpawnOptions::new(cmd).with_size(TermSize {
         cols: 132,
@@ -81,7 +81,7 @@ async fn size_reports_configured_dimensions() {
 async fn write_delivers_bytes_to_child_stdin() {
     // `cat` echoes its stdin back to stdout. We write a line; it should
     // come back through the subscription stream.
-    let cmd = std::process::Command::new("cat");
+    let cmd = tokio::process::Command::new("cat");
     let opts = SpawnOptions::new(cmd);
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
@@ -108,7 +108,7 @@ async fn spawn_succeeds_with_terminal_attached() {
     // Regression guard: when libghostty-vt's Terminal is wired into the
     // worker, spawning and basic broadcast must still work. Behavioral
     // change comes in Task 14 (snapshot via Formatter).
-    let mut cmd = std::process::Command::new("printf");
+    let mut cmd = tokio::process::Command::new("printf");
     cmd.arg("vt-attached");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
@@ -128,7 +128,7 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
     // First subscriber starts immediately; second subscribes after the child
     // has finished writing. The second's snapshot should contain the same
     // visible content (text "late-join-marker") as the first saw via stream.
-    let mut cmd = std::process::Command::new("printf");
+    let mut cmd = tokio::process::Command::new("printf");
     cmd.arg("late-join-marker");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
@@ -172,7 +172,7 @@ async fn da1_query_gets_response_without_client() {
         read -r -n 32 -t 1 reply
         printf 'reply-len=%d\n' "${#reply}"
     "#;
-    let mut cmd = std::process::Command::new("sh");
+    let mut cmd = tokio::process::Command::new("sh");
     cmd.arg("-c").arg(script);
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
@@ -195,7 +195,7 @@ async fn da1_query_gets_response_without_client() {
 
 #[tokio::test]
 async fn subscribers_observe_close_on_child_exit() {
-    let cmd = std::process::Command::new("true");
+    let cmd = tokio::process::Command::new("true");
     let opts = SpawnOptions::new(cmd);
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 

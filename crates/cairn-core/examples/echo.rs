@@ -6,7 +6,7 @@ use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions};
 
 #[tokio::main]
 async fn main() {
-    let mut cmd = std::process::Command::new("bash");
+    let mut cmd = tokio::process::Command::new("bash");
     cmd.arg("-i");
     let opts = SpawnOptions::new(cmd);
     let pty = GhosttyPty::spawn(opts).expect("spawn");

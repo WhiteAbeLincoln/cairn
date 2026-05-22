@@ -6,7 +6,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 #[tokio::test]
 async fn spawn_true_exits_cleanly() {
-    let cmd = std::process::Command::new("true");
+    let cmd = tokio::process::Command::new("true");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
     let status = pty.wait().await;
@@ -20,7 +20,7 @@ async fn spawn_true_exits_cleanly() {
 #[tokio::test]
 async fn kill_terminates_long_running_child() {
     // `sleep 60` would block the test runner — kill should make wait() return.
-    let cmd = std::process::Command::new("sleep");
+    let cmd = tokio::process::Command::new("sleep");
     let mut cmd = cmd;
     cmd.arg("60");
     let opts = SpawnOptions::new(cmd);
@@ -42,7 +42,7 @@ async fn kill_terminates_long_running_child() {
 async fn drop_kills_running_child() {
     use std::time::Duration;
 
-    let mut cmd = std::process::Command::new("sleep");
+    let mut cmd = tokio::process::Command::new("sleep");
     cmd.arg("60");
     let opts = SpawnOptions::new(cmd);
     let pty = GhosttyPty::spawn(opts).expect("spawn");
@@ -81,7 +81,7 @@ async fn write_after_exit_returns_closed() {
     use std::time::Duration;
 
     // Spawn a child that exits immediately.
-    let cmd = std::process::Command::new("true");
+    let cmd = tokio::process::Command::new("true");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 

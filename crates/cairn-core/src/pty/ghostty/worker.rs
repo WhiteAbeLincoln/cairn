@@ -91,21 +91,22 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     let _ = init_tx.send(Err(e)); return;
                 }
 
-                // Translate std::process::Command into pty_process::Command.
+                // Translate tokio::process::Command into pty_process::Command.
                 // pty-process wraps tokio::process::Command; we copy program
-                // + args + env + cwd by hand.
-                let mut builder = pty_process::Command::new(opts.command.get_program());
-                for arg in opts.command.get_args() {
+                // + args + env + cwd by hand via as_std().
+                let std_cmd = opts.command.as_std();
+                let mut builder = pty_process::Command::new(std_cmd.get_program());
+                for arg in std_cmd.get_args() {
                     builder.arg(arg);
                 }
-                for (k, v) in opts.command.get_envs() {
+                for (k, v) in std_cmd.get_envs() {
                     if let Some(v) = v {
                         builder.env(k, v);
                     } else {
                         builder.env_remove(k);
                     }
                 }
-                if let Some(cwd) = opts.command.get_current_dir() {
+                if let Some(cwd) = std_cmd.get_current_dir() {
                     builder.current_dir(cwd);
                 }
 

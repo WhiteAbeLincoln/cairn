@@ -4,7 +4,7 @@ use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
 
 #[tokio::test]
 async fn resize_updates_size_query() {
-    let mut cmd = std::process::Command::new("sleep");
+    let mut cmd = tokio::process::Command::new("sleep");
     cmd.arg("5");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
