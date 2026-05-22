@@ -89,3 +89,21 @@ async fn write_delivers_bytes_to_child_stdin() {
     pty.kill().expect("kill");
     let _ = pty.wait().await;
 }
+
+#[tokio::test]
+async fn spawn_succeeds_with_terminal_attached() {
+    // Regression guard: when libghostty-vt's Terminal is wired into the
+    // worker, spawning and basic broadcast must still work. Behavioral
+    // change comes in Task 14 (snapshot via Formatter).
+    let mut cmd = std::process::Command::new("printf");
+    cmd.arg("vt-attached");
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+    let mut sub = pty.subscribe().await.expect("subscribe");
+    let bytes = read_until_contains(&mut sub, b"vt-attached", Duration::from_secs(2)).await;
+    assert!(
+        bytes.windows(b"vt-attached".len()).any(|w| w == b"vt-attached"),
+        "did not see 'vt-attached'"
+    );
+    let _ = pty.wait().await;
+}

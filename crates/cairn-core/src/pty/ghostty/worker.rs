@@ -1,9 +1,12 @@
 //! Session worker thread: bootstraps the current-thread tokio runtime,
 //! runs the PTY reader task and the command dispatcher on a `LocalSet`.
 
+use std::cell::RefCell;
 use std::io::Read;
+use std::rc::Rc;
 
 use bytes::Bytes;
+use libghostty_vt::{Terminal, TerminalOptions};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use tokio::sync::broadcast;
 
@@ -29,6 +32,10 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     // Clamp to at least 1: broadcast::channel(0) panics, and capacity is just
     // a tuning knob — silently promoting 0 → 1 is more forgiving than erroring.
     let broadcast_capacity = opts.broadcast_capacity.max(1);
+
+    // Capture size before opts fields are consumed by the builder loop below.
+    // TermSize is Copy, so this is a plain copy of two u16 values.
+    let initial_size = opts.size;
 
     // Synchronously open the PTY and spawn the child on this thread so spawn
     // errors surface to the caller rather than getting buried in the worker.
@@ -146,20 +153,42 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
             let local = tokio::task::LocalSet::new();
 
             local.block_on(&rt, async move {
+                // Owned VT state for this session. Terminal is !Send + !Sync
+                // and stays pinned to this thread (the LocalSet guarantees it).
+                // Rc allows the terminal to be shared between the chunk-forwarder
+                // task and the dispatcher loop without crossing thread boundaries.
+                let terminal = match Terminal::new(TerminalOptions {
+                    cols: initial_size.cols,
+                    rows: initial_size.rows,
+                    max_scrollback: 0,
+                }) {
+                    Ok(t) => Rc::new(std::cell::RefCell::new(t)),
+                    Err(e) => {
+                        tracing::error!(error = ?e, "failed to construct libghostty-vt Terminal");
+                        return;
+                    }
+                };
+
                 let (bcast_tx, _) = broadcast::channel::<Bytes>(broadcast_capacity);
 
-                // Forward bytes from the blocking reader thread into the
-                // broadcast channel. Runs as a LocalSet task so it yields
-                // between chunks and doesn't starve the command dispatcher.
+                // Forward bytes from the blocking reader thread into the broadcast
+                // channel, AND feed them into the Terminal so its screen state
+                // stays current. Runs as a LocalSet task so it yields between
+                // chunks and doesn't starve the command dispatcher.
                 // broadcast::Sender is internally Arc-backed, so cloning it
                 // directly is sufficient — no Rc wrapper needed.
                 let bcast_tx_for_reader = bcast_tx.clone();
+                let terminal_for_reader = terminal.clone();
                 // When the dispatcher loop exits (Shutdown or cmd_rx closed), the LocalSet
                 // drops and this task is cancelled — any chunks still in chunk_rx are
                 // silently discarded. That's acceptable for shutdown semantics; subscribers
                 // observe broadcast Closed when bcast_tx drops along with the LocalSet.
                 tokio::task::spawn_local(async move {
                     while let Ok(chunk) = chunk_rx.recv_async().await {
+                        // borrow_mut is held only across this synchronous call —
+                        // never across an .await — so other LocalSet tasks that
+                        // borrow terminal cannot collide with this one.
+                        terminal_for_reader.borrow_mut().vt_write(&chunk);
                         let _ = bcast_tx_for_reader.send(chunk);
                     }
                 });
