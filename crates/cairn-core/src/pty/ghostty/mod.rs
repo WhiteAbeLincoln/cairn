@@ -120,3 +120,12 @@ impl super::PtySession for GhosttyPty {
         rx.await.map_err(|_| PtyError::Closed)?
     }
 }
+
+impl Drop for GhosttyPty {
+    fn drop(&mut self) {
+        // Best-effort kill on drop so dropped handles don't leak the child.
+        // Failure means the session already shut down (channel closed), which
+        // is fine — there's nothing to clean up.
+        let _ = self.kill();
+    }
+}

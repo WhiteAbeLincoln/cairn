@@ -2,6 +2,7 @@
 
 use bytes::Bytes;
 use cairn_core::pty::{GhosttyPty, PtyError, PtySession, SpawnOptions, TermSize};
+use tokio::sync::broadcast::error::RecvError;
 
 #[tokio::test]
 async fn spawn_true_exits_cleanly() {
@@ -35,6 +36,44 @@ async fn kill_terminates_long_running_child() {
         "expected non-zero exit after kill, got {:?}",
         status
     );
+}
+
+#[tokio::test]
+async fn drop_kills_running_child() {
+    use std::time::Duration;
+
+    let mut cmd = std::process::Command::new("sleep");
+    cmd.arg("60");
+    let opts = SpawnOptions::new(cmd);
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    // Subscribe BEFORE drop so we have a stream to observe Closed on.
+    // RecvError::Closed arrives when the broadcast sender is dropped, which
+    // happens inside the forwarder task once the child exits. If Drop does
+    // NOT kill the child, the forwarder will be waiting for PTY EOF for the
+    // full 60 seconds of the sleep.
+    let mut sub = pty.subscribe().await.expect("subscribe");
+
+    // Brief delay so the child is actually running.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    drop(pty);
+
+    // The broadcast stream should close within a couple of seconds (kill →
+    // child exits → reader EOF → forwarder nulls bcast_tx → subscribers see
+    // Closed). Without Drop killing the child, this loop would wait 60 s.
+    let saw_close = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match sub.stream.recv().await {
+                Ok(_) => continue,
+                Err(RecvError::Closed) => return true,
+                Err(RecvError::Lagged(_)) => continue,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(saw_close, "stream did not close within 5 s after drop");
 }
 
 #[tokio::test]
