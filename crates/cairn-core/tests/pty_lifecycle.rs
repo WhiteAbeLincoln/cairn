@@ -78,17 +78,35 @@ async fn drop_kills_running_child() {
 
 #[tokio::test]
 async fn write_after_exit_returns_closed() {
+    use std::time::Duration;
+
     // Spawn a child that exits immediately.
     let cmd = std::process::Command::new("true");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    // Wait for the child to fully exit so the chunk-forwarder task has run
-    // its teardown path and set the writer Option to None.
-    pty.wait().await;
+    // Subscribe before the child exits so we can deterministically wait
+    // for teardown (broadcast Close signal).
+    let mut sub = pty.subscribe().await.expect("subscribe");
 
-    // Give the LocalSet a moment to process the EOF and null the writer.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let _ = pty.wait().await;
+
+    // Wait for the broadcast to close. This is the same signal the forwarder
+    // task emits when it nulls the writer on EOF, so by the time we observe
+    // Closed here, the writer is None and write() will return PtyError::Closed.
+    // This replaces a fragile fixed sleep with an event-driven barrier.
+    let saw_close = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match sub.stream.recv().await {
+                Ok(_) => continue,
+                Err(RecvError::Closed) => return true,
+                Err(RecvError::Lagged(_)) => continue,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(saw_close, "broadcast did not close after child exit");
 
     let result = pty.write(Bytes::from_static(b"hello")).await;
     assert!(
