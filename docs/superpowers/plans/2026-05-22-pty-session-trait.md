@@ -17,20 +17,22 @@ crates/cairn-core/
 ├── Cargo.toml                    (modified: add deps)
 ├── src/
 │   ├── lib.rs                    (modified: re-export pty surface)
-│   ├── pty.rs                    (modified: declare submodules, public re-exports)
 │   └── pty/
+│       ├── mod.rs                (new: declare submodules, public re-exports — REPLACES existing pty.rs)
 │       ├── error.rs              (new: PtyError)
 │       ├── types.rs              (new: TermSize, SpawnOptions)
 │       ├── subscription.rs       (new: Subscription)
 │       ├── session.rs            (new: PtySession trait)
-│       ├── ghostty.rs            (new: GhosttyPty + Command enum + public API)
-│       └── ghostty/
-│           └── worker.rs         (new: session thread bootstrap, reader task, dispatcher loop)
+│       ├── ghostty/
+│       │   ├── mod.rs            (new: GhosttyPty + Command enum + public API)
+│       │   └── worker.rs         (new: session thread bootstrap, reader task, dispatcher loop)
 └── tests/
     ├── pty_lifecycle.rs          (new: spawn / wait / kill integration)
     ├── pty_io.rs                 (new: subscribe / write / scrollback integration)
     └── pty_resize.rs             (new: resize semantics)
 ```
+
+The existing placeholder file `crates/cairn-core/src/pty.rs` (currently `trait PtySession {}`) gets deleted in Task 2 and replaced by the `pty/` directory with `mod.rs`.
 
 **Notes on the package name:** the package is currently `cairn-types` (in `crates/cairn-core/`). Use `cargo test -p cairn-types` and `cargo build -p cairn-types` throughout this plan.
 
@@ -79,15 +81,22 @@ git commit -m "Add deps for PtySession trait (portable-pty, flume, async-trait, 
 
 ---
 
-### Task 2: PtyError type
+### Task 2: PtyError type + module layout switch
 
 **Files:**
+- Delete: `crates/cairn-core/src/pty.rs` (the existing placeholder)
+- Create: `crates/cairn-core/src/pty/mod.rs`
 - Create: `crates/cairn-core/src/pty/error.rs`
-- Modify: `crates/cairn-core/src/pty.rs`
 
-- [ ] **Step 1: Convert pty.rs from file to module directory + write failing test**
+- [ ] **Step 1: Delete the existing placeholder file**
 
-Delete the placeholder line in `crates/cairn-core/src/pty.rs` (currently `trait PtySession {}`) and replace its full content with:
+```bash
+git rm crates/cairn-core/src/pty.rs
+```
+
+- [ ] **Step 2: Create the module entry with failing tests**
+
+Create `crates/cairn-core/src/pty/mod.rs`:
 
 ```rust
 //! Pseudo-terminal session abstraction.
@@ -118,12 +127,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run the test (expect failure)**
+- [ ] **Step 3: Run the test (expect failure)**
 
 Run: `cargo test -p cairn-types pty::tests`
 Expected: FAIL — `PtyError` does not exist (module not yet created).
 
-- [ ] **Step 3: Create the error module**
+- [ ] **Step 4: Create the error module**
 
 Create `crates/cairn-core/src/pty/error.rs`:
 
@@ -156,16 +165,16 @@ impl From<std::io::Error> for PtyError {
 }
 ```
 
-- [ ] **Step 4: Run the test (expect pass)**
+- [ ] **Step 5: Run the test (expect pass)**
 
 Run: `cargo test -p cairn-types pty::tests`
 Expected: PASS (both tests green).
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/error.rs
-git commit -m "Add PtyError with Closed/Io/Backend variants"
+git add -A crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/
+git commit -m "Switch pty to module directory layout; add PtyError"
 ```
 
 ---
@@ -174,11 +183,11 @@ git commit -m "Add PtyError with Closed/Io/Backend variants"
 
 **Files:**
 - Create: `crates/cairn-core/src/pty/types.rs`
-- Modify: `crates/cairn-core/src/pty.rs`
+- Modify: `crates/cairn-core/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing tests**
 
-Replace the `#[cfg(test)] mod tests` block in `crates/cairn-core/src/pty.rs` with:
+Replace the `#[cfg(test)] mod tests` block in `crates/cairn-core/src/pty/mod.rs` with:
 
 ```rust
 mod error;
@@ -299,7 +308,7 @@ Expected: PASS (all six tests green).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/types.rs
+git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/types.rs
 git commit -m "Add TermSize and SpawnOptions with builder API"
 ```
 
@@ -309,11 +318,11 @@ git commit -m "Add TermSize and SpawnOptions with builder API"
 
 **Files:**
 - Create: `crates/cairn-core/src/pty/subscription.rs`
-- Modify: `crates/cairn-core/src/pty.rs`
+- Modify: `crates/cairn-core/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Update `crates/cairn-core/src/pty.rs` — replace the `mod`/`pub use` lines and append a test:
+Update `crates/cairn-core/src/pty/mod.rs` — replace the `mod`/`pub use` lines and append a test:
 
 ```rust
 mod error;
@@ -386,7 +395,7 @@ Expected: PASS (all tests green).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/subscription.rs
+git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/subscription.rs
 git commit -m "Add Subscription type bundling snapshot + broadcast receiver"
 ```
 
@@ -398,11 +407,11 @@ git commit -m "Add Subscription type bundling snapshot + broadcast receiver"
 
 **Files:**
 - Create: `crates/cairn-core/src/pty/session.rs`
-- Modify: `crates/cairn-core/src/pty.rs`
+- Modify: `crates/cairn-core/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Update `crates/cairn-core/src/pty.rs`:
+Update `crates/cairn-core/src/pty/mod.rs`:
 
 ```rust
 mod error;
@@ -512,7 +521,7 @@ Expected: PASS (all tests green).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/session.rs
+git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/session.rs
 git commit -m "Add PtySession async trait with size/resize/subscribe/write"
 ```
 
@@ -523,12 +532,12 @@ git commit -m "Add PtySession async trait with size/resize/subscribe/write"
 ### Task 6: GhosttyPty struct and Command enum
 
 **Files:**
-- Create: `crates/cairn-core/src/pty/ghostty.rs`
-- Modify: `crates/cairn-core/src/pty.rs`
+- Create: `crates/cairn-core/src/pty/ghostty/mod.rs`
+- Modify: `crates/cairn-core/src/pty/mod.rs`
 
 - [ ] **Step 1: Write failing test**
 
-Update `crates/cairn-core/src/pty.rs` to add the ghostty module and re-export:
+Update `crates/cairn-core/src/pty/mod.rs` to add the ghostty module and re-export:
 
 ```rust
 mod error;
@@ -561,7 +570,7 @@ Expected: FAIL — `GhosttyPty` not defined.
 
 - [ ] **Step 3: Create the ghostty module with placeholder struct**
 
-Create `crates/cairn-core/src/pty/ghostty.rs`:
+Create `crates/cairn-core/src/pty/ghostty/mod.rs`:
 
 ```rust
 //! `libghostty-vt`-backed [`PtySession`] implementation.
@@ -630,7 +639,7 @@ Expected: PASS — `flume::Sender` is `Send + Sync`, so `GhosttyPty` inherits it
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty.rs crates/cairn-core/src/pty/ghostty.rs crates/cairn-core/src/pty/ghostty/worker.rs
+git add crates/cairn-core/src/pty/mod.rs crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs
 git commit -m "Add GhosttyPty skeleton with Command enum and worker module stub"
 ```
 
@@ -639,7 +648,7 @@ git commit -m "Add GhosttyPty skeleton with Command enum and worker module stub"
 ### Task 7: Spawn a child process (proof of life)
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty.rs`
+- Modify: `crates/cairn-core/src/pty/ghostty/mod.rs`
 - Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
 - Create: `crates/cairn-core/tests/pty_lifecycle.rs`
 
@@ -787,7 +796,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 }
 ```
 
-Replace `crates/cairn-core/src/pty/ghostty.rs` with:
+Replace `crates/cairn-core/src/pty/ghostty/mod.rs` with:
 
 ```rust
 //! `libghostty-vt`-backed [`PtySession`] implementation.
@@ -872,7 +881,7 @@ Expected: PASS — `true` exits 0.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_lifecycle.rs
+git add crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_lifecycle.rs
 git commit -m "GhosttyPty spawns child via portable-pty and reports exit status"
 ```
 
@@ -881,7 +890,7 @@ git commit -m "GhosttyPty spawns child via portable-pty and reports exit status"
 ### Task 8: Implement kill()
 
 **Files:**
-- Modify: `crates/cairn-core/src/pty/ghostty.rs`
+- Modify: `crates/cairn-core/src/pty/ghostty/mod.rs`
 - Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
 - Modify: `crates/cairn-core/tests/pty_lifecycle.rs`
 
@@ -974,7 +983,7 @@ Update `crates/cairn-core/src/pty/ghostty/worker.rs` — wrap `child` in a way t
         .map_err(|e| PtyError::Io { source: e })?;
 ```
 
-Add the `kill` method to `crates/cairn-core/src/pty/ghostty.rs`. Inside `impl GhosttyPty { ... }`:
+Add the `kill` method to `crates/cairn-core/src/pty/ghostty/mod.rs`. Inside `impl GhosttyPty { ... }`:
 
 ```rust
     /// Send a kill signal to the child and tear down the session.
@@ -994,7 +1003,7 @@ Expected: PASS — both lifecycle tests green.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_lifecycle.rs
+git add crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_lifecycle.rs
 git commit -m "Implement GhosttyPty::kill via Shutdown command + portable-pty killer"
 ```
 
@@ -1006,7 +1015,7 @@ git commit -m "Implement GhosttyPty::kill via Shutdown command + portable-pty ki
 
 **Files:**
 - Modify: `crates/cairn-core/src/pty/ghostty/worker.rs`
-- Modify: `crates/cairn-core/src/pty/ghostty.rs`
+- Modify: `crates/cairn-core/src/pty/ghostty/mod.rs`
 - Create: `crates/cairn-core/tests/pty_io.rs`
 
 This task adds the reader task that pumps PTY output into a broadcast channel. Subscribers still use `Command::Subscribe`, but for this task only we implement subscribe enough to expose the broadcast receiver; the snapshot stays empty until Task 11 wires libghostty-vt.
@@ -1236,7 +1245,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 }
 ```
 
-Add the `PtySession` impl to `crates/cairn-core/src/pty/ghostty.rs` (append below the existing `impl GhosttyPty { ... }`):
+Add the `PtySession` impl to `crates/cairn-core/src/pty/ghostty/mod.rs` (append below the existing `impl GhosttyPty { ... }`):
 
 ```rust
 #[async_trait::async_trait]
@@ -1287,7 +1296,7 @@ Expected: PASS — all unit tests + lifecycle + io tests green. The `printf` chi
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/cairn-core/src/pty/ghostty.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
+git add crates/cairn-core/src/pty/ghostty/mod.rs crates/cairn-core/src/pty/ghostty/worker.rs crates/cairn-core/tests/pty_io.rs
 git commit -m "Reader thread broadcasts PTY bytes; PtySession trait impl on GhosttyPty"
 ```
 
