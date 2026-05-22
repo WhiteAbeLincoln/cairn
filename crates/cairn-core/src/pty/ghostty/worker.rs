@@ -163,13 +163,18 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 // always short and synchronous — never held across an .await —
                 // so there is no borrow-collision risk on this single-threaded
                 // LocalSet.
-                let writer = match master.take_writer() {
-                    Ok(w) => Rc::new(RefCell::new(w)),
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to take PTY writer");
-                        return;
-                    }
-                };
+                // Wrap the writer in Option for the same reason bcast_tx is
+                // wrapped: the chunk-forwarder task sets it to None on EOF so
+                // that Command::Write can return PtyError::Closed immediately
+                // rather than returning an I/O EIO error after the child exits.
+                let writer: Rc<RefCell<Option<Box<dyn std::io::Write + Send>>>> =
+                    match master.take_writer() {
+                        Ok(w) => Rc::new(RefCell::new(Some(w))),
+                        Err(e) => {
+                            tracing::error!(error = %e, "failed to take PTY writer");
+                            return;
+                        }
+                    };
 
                 // Owned VT state for this session. Terminal is !Send + !Sync
                 // and stays pinned to this thread (the LocalSet guarantees it).
@@ -220,9 +225,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 let writer_for_pty_write = writer.clone();
                 if let Err(e) = terminal.on_pty_write(move |_term, data| {
                     use std::io::Write;
-                    if let Err(err) = writer_for_pty_write.borrow_mut().write_all(data) {
-                        tracing::warn!(error = %err, "PtyWriteFn failed to write response bytes");
+                    let mut w = writer_for_pty_write.borrow_mut();
+                    if let Some(w) = w.as_mut() {
+                        if let Err(err) = w.write_all(data) {
+                            tracing::warn!(error = %err, "PtyWriteFn failed to write response bytes");
+                        }
                     }
+                    // If writer is None (child exited), silently drop the response —
+                    // no one is reading it anyway.
                 }) {
                     tracing::error!(error = ?e, "failed to install PtyWriteFn callback");
                     return;
@@ -250,6 +260,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 // chunks and doesn't starve the command dispatcher.
                 let bcast_tx_for_reader = bcast_tx.clone();
                 let terminal_for_reader = terminal.clone();
+                let writer_for_forwarder = writer.clone();
                 tokio::task::spawn_local(async move {
                     while let Ok(chunk) = chunk_rx.recv_async().await {
                         // borrow_mut is held only across this synchronous call —
@@ -265,6 +276,9 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     // promptly. The Rc on the dispatcher side becomes the only ref,
                     // but with None inside, so the underlying sender is gone.
                     *bcast_tx_for_reader.borrow_mut() = None;
+                    // Null the writer at the same time so Command::Write returns
+                    // PtyError::Closed rather than EIO when the child is gone.
+                    *writer_for_forwarder.borrow_mut() = None;
                 });
 
                 // Command dispatcher: runs until Shutdown, cmd_rx disconnects,
@@ -354,6 +368,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             use std::io::Write;
                             let result = (|| -> Result<(), PtyError> {
                                 let mut w = writer.borrow_mut();
+                                let w = w.as_mut().ok_or(PtyError::Closed)?;
                                 w.write_all(&data)?;
                                 w.flush()?;
                                 Ok(())
