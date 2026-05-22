@@ -13,7 +13,7 @@ use tokio::sync::broadcast;
 use super::Command;
 use crate::pty::{PtyError, SpawnOptions, Subscription, TermSize};
 
-pub use portable_pty::ExitStatus;
+pub use std::process::ExitStatus;
 
 /// State shared between the worker thread's setup phase and the caller.
 pub(super) struct WorkerHandles {
@@ -99,10 +99,12 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     std::thread::Builder::new()
         .name("cairn-pty-waiter".into())
         .spawn(move || {
-            let status = child.wait().unwrap_or_else(|e| {
+            let portable_status = child.wait().unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
-                ExitStatus::with_exit_code(1)
+                portable_pty::ExitStatus::with_exit_code(1)
             });
+            // Convert from portable_pty::ExitStatus to std::process::ExitStatus
+            let status = convert_portable_exit_status(portable_status);
             let _ = exit_tx.send(Some(status));
         })
         .map_err(|e| PtyError::Io { source: e })?;
@@ -450,4 +452,26 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
         })?;
 
     Ok(Bytes::copy_from_slice(&vt_bytes))
+}
+
+/// Construct a synthetic `std::process::ExitStatus` with the given exit code.
+///
+/// Used when `child.wait()` itself fails (rare; usually wait failures imply
+/// the parent has lost track of the child, not that the child is healthy).
+/// We surface this as a failing exit so callers see the session as broken.
+#[cfg(unix)]
+pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    ExitStatus::from_raw((code & 0xff) << 8)
+}
+
+/// Convert a `portable_pty::ExitStatus` to `std::process::ExitStatus`.
+///
+/// portable_pty tracks both exit codes and signals; we convert to std's
+/// representation using Unix raw exit status encoding.
+#[cfg(unix)]
+fn convert_portable_exit_status(status: portable_pty::ExitStatus) -> ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    let code = status.exit_code();
+    ExitStatus::from_raw((code as i32 & 0xff) << 8)
 }

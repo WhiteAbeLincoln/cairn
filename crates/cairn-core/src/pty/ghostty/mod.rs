@@ -76,7 +76,7 @@ impl GhosttyPty {
                 return rx
                     .borrow()
                     .clone()
-                    .unwrap_or_else(|| ExitStatus::with_exit_code(1));
+                    .unwrap_or_else(|| worker::synthetic_exit_status(1));
             }
         }
     }
