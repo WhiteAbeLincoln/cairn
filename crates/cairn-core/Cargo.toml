@@ -12,3 +12,10 @@ snafu.workspace = true
 tracing.workspace = true
 libghostty-vt = { version = "0.1.1" }
 tokio = { version = "1.52", features = ["full"] }
+async-trait = "0.1"
+bytes = "1"
+flume = "0.12"
+portable-pty = "0.9"
+
+[dev-dependencies]
+tokio = { version = "1.52", features = ["full", "test-util", "macros"] }
