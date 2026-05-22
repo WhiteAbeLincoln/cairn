@@ -3,10 +3,12 @@
 //! See `docs/superpowers/specs/2026-05-22-pty-session-trait-design.md`.
 
 mod error;
+mod session;
 mod subscription;
 mod types;
 
 pub use error::PtyError;
+pub use session::PtySession;
 pub use subscription::Subscription;
 pub use types::{SpawnOptions, TermSize};
 
@@ -69,5 +71,44 @@ mod tests {
         };
         assert_eq!(sub.snapshot, snap);
         drop(tx); // explicit drop so test asserts type accepts a Receiver
+    }
+
+    #[test]
+    fn pty_session_is_object_safe() {
+        // Compile-time check that PtySession is object-safe.
+        // (If the trait grows generic methods or returns Self by value,
+        // this line will fail to compile.)
+        fn _assert_dyn(_: &dyn PtySession) {}
+    }
+
+    struct StubSession;
+
+    #[async_trait::async_trait]
+    impl PtySession for StubSession {
+        async fn size(&self) -> Result<TermSize, PtyError> {
+            Ok(TermSize { cols: 1, rows: 1 })
+        }
+        async fn resize(&self, _: TermSize) -> Result<(), PtyError> {
+            Ok(())
+        }
+        async fn subscribe(&self) -> Result<Subscription, PtyError> {
+            use bytes::Bytes;
+            use tokio::sync::broadcast;
+            let (_tx, rx) = broadcast::channel(1);
+            Ok(Subscription {
+                snapshot: Bytes::new(),
+                stream: rx,
+            })
+        }
+        async fn write(&self, _: bytes::Bytes) -> Result<(), PtyError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stub_session_implements_trait() {
+        let s = StubSession;
+        let size = s.size().await.unwrap();
+        assert_eq!(size, TermSize { cols: 1, rows: 1 });
     }
 }
