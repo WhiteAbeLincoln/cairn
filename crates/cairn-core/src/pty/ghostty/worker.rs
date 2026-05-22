@@ -1,10 +1,15 @@
 //! Session worker thread: bootstraps the current-thread tokio runtime,
 //! runs the PTY reader task and the command dispatcher on a `LocalSet`.
 
+use std::io::Read;
+use std::rc::Rc;
+
+use bytes::Bytes;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use tokio::sync::broadcast;
 
 use super::Command;
-use crate::pty::{PtyError, SpawnOptions};
+use crate::pty::{PtyError, SpawnOptions, Subscription};
 
 pub use portable_pty::ExitStatus;
 
@@ -64,7 +69,12 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     // needing to reach across thread ownership into the waiter.
     let mut killer = child.clone_killer();
 
+    let reader = pty_pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| PtyError::Backend { source: e.into() })?;
     let master = pty_pair.master;
+    let broadcast_capacity = opts.broadcast_capacity;
 
     // Spawn a dedicated waiter thread so the child's exit status is published
     // independently of the command-loop thread. This lets GhosttyPty::wait()
@@ -95,9 +105,53 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
             // closes when this thread exits and `_master` drops here.
             let _master = master;
             let local = tokio::task::LocalSet::new();
+
             local.block_on(&rt, async move {
-                // For now: just drain commands until Shutdown or channel close.
-                // (Reader task, dispatcher, etc. are added in later tasks.)
+                let (bcast_tx, _bcast_rx_dropped) =
+                    broadcast::channel::<Bytes>(broadcast_capacity);
+                let bcast_tx = Rc::new(bcast_tx);
+
+                // PTY reader: portable_pty's reader is blocking std::io::Read.
+                // Run it on a dedicated std::thread that forwards chunks to the
+                // LocalSet via a flume channel.
+                let (chunk_tx, chunk_rx) = flume::unbounded::<Bytes>();
+                let _reader_thread = std::thread::Builder::new()
+                    .name("cairn-pty-reader".into())
+                    .spawn({
+                        let mut reader = reader;
+                        move || {
+                            let mut buf = vec![0u8; 65536];
+                            loop {
+                                match reader.read(&mut buf) {
+                                    Ok(0) => break, // EOF
+                                    Ok(n) => {
+                                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                                        if chunk_tx.send(chunk).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(e)
+                                        if e.kind() == std::io::ErrorKind::Interrupted =>
+                                    {
+                                        continue
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                    });
+
+                // Local task that drains chunk_rx and broadcasts.
+                // All active subscribers receive each chunk; lagged receivers
+                // get RecvError::Lagged and should re-subscribe to recover.
+                let bcast_tx_in_task = bcast_tx.clone();
+                let _broadcast_task = tokio::task::spawn_local(async move {
+                    while let Ok(chunk) = chunk_rx.recv_async().await {
+                        let _ = bcast_tx_in_task.send(chunk);
+                    }
+                });
+
+                // Command dispatcher
                 while let Ok(cmd) = cmd_rx.recv_async().await {
                     match cmd {
                         Command::Shutdown => {
@@ -112,10 +166,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             }
                             break;
                         }
-                        // Other commands are not yet handled — reply with Closed
-                        // so callers get a clear error in this skeleton stage.
                         Command::Subscribe { reply } => {
-                            let _ = reply.send(Err(PtyError::Closed));
+                            // Snapshot stays empty until libghostty-vt
+                            // Formatter is wired in Task 14. Live stream works.
+                            let sub = Subscription {
+                                snapshot: Bytes::new(),
+                                stream: bcast_tx.subscribe(),
+                            };
+                            let _ = reply.send(Ok(sub));
                         }
                         Command::Resize { reply, .. } => {
                             let _ = reply.send(Err(PtyError::Closed));

@@ -81,3 +81,42 @@ impl GhosttyPty {
         }
     }
 }
+
+#[async_trait::async_trait]
+impl super::PtySession for GhosttyPty {
+    async fn size(&self) -> Result<super::TermSize, PtyError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send_async(Command::Size { reply: tx })
+            .await
+            .map_err(|_| PtyError::Closed)?;
+        rx.await.map_err(|_| PtyError::Closed)?
+    }
+
+    async fn resize(&self, size: super::TermSize) -> Result<(), PtyError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send_async(Command::Resize { size, reply: tx })
+            .await
+            .map_err(|_| PtyError::Closed)?;
+        rx.await.map_err(|_| PtyError::Closed)?
+    }
+
+    async fn subscribe(&self) -> Result<Subscription, PtyError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send_async(Command::Subscribe { reply: tx })
+            .await
+            .map_err(|_| PtyError::Closed)?;
+        rx.await.map_err(|_| PtyError::Closed)?
+    }
+
+    async fn write(&self, data: bytes::Bytes) -> Result<(), PtyError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send_async(Command::Write { data, reply: tx })
+            .await
+            .map_err(|_| PtyError::Closed)?;
+        rx.await.map_err(|_| PtyError::Closed)?
+    }
+}
