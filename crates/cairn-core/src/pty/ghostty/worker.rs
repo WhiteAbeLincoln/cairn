@@ -164,6 +164,22 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     }
                 });
 
+                // Take the writer once at startup. portable_pty's writer
+                // is std::io::Write (blocking sync); writes from the dispatcher
+                // serialize at byte boundaries inside this thread.
+                let writer = match master.take_writer() {
+                    Ok(w) => std::cell::RefCell::new(w),
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to take PTY writer");
+                        // Without a writer the session can't fulfill writes,
+                        // but reads and resizes can still work. Continue with
+                        // an Option-style approach: keep writer as None.
+                        // For simplicity here, return early so the session
+                        // exits cleanly.
+                        return;
+                    }
+                };
+
                 // Command dispatcher
                 while let Ok(cmd) = cmd_rx.recv_async().await {
                     match cmd {
@@ -202,8 +218,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                                 .map_err(|e| PtyError::Backend { source: e.into() });
                             let _ = reply.send(result);
                         }
-                        Command::Write { reply, .. } => {
-                            let _ = reply.send(Err(PtyError::Closed));
+                        Command::Write { data, reply } => {
+                            use std::io::Write;
+                            let result = {
+                                let mut w = writer.borrow_mut();
+                                w.write_all(&data).and_then(|_| w.flush())
+                            }
+                            .map_err(PtyError::from);
+                            let _ = reply.send(result);
                         }
                     }
                 }

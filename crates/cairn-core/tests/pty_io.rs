@@ -1,5 +1,6 @@
 //! Integration tests for GhosttyPty subscribe / write / scrollback I/O.
 
+use bytes::Bytes;
 use cairn_core::pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
@@ -61,6 +62,30 @@ async fn size_reports_configured_dimensions() {
     let pty = GhosttyPty::spawn(opts).expect("spawn");
     let size = pty.size().await.expect("size");
     assert_eq!(size, TermSize { cols: 132, rows: 50 });
+    pty.kill().expect("kill");
+    let _ = pty.wait().await;
+}
+
+#[tokio::test]
+async fn write_delivers_bytes_to_child_stdin() {
+    // `cat` echoes its stdin back to stdout. We write a line; it should
+    // come back through the subscription stream.
+    let cmd = std::process::Command::new("cat");
+    let opts = SpawnOptions::new(cmd);
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    let mut sub = pty.subscribe().await.expect("subscribe");
+    pty.write(Bytes::from_static(b"ping-cairn\n"))
+        .await
+        .expect("write");
+
+    let bytes = read_until_contains(&mut sub, b"ping-cairn", Duration::from_secs(2)).await;
+    assert!(
+        bytes.windows(b"ping-cairn".len()).any(|w| w == b"ping-cairn"),
+        "did not see echoed 'ping-cairn'; got {:?}",
+        std::str::from_utf8(&bytes).unwrap_or("<non-utf8>")
+    );
+
     pty.kill().expect("kill");
     let _ = pty.wait().await;
 }
