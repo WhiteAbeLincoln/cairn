@@ -61,6 +61,19 @@ mod tests {
     }
 
     #[test]
+    fn spawn_options_default_scrollback() {
+        let opts = SpawnOptions::new(std::process::Command::new("true"));
+        assert_eq!(opts.scrollback_lines, 1000);
+    }
+
+    #[test]
+    fn spawn_options_builder_scrollback() {
+        let opts = SpawnOptions::new(std::process::Command::new("true"))
+            .with_scrollback_lines(500);
+        assert_eq!(opts.scrollback_lines, 500);
+    }
+
+    #[test]
     fn subscription_constructs_from_parts() {
         use bytes::Bytes;
         use tokio::sync::broadcast;

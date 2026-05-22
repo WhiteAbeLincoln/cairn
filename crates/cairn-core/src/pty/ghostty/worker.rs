@@ -37,6 +37,9 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     // TermSize is Copy, so this is a plain copy of two u16 values.
     let initial_size = opts.size;
 
+    // Capture scrollback_lines before opts.command is consumed by CommandBuilder.
+    let scrollback_lines = opts.scrollback_lines;
+
     // Synchronously open the PTY and spawn the child on this thread so spawn
     // errors surface to the caller rather than getting buried in the worker.
     let pty_system = native_pty_system();
@@ -160,11 +163,36 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 let terminal = match Terminal::new(TerminalOptions {
                     cols: initial_size.cols,
                     rows: initial_size.rows,
-                    max_scrollback: 0,
+                    max_scrollback: scrollback_lines,
                 }) {
                     Ok(t) => Rc::new(RefCell::new(t)),
                     Err(e) => {
                         tracing::error!(error = ?e, "failed to construct libghostty-vt Terminal");
+                        // Drain any commands that arrived (or will arrive briefly) so callers
+                        // get a clean error rather than hanging. The waiter thread + watch
+                        // channel still signal exit normally via the child.
+                        while let Ok(cmd) = cmd_rx.try_recv() {
+                            let construction_err = || PtyError::Backend {
+                                source: Box::new(std::io::Error::other(
+                                    "VT terminal construction failed",
+                                )),
+                            };
+                            match cmd {
+                                Command::Shutdown => {}
+                                Command::Subscribe { reply } => {
+                                    let _ = reply.send(Err(construction_err()));
+                                }
+                                Command::Resize { reply, .. } => {
+                                    let _ = reply.send(Err(construction_err()));
+                                }
+                                Command::Size { reply } => {
+                                    let _ = reply.send(Err(construction_err()));
+                                }
+                                Command::Write { reply, .. } => {
+                                    let _ = reply.send(Err(construction_err()));
+                                }
+                            }
+                        }
                         return;
                     }
                 };
