@@ -11,10 +11,19 @@ async fn resize_updates_size_query() {
 
     assert_eq!(pty.size().await.unwrap(), TermSize { cols: 80, rows: 24 });
 
-    pty.resize(TermSize { cols: 120, rows: 40 })
-        .await
-        .expect("resize");
-    assert_eq!(pty.size().await.unwrap(), TermSize { cols: 120, rows: 40 });
+    pty.resize(TermSize {
+        cols: 120,
+        rows: 40,
+    })
+    .await
+    .expect("resize");
+    assert_eq!(
+        pty.size().await.unwrap(),
+        TermSize {
+            cols: 120,
+            rows: 40
+        }
+    );
 
     pty.kill().expect("kill");
     let _ = pty.wait().await;

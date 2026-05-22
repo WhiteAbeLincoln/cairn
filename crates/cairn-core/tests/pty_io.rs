@@ -45,7 +45,9 @@ async fn echo_output_is_broadcast_to_subscribers() {
     let mut sub = pty.subscribe().await.expect("subscribe");
     let bytes = read_until_contains(&mut sub, b"hello-cairn", Duration::from_secs(2)).await;
     assert!(
-        bytes.windows(b"hello-cairn".len()).any(|w| w == b"hello-cairn"),
+        bytes
+            .windows(b"hello-cairn".len())
+            .any(|w| w == b"hello-cairn"),
         "did not see 'hello-cairn' in PTY output; got {:?}",
         std::str::from_utf8(&bytes).unwrap_or("<non-utf8>")
     );
@@ -58,10 +60,19 @@ async fn echo_output_is_broadcast_to_subscribers() {
 async fn size_reports_configured_dimensions() {
     let mut cmd = std::process::Command::new("sleep");
     cmd.arg("5");
-    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 132, rows: 50 });
+    let opts = SpawnOptions::new(cmd).with_size(TermSize {
+        cols: 132,
+        rows: 50,
+    });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
     let size = pty.size().await.expect("size");
-    assert_eq!(size, TermSize { cols: 132, rows: 50 });
+    assert_eq!(
+        size,
+        TermSize {
+            cols: 132,
+            rows: 50
+        }
+    );
     pty.kill().expect("kill");
     let _ = pty.wait().await;
 }
@@ -81,7 +92,9 @@ async fn write_delivers_bytes_to_child_stdin() {
 
     let bytes = read_until_contains(&mut sub, b"ping-cairn", Duration::from_secs(2)).await;
     assert!(
-        bytes.windows(b"ping-cairn".len()).any(|w| w == b"ping-cairn"),
+        bytes
+            .windows(b"ping-cairn".len())
+            .any(|w| w == b"ping-cairn"),
         "did not see echoed 'ping-cairn'; got {:?}",
         std::str::from_utf8(&bytes).unwrap_or("<non-utf8>")
     );
@@ -102,7 +115,9 @@ async fn spawn_succeeds_with_terminal_attached() {
     let mut sub = pty.subscribe().await.expect("subscribe");
     let bytes = read_until_contains(&mut sub, b"vt-attached", Duration::from_secs(2)).await;
     assert!(
-        bytes.windows(b"vt-attached".len()).any(|w| w == b"vt-attached"),
+        bytes
+            .windows(b"vt-attached".len())
+            .any(|w| w == b"vt-attached"),
         "did not see 'vt-attached'"
     );
     let _ = pty.wait().await;
@@ -120,9 +135,11 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
 
     let mut sub1 = pty.subscribe().await.expect("subscribe-1");
     let bytes1 = read_until_contains(&mut sub1, b"late-join-marker", Duration::from_secs(2)).await;
-    assert!(bytes1
-        .windows(b"late-join-marker".len())
-        .any(|w| w == b"late-join-marker"));
+    assert!(
+        bytes1
+            .windows(b"late-join-marker".len())
+            .any(|w| w == b"late-join-marker")
+    );
 
     // Wait for child exit so subsequent reads return Closed promptly.
     let _ = pty.wait().await;
@@ -163,7 +180,10 @@ async fn da1_query_gets_response_without_client() {
     let mut sub = pty.subscribe().await.expect("subscribe");
     let bytes = read_until_contains(&mut sub, b"reply-len=", Duration::from_secs(3)).await;
     let text = std::str::from_utf8(&bytes).unwrap_or("<non-utf8>");
-    assert!(text.contains("reply-len="), "missing reply-len marker: {text}");
+    assert!(
+        text.contains("reply-len="),
+        "missing reply-len marker: {text}"
+    );
     // The reply length must be >0 — meaning the script received the DA1 response.
     assert!(
         text.contains("reply-len=") && !text.contains("reply-len=0"),
@@ -195,5 +215,8 @@ async fn subscribers_observe_close_on_child_exit() {
     })
     .await
     .unwrap_or(false);
-    assert!(saw_close, "subscribers did not observe Closed after child exit");
+    assert!(
+        saw_close,
+        "subscribers did not observe Closed after child exit"
+    );
 }

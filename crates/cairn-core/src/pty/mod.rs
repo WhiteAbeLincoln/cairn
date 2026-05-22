@@ -48,15 +48,23 @@ mod tests {
 
     #[test]
     fn spawn_options_builder_size() {
-        let opts = SpawnOptions::new(std::process::Command::new("true"))
-            .with_size(TermSize { cols: 120, rows: 40 });
-        assert_eq!(opts.size, TermSize { cols: 120, rows: 40 });
+        let opts = SpawnOptions::new(std::process::Command::new("true")).with_size(TermSize {
+            cols: 120,
+            rows: 40,
+        });
+        assert_eq!(
+            opts.size,
+            TermSize {
+                cols: 120,
+                rows: 40
+            }
+        );
     }
 
     #[test]
     fn spawn_options_builder_capacity() {
-        let opts = SpawnOptions::new(std::process::Command::new("true"))
-            .with_broadcast_capacity(64);
+        let opts =
+            SpawnOptions::new(std::process::Command::new("true")).with_broadcast_capacity(64);
         assert_eq!(opts.broadcast_capacity, 64);
     }
 
@@ -68,8 +76,7 @@ mod tests {
 
     #[test]
     fn spawn_options_builder_scrollback() {
-        let opts = SpawnOptions::new(std::process::Command::new("true"))
-            .with_scrollback_lines(500);
+        let opts = SpawnOptions::new(std::process::Command::new("true")).with_scrollback_lines(500);
         assert_eq!(opts.scrollback_lines, 500);
     }
 
