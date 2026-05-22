@@ -81,14 +81,16 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
         })
         .map_err(|e| PtyError::Io { source: e })?;
 
+    // Build the runtime on this (parent) thread so construction failures
+    // surface to the caller via spawn() rather than panicking in the
+    // worker thread. Runtime is Send; we move it into the closure.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
     std::thread::Builder::new()
         .name("cairn-pty-session".into())
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build current-thread runtime");
-
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
                 // For now: just drain commands until Shutdown or channel close.
