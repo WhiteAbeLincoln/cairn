@@ -2,7 +2,6 @@
 //! runs the PTY reader task and the command dispatcher on a `LocalSet`.
 
 use std::io::Read;
-use std::rc::Rc;
 
 use bytes::Bytes;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -27,7 +26,9 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
 
     // Capture broadcast capacity before opts fields are consumed individually.
-    let broadcast_capacity = opts.broadcast_capacity;
+    // Clamp to at least 1: broadcast::channel(0) panics, and capacity is just
+    // a tuning knob — silently promoting 0 → 1 is more forgiving than erroring.
+    let broadcast_capacity = opts.broadcast_capacity.max(1);
 
     // Synchronously open the PTY and spawn the child on this thread so spawn
     // errors surface to the caller rather than getting buried in the worker.
@@ -146,12 +147,17 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 
             local.block_on(&rt, async move {
                 let (bcast_tx, _) = broadcast::channel::<Bytes>(broadcast_capacity);
-                let bcast_tx = Rc::new(bcast_tx);
 
                 // Forward bytes from the blocking reader thread into the
                 // broadcast channel. Runs as a LocalSet task so it yields
                 // between chunks and doesn't starve the command dispatcher.
+                // broadcast::Sender is internally Arc-backed, so cloning it
+                // directly is sufficient — no Rc wrapper needed.
                 let bcast_tx_for_reader = bcast_tx.clone();
+                // When the dispatcher loop exits (Shutdown or cmd_rx closed), the LocalSet
+                // drops and this task is cancelled — any chunks still in chunk_rx are
+                // silently discarded. That's acceptable for shutdown semantics; subscribers
+                // observe broadcast Closed when bcast_tx drops along with the LocalSet.
                 tokio::task::spawn_local(async move {
                     while let Ok(chunk) = chunk_rx.recv_async().await {
                         let _ = bcast_tx_for_reader.send(chunk);
