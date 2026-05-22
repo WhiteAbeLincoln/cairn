@@ -104,6 +104,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                 // Translate tokio::process::Command into pty_process::Command.
                 // pty-process wraps tokio::process::Command; we copy program
                 // + args + env + cwd by hand via as_std().
+                //
+                // Note: std::process::Command exposes overrides/removals via
+                // get_envs() but does NOT expose whether env_clear() was
+                // called. If a caller invokes env_clear() before spawn, the
+                // child here will inherit the parent environment rather than
+                // starting clean. This is a limitation of the std API and is
+                // not specific to pty-process; document accordingly if any
+                // adapter needs env_clear semantics.
                 let std_cmd = opts.command.as_std();
                 let mut builder = pty_process::Command::new(std_cmd.get_program());
                 for arg in std_cmd.get_args() {
@@ -266,12 +274,11 @@ async fn run_session(mut s: SessionState) {
                         // can still receive Closed replies via cmd_rx.
                         pty_closed = true;
                         *bcast_tx.borrow_mut() = None;
-                        if !exit_published {
-                            if let Ok(status) = s.child.wait().await {
+                        if !exit_published
+                            && let Ok(status) = s.child.wait().await {
                                 let _ = s.exit_tx.send(Some(status));
                                 exit_published = true;
                             }
-                        }
                     }
                     Ok(n) => {
                         let chunk = Bytes::copy_from_slice(&buf[..n]);
@@ -289,12 +296,11 @@ async fn run_session(mut s: SessionState) {
                         // close broadcast, drain remaining commands as Closed.
                         pty_closed = true;
                         *bcast_tx.borrow_mut() = None;
-                        if !exit_published {
-                            if let Ok(status) = s.child.wait().await {
+                        if !exit_published
+                            && let Ok(status) = s.child.wait().await {
                                 let _ = s.exit_tx.send(Some(status));
                                 exit_published = true;
                             }
-                        }
                     }
                 }
             },
@@ -340,11 +346,10 @@ async fn run_session(mut s: SessionState) {
                         // teardown. select! has already dropped the
                         // wait-branch future for this iteration, so s.child
                         // is freely borrowable.
-                        if !exit_published {
-                            if let Ok(status) = s.child.wait().await {
+                        if !exit_published
+                            && let Ok(status) = s.child.wait().await {
                                 let _ = s.exit_tx.send(Some(status));
                             }
-                        }
                         break;
                     }
                     Command::Subscribe { reply } => {
@@ -499,5 +504,5 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 #[cfg(unix)]
 pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
-    ExitStatus::from_raw(((code & 0xff)) << 8)
+    ExitStatus::from_raw((code & 0xff) << 8)
 }

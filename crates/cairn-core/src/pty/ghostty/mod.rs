@@ -70,8 +70,11 @@ impl GhosttyPty {
             if let Some(status) = *rx.borrow() {
                 return status;
             }
-            // changed() returns Err only when the sender is dropped, which
-            // happens after a final `Some(status)` is sent — so loop back.
+            // changed() returns Err only when the sender is dropped. Normally
+            // that happens after a final `Some(status)` is sent, so we loop
+            // back and the next borrow returns it. If the worker panicked
+            // before publishing, the borrow is None — fall back to a
+            // synthetic failing status so callers don't see a phantom success.
             if rx.changed().await.is_err() {
                 return (*rx.borrow()).unwrap_or_else(|| worker::synthetic_exit_status(1));
             }
