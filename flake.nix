@@ -70,7 +70,7 @@
 
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
-          packages = [pkgs.bun pkgs.nodejs];
+          packages = [pkgs.bun pkgs.nodejs pkgs.zig_0_15];
           shellHook = ''
             export NPM_CONFIG_PREFIX="$PWD/.npm-global"
             export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"
