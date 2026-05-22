@@ -115,3 +115,93 @@ fn on_pty_write_gates_decrqm_reply() {
         pending.borrow()
     );
 }
+
+#[test]
+fn on_xtversion_overrides_default_when_no_primary() {
+    let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let pending: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
+
+    let mut term = Terminal::new(TerminalOptions {
+        cols: 80,
+        rows: 24,
+        max_scrollback: 100,
+    })
+    .expect("Terminal::new");
+
+    let pending_cb = pending.clone();
+    let pc_pty = counter.clone();
+    term.on_pty_write(move |_t, data| {
+        if pc_pty.load(Ordering::Relaxed) == 0 {
+            pending_cb.borrow_mut().push_back(Bytes::copy_from_slice(data));
+        }
+    })
+    .expect("on_pty_write");
+
+    const XTVERSION_REPLY: &str = concat!("cairn ", env!("CARGO_PKG_VERSION"));
+    let pc_xt = counter.clone();
+    term.on_xtversion(move |_t| {
+        if pc_xt.load(Ordering::Relaxed) == 0 {
+            Some(XTVERSION_REPLY)
+        } else {
+            None
+        }
+    })
+    .expect("on_xtversion");
+
+    term.vt_write(b"\x1b[>q"); // XTVERSION query
+    let chunks: Vec<_> = pending.borrow_mut().drain(..).collect();
+    assert_eq!(chunks.len(), 1, "expected one reply, got {chunks:?}");
+    let reply = std::str::from_utf8(&chunks[0]).unwrap_or("<non-utf8>");
+    assert!(
+        reply.contains("cairn "),
+        "reply should brand as cairn, got {reply:?}"
+    );
+    assert!(
+        reply.contains(env!("CARGO_PKG_VERSION")),
+        "reply should include the crate version, got {reply:?}"
+    );
+    assert!(
+        !reply.contains("libghostty"),
+        "default libghostty fingerprint leaked: {reply:?}"
+    );
+}
+
+#[test]
+fn on_xtversion_suppressed_when_primary_attached() {
+    let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(1));
+    let pending: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
+
+    let mut term = Terminal::new(TerminalOptions {
+        cols: 80,
+        rows: 24,
+        max_scrollback: 100,
+    })
+    .expect("Terminal::new");
+
+    let pending_cb = pending.clone();
+    let pc_pty = counter.clone();
+    term.on_pty_write(move |_t, data| {
+        if pc_pty.load(Ordering::Relaxed) == 0 {
+            pending_cb.borrow_mut().push_back(Bytes::copy_from_slice(data));
+        }
+    })
+    .expect("on_pty_write");
+
+    const XTVERSION_REPLY: &str = concat!("cairn ", env!("CARGO_PKG_VERSION"));
+    let pc_xt = counter.clone();
+    term.on_xtversion(move |_t| {
+        if pc_xt.load(Ordering::Relaxed) == 0 {
+            Some(XTVERSION_REPLY)
+        } else {
+            None
+        }
+    })
+    .expect("on_xtversion");
+
+    term.vt_write(b"\x1b[>q");
+    assert!(
+        pending.borrow().is_empty(),
+        "expected no XTVERSION reply with count == 1, got {:?}",
+        pending.borrow()
+    );
+}

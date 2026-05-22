@@ -250,6 +250,24 @@ async fn run_session(mut s: SessionState) {
         drain_commands_with_construction_error(&s.cmd_rx);
         return;
     }
+
+    // Override libghostty's default XTVERSION reply ("libghostty") with
+    // "cairn <version>". Gated on primary_count so attached client
+    // emulators take over the response when present.
+    const XTVERSION_REPLY: &str = concat!("cairn ", env!("CARGO_PKG_VERSION"));
+    let pc_for_xtversion = primary_count.clone();
+    if let Err(e) = terminal.on_xtversion(move |_term| {
+        if pc_for_xtversion.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            Some(XTVERSION_REPLY)
+        } else {
+            None
+        }
+    }) {
+        tracing::error!(error = ?e, "failed to install XtversionFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+
     let terminal = Rc::new(RefCell::new(terminal));
 
     let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
