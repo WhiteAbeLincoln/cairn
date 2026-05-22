@@ -386,7 +386,7 @@ New dependencies to add:
 ```toml
 async-trait = "0.1"
 bytes = "1"
-flume = "0.11"           # sync↔async channel for command dispatch
+flume = "0.12"           # sync↔async channel for command dispatch
 portable-pty = "0.9"     # PTY abstraction + child spawn
 thiserror = "2"
 ```
