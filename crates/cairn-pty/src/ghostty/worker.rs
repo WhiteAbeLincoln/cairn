@@ -207,6 +207,14 @@ async fn run_session(mut s: SessionState) {
     // single-threaded; borrow_mut is held only across sync code.
     let pending_writes: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
 
+    // Shared counter of "primary attached" subscribers. Incremented in
+    // the Command::Subscribe arm; decremented by the PrimaryGuard inside
+    // each Subscription on drop. Read by libghostty callbacks
+    // (installed below) to decide whether to emit backend replies.
+    // Atomic (not Cell) so it can be cloned into Subscriptions, which
+    // are Send.
+    let primary_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
     // Construct the VT emulator. The PtyWriteFn closure captures a clone of
     // pending_writes and pushes; the main loop drains and forwards to pty.
     let mut terminal = match Terminal::new(TerminalOptions {
@@ -371,11 +379,8 @@ async fn run_session(mut s: SessionState) {
                                 rx
                             }
                         };
-                        // TODO(task-5): replace with a shared Arc<AtomicUsize>
-                        // wired to the worker state so the primary-attached
-                        // count is meaningful.
-                        let primary_count = Arc::new(AtomicUsize::new(0));
-                        let _ = reply.send(Ok(Subscription::new(snapshot, stream, primary_count)));
+                        let sub = Subscription::new(snapshot, stream, primary_count.clone());
+                        let _ = reply.send(Ok(sub));
                     }
                     Command::Resize { size, reply } => {
                         let res = (|| -> Result<(), PtyError> {
