@@ -160,13 +160,15 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
 
 #[tokio::test]
 async fn da1_query_gets_response_without_client() {
-    // Smallest reproducible TTY query test: launch a shell script that sends
-    // ESC[c (DA1) and then reads one byte from stdin (the response). If the
-    // server responds, the read succeeds within the timeout and we see the
-    // sentinel printed. If no response, the read blocks and we print
-    // reply-len=0.
+    // Verifies the count == 0 path end-to-end: with no subscriber
+    // attached, libghostty's default DA1 reply (\x1b[?62;22c) flows
+    // through the PTY to the child, the child's `read` returns the
+    // reply bytes, and we observe a non-zero reply length.
     //
-    // Note: depends on `sh` being on PATH (true on Linux/macOS).
+    // Race-free: we wait for the child to exit BEFORE subscribing,
+    // so the entire query/reply roundtrip happens with count == 0.
+    // The post-exit snapshot contains the child's final stdout
+    // (`reply-len=N`) which we parse.
     let script = r#"
         printf '\033[c'
         read -r -n 32 -t 1 reply
@@ -177,20 +179,21 @@ async fn da1_query_gets_response_without_client() {
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    let mut sub = pty.subscribe().await.expect("subscribe");
-    let bytes = read_until_contains(&mut sub, b"reply-len=", Duration::from_secs(3)).await;
-    let text = std::str::from_utf8(&bytes).unwrap_or("<non-utf8>");
+    // Wait for the child to finish the whole script. After this, the
+    // snapshot captures the final terminal state including the
+    // `reply-len=N` line.
+    let _ = pty.wait().await;
+
+    let sub = pty.subscribe().await.expect("subscribe");
+    let text = std::str::from_utf8(&sub.snapshot).unwrap_or("<non-utf8>");
     assert!(
         text.contains("reply-len="),
-        "missing reply-len marker: {text}"
+        "missing reply-len marker in snapshot: {text}"
     );
-    // The reply length must be >0 — meaning the script received the DA1 response.
     assert!(
-        text.contains("reply-len=") && !text.contains("reply-len=0"),
+        !text.contains("reply-len=0"),
         "expected non-zero reply length (terminal responded to DA1), got: {text}"
     );
-
-    let _ = pty.wait().await;
 }
 
 #[tokio::test]
