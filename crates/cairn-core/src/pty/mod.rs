@@ -3,9 +3,11 @@
 //! See `docs/superpowers/specs/2026-05-22-pty-session-trait-design.md`.
 
 mod error;
+mod subscription;
 mod types;
 
 pub use error::PtyError;
+pub use subscription::Subscription;
 pub use types::{SpawnOptions, TermSize};
 
 #[cfg(test)]
@@ -52,5 +54,20 @@ mod tests {
         let opts = SpawnOptions::new(std::process::Command::new("true"))
             .with_broadcast_capacity(64);
         assert_eq!(opts.broadcast_capacity, 64);
+    }
+
+    #[test]
+    fn subscription_constructs_from_parts() {
+        use bytes::Bytes;
+        use tokio::sync::broadcast;
+
+        let (tx, rx) = broadcast::channel::<Bytes>(4);
+        let snap = Bytes::from_static(b"\x1b[2J");
+        let sub = Subscription {
+            snapshot: snap.clone(),
+            stream: rx,
+        };
+        assert_eq!(sub.snapshot, snap);
+        drop(tx); // explicit drop so test asserts type accepts a Receiver
     }
 }
