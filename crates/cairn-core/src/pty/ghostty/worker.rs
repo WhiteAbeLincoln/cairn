@@ -204,9 +204,21 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             };
                             let _ = reply.send(Ok(sub));
                         }
-                        // Resize, Size, and Write are wired up in Tasks 10–12.
-                        Command::Resize { reply, .. } => {
-                            let _ = reply.send(Err(PtyError::Closed));
+                        // Kernel-side resize: update the PTY master's terminal
+                        // size so the child process sees the new dimensions via
+                        // SIGWINCH / TIOCGWINSZ. Task 14 will also call
+                        // terminal.borrow_mut().resize() here to keep the VT
+                        // emulator's internal grid in sync.
+                        Command::Resize { size, reply } => {
+                            let result = master
+                                .resize(PtySize {
+                                    rows: size.rows,
+                                    cols: size.cols,
+                                    pixel_width: 0,
+                                    pixel_height: 0,
+                                })
+                                .map_err(|e| PtyError::Backend { source: e.into() });
+                            let _ = reply.send(result);
                         }
                         Command::Size { reply } => {
                             let result = master
