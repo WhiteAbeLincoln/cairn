@@ -156,16 +156,36 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
             let local = tokio::task::LocalSet::new();
 
             local.block_on(&rt, async move {
+                // Take the writer FIRST so the Terminal's on_pty_write callback
+                // can capture a clone of the same Rc. Both the callback (which
+                // fires synchronously within vt_write) and the Command::Write
+                // handler share ownership of the writer via Rc. borrow_mut() is
+                // always short and synchronous — never held across an .await —
+                // so there is no borrow-collision risk on this single-threaded
+                // LocalSet.
+                let writer = match master.take_writer() {
+                    Ok(w) => Rc::new(RefCell::new(w)),
+                    Err(e) => {
+                        tracing::error!(error = %e, "failed to take PTY writer");
+                        return;
+                    }
+                };
+
                 // Owned VT state for this session. Terminal is !Send + !Sync
                 // and stays pinned to this thread (the LocalSet guarantees it).
                 // Rc allows the terminal to be shared between the chunk-forwarder
                 // task and the dispatcher loop without crossing thread boundaries.
-                let terminal = match Terminal::new(TerminalOptions {
+                //
+                // The Terminal is constructed before being wrapped in Rc so that
+                // on_pty_write can be installed via &mut Terminal. The closure
+                // captures a clone of the writer Rc so that VT query responses
+                // (DA1, DSR, etc.) are written directly back into the PTY master.
+                let mut terminal = match Terminal::new(TerminalOptions {
                     cols: initial_size.cols,
                     rows: initial_size.rows,
                     max_scrollback: scrollback_lines,
                 }) {
-                    Ok(t) => Rc::new(RefCell::new(t)),
+                    Ok(t) => t,
                     Err(e) => {
                         tracing::error!(error = ?e, "failed to construct libghostty-vt Terminal");
                         // Drain any commands that arrived (or will arrive briefly) so callers
@@ -197,6 +217,19 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     }
                 };
 
+                let writer_for_pty_write = writer.clone();
+                if let Err(e) = terminal.on_pty_write(move |_term, data| {
+                    use std::io::Write;
+                    if let Err(err) = writer_for_pty_write.borrow_mut().write_all(data) {
+                        tracing::warn!(error = %err, "PtyWriteFn failed to write response bytes");
+                    }
+                }) {
+                    tracing::error!(error = ?e, "failed to install PtyWriteFn callback");
+                    return;
+                }
+
+                let terminal = Rc::new(RefCell::new(terminal));
+
                 let (bcast_tx, _) = broadcast::channel::<Bytes>(broadcast_capacity);
 
                 // Forward bytes from the blocking reader thread into the broadcast
@@ -215,27 +248,14 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     while let Ok(chunk) = chunk_rx.recv_async().await {
                         // borrow_mut is held only across this synchronous call —
                         // never across an .await — so other LocalSet tasks that
-                        // borrow terminal cannot collide with this one.
+                        // borrow terminal cannot collide with this one. The
+                        // on_pty_write callback fires synchronously within
+                        // vt_write and also borrows the writer — also short and
+                        // synchronous, no overlap possible.
                         terminal_for_reader.borrow_mut().vt_write(&chunk);
                         let _ = bcast_tx_for_reader.send(chunk);
                     }
                 });
-
-                // Take the writer once at startup. portable_pty's writer
-                // is std::io::Write (blocking sync); writes from the dispatcher
-                // serialize at byte boundaries inside this thread.
-                let writer = match master.take_writer() {
-                    Ok(w) => RefCell::new(w),
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to take PTY writer");
-                        // Without a writer the session can't fulfill writes,
-                        // but reads and resizes can still work. Continue with
-                        // an Option-style approach: keep writer as None.
-                        // For simplicity here, return early so the session
-                        // exits cleanly.
-                        return;
-                    }
-                };
 
                 // Command dispatcher
                 while let Ok(cmd) = cmd_rx.recv_async().await {
@@ -307,11 +327,12 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                         }
                         Command::Write { data, reply } => {
                             use std::io::Write;
-                            let result = {
+                            let result = (|| -> Result<(), PtyError> {
                                 let mut w = writer.borrow_mut();
-                                w.write_all(&data).and_then(|_| w.flush())
-                            }
-                            .map_err(PtyError::from);
+                                w.write_all(&data)?;
+                                w.flush()?;
+                                Ok(())
+                            })();
                             let _ = reply.send(result);
                         }
                     }

@@ -140,3 +140,35 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
         std::str::from_utf8(&sub2.snapshot).unwrap_or("<non-utf8>")
     );
 }
+
+#[tokio::test]
+async fn da1_query_gets_response_without_client() {
+    // Smallest reproducible TTY query test: launch a shell script that sends
+    // ESC[c (DA1) and then reads one byte from stdin (the response). If the
+    // server responds, the read succeeds within the timeout and we see the
+    // sentinel printed. If no response, the read blocks and we print
+    // reply-len=0.
+    //
+    // Note: depends on `sh` being on PATH (true on Linux/macOS).
+    let script = r#"
+        printf '\033[c'
+        read -r -n 32 -t 1 reply
+        printf 'reply-len=%d\n' "${#reply}"
+    "#;
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c").arg(script);
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    let mut sub = pty.subscribe().await.expect("subscribe");
+    let bytes = read_until_contains(&mut sub, b"reply-len=", Duration::from_secs(3)).await;
+    let text = std::str::from_utf8(&bytes).unwrap_or("<non-utf8>");
+    assert!(text.contains("reply-len="), "missing reply-len marker: {text}");
+    // The reply length must be >0 — meaning the script received the DA1 response.
+    assert!(
+        text.contains("reply-len=") && !text.contains("reply-len=0"),
+        "expected non-zero reply length (terminal responded to DA1), got: {text}"
+    );
+
+    let _ = pty.wait().await;
+}
