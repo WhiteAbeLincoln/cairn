@@ -3,11 +3,13 @@
 //! See `docs/superpowers/specs/2026-05-22-pty-session-trait-design.md`.
 
 mod error;
+mod ghostty;
 mod session;
 mod subscription;
 mod types;
 
 pub use error::PtyError;
+pub use ghostty::GhosttyPty;
 pub use session::PtySession;
 pub use subscription::Subscription;
 pub use types::{SpawnOptions, TermSize};
@@ -110,5 +112,11 @@ mod tests {
         let s = StubSession;
         let size = s.size().await.unwrap();
         assert_eq!(size, TermSize { cols: 1, rows: 1 });
+    }
+
+    #[test]
+    fn ghostty_pty_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<GhosttyPty>();
     }
 }
