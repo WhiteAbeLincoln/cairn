@@ -85,14 +85,14 @@ mod tests {
     #[test]
     fn subscription_constructs_from_parts() {
         use bytes::Bytes;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
         use tokio::sync::broadcast;
 
         let (tx, rx) = broadcast::channel::<Bytes>(4);
         let snap = Bytes::from_static(b"\x1b[2J");
-        let sub = Subscription {
-            snapshot: snap.clone(),
-            stream: rx,
-        };
+        let counter = Arc::new(AtomicUsize::new(0));
+        let sub = Subscription::new(snap.clone(), rx, counter);
         assert_eq!(sub.snapshot, snap);
         drop(tx); // explicit drop so test asserts type accepts a Receiver
     }
@@ -117,12 +117,15 @@ mod tests {
         }
         async fn subscribe(&self) -> Result<Subscription, PtyError> {
             use bytes::Bytes;
+            use std::sync::Arc;
+            use std::sync::atomic::AtomicUsize;
             use tokio::sync::broadcast;
             let (_tx, rx) = broadcast::channel(1);
-            Ok(Subscription {
-                snapshot: Bytes::new(),
-                stream: rx,
-            })
+            Ok(Subscription::new(
+                Bytes::new(),
+                rx,
+                Arc::new(AtomicUsize::new(0)),
+            ))
         }
         async fn write(&self, _: bytes::Bytes) -> Result<(), PtyError> {
             Ok(())

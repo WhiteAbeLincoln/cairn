@@ -9,6 +9,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use bytes::Bytes;
 use libghostty_vt::{Terminal, TerminalOptions};
@@ -367,7 +369,11 @@ async fn run_session(mut s: SessionState) {
                                 rx
                             }
                         };
-                        let _ = reply.send(Ok(Subscription { snapshot, stream }));
+                        // TODO(task-5): replace with a shared Arc<AtomicUsize>
+                        // wired to the worker state so the primary-attached
+                        // count is meaningful.
+                        let primary_count = Arc::new(AtomicUsize::new(0));
+                        let _ = reply.send(Ok(Subscription::new(snapshot, stream, primary_count)));
                     }
                     Command::Resize { size, reply } => {
                         let res = (|| -> Result<(), PtyError> {
