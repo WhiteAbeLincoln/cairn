@@ -53,6 +53,14 @@ impl GhosttyPty {
         })
     }
 
+    /// Send a kill signal to the child and tear down the session.
+    /// `wait()` will resolve shortly after.
+    pub fn kill(&self) -> Result<(), PtyError> {
+        self.cmd_tx
+            .send(Command::Shutdown)
+            .map_err(|_| PtyError::Closed)
+    }
+
     /// Wait for the child to exit. Returns the exit status.
     ///
     /// Multiple calls are safe; all resolve once the child exits.

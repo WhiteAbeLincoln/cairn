@@ -10,3 +10,20 @@ async fn spawn_true_exits_cleanly() {
     let status = pty.wait().await;
     assert!(status.success(), "expected `true` to exit 0, got {:?}", status);
 }
+
+#[tokio::test]
+async fn kill_terminates_long_running_child() {
+    // `sleep 60` would block the test runner — kill should make wait() return.
+    let cmd = std::process::Command::new("sleep");
+    let mut cmd = cmd;
+    cmd.arg("60");
+    let opts = SpawnOptions::new(cmd);
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    // Brief delay so the child is actually running before we signal it.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    pty.kill().expect("kill");
+    let status = pty.wait().await;
+    assert!(!status.success(), "expected non-zero exit after kill, got {:?}", status);
+}

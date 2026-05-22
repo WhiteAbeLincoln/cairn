@@ -1,8 +1,6 @@
 //! Session worker thread: bootstraps the current-thread tokio runtime,
 //! runs the PTY reader task and the command dispatcher on a `LocalSet`.
 
-use std::sync::Arc;
-
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
 use super::Command;
@@ -33,9 +31,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| PtyError::Backend {
-            source: Into::<Box<dyn std::error::Error + Send + Sync>>::into(e),
-        })?;
+        .map_err(|e| PtyError::Backend { source: e.into() })?;
 
     // Translate std::process::Command into portable_pty::CommandBuilder.
     // portable-pty wants its own builder type; we copy program + args + env.
@@ -57,15 +53,18 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let mut child = pty_pair
         .slave
         .spawn_command(builder)
-        .map_err(|e| PtyError::Backend {
-            source: Into::<Box<dyn std::error::Error + Send + Sync>>::into(e),
-        })?;
+        .map_err(|e| PtyError::Backend { source: e.into() })?;
 
     // The slave side can be dropped after spawn — the child holds its own
     // open fd to it. Keeping it open in the parent prevents EOF detection.
     drop(pty_pair.slave);
 
-    let master = Arc::new(std::sync::Mutex::new(pty_pair.master));
+    // Clone a killer handle before moving `child` into the waiter thread.
+    // The session thread uses this to signal the child on Shutdown without
+    // needing to reach across thread ownership into the waiter.
+    let mut killer = child.clone_killer();
+
+    let master = pty_pair.master;
 
     // Spawn a dedicated waiter thread so the child's exit status is published
     // independently of the command-loop thread. This lets GhosttyPty::wait()
@@ -74,9 +73,10 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     std::thread::Builder::new()
         .name("cairn-pty-waiter".into())
         .spawn(move || {
-            let status = child
-                .wait()
-                .unwrap_or_else(|_| ExitStatus::with_exit_code(1));
+            let status = child.wait().unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
+                ExitStatus::with_exit_code(1)
+            });
             let _ = exit_tx.send(Some(status));
         })
         .map_err(|e| PtyError::Io { source: e })?;
@@ -91,13 +91,27 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     std::thread::Builder::new()
         .name("cairn-pty-session".into())
         .spawn(move || {
+            // Keep the master fd alive for the lifetime of this thread; it
+            // closes when this thread exits and `_master` drops here.
+            let _master = master;
             let local = tokio::task::LocalSet::new();
             local.block_on(&rt, async move {
                 // For now: just drain commands until Shutdown or channel close.
                 // (Reader task, dispatcher, etc. are added in later tasks.)
                 while let Ok(cmd) = cmd_rx.recv_async().await {
                     match cmd {
-                        Command::Shutdown => break,
+                        Command::Shutdown => {
+                            // Best-effort kill; the waiter thread observes the
+                            // child exit and publishes the status regardless.
+                            if let Err(e) = killer.kill() {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to kill child on shutdown; \
+                                     it may have already exited"
+                                );
+                            }
+                            break;
+                        }
                         // Other commands are not yet handled — reply with Closed
                         // so callers get a clear error in this skeleton stage.
                         Command::Subscribe { reply } => {
@@ -115,8 +129,6 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     }
                 }
             });
-
-            drop(master);
         })
         .map_err(|e| PtyError::Io { source: e })?;
 
