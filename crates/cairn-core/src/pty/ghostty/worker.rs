@@ -364,11 +364,15 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                             let _ = reply.send(Ok(sub));
                         }
                         Command::Resize { size, reply } => {
-                            // Update VT state and kernel side together so no
-                            // partial state is observable to subscribers between
-                            // the two steps. Terminal is updated first so that
-                            // any subsequent subscribe() after a resize sees the
-                            // new dimensions in the snapshot.
+                            // Update VT state first, then the kernel-side PTY
+                            // (which delivers SIGWINCH to the child). Terminal
+                            // is updated first so that any subsequent
+                            // subscribe() after a resize sees the new dimensions
+                            // in the snapshot. If the kernel resize fails after
+                            // the VT resize succeeds (e.g. EINVAL on an invalid
+                            // size), the two will be out of sync — this is rare
+                            // but possible. Callers receive the kernel-side
+                            // error in that case.
                             if let Err(e) = terminal.borrow_mut().resize(size.cols, size.rows, 0, 0)
                             {
                                 let _ = reply.send(Err(PtyError::Backend {
