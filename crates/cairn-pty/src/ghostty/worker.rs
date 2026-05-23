@@ -856,7 +856,6 @@ mod tests {
             }
         }
 
-        #[allow(dead_code)]
         async fn write_as(
             &self,
             client_id: ClientId,
@@ -1100,5 +1099,123 @@ mod tests {
             .resize_as(a, TermSize { cols: 120, rows: 40 })
             .await
             .expect("a still leader after b detaches");
+    }
+
+    #[tokio::test]
+    async fn first_user_input_promotes_to_leader() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a types — becomes leader.
+        session.write_as(a, b"hello").await.expect("a writes");
+
+        // b's resize must fail because a is leader.
+        let err = session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PtyError::NotLeader { current: Some(_), .. }));
+    }
+
+    #[tokio::test]
+    async fn most_recent_user_input_steals_leader() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        session.write_as(a, b"hello").await.expect("a writes");
+        session.write_as(b, b"world").await.expect("b writes");
+
+        // b is now leader; a's resize must fail.
+        let err = session
+            .resize_as(a, TermSize { cols: 110, rows: 35 })
+            .await
+            .unwrap_err();
+        match err {
+            PtyError::NotLeader { requester, current } => {
+                assert_eq!(requester, a);
+                assert_eq!(current, Some(b));
+            }
+            other => panic!("expected NotLeader, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mouse_click_promotes() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a sends an SGR mouse press — should promote.
+        session
+            .write_as(a, b"\x1b[<0;10;20M")
+            .await
+            .expect("mouse press");
+
+        let err = session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PtyError::NotLeader { .. }));
+    }
+
+    #[tokio::test]
+    async fn mouse_motion_does_not_promote() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a sends mouse motion only (button 35 = motion + no button held).
+        session
+            .write_as(a, b"\x1b[<35;10;20M")
+            .await
+            .expect("mouse motion");
+
+        // No leader was established; b's resize should succeed (empty seat).
+        session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .expect("b claims empty seat");
+    }
+
+    #[tokio::test]
+    async fn focus_event_does_not_promote() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        session
+            .write_as(a, b"\x1b[I")
+            .await
+            .expect("focus in");
+        session
+            .write_as(a, b"\x1b[O")
+            .await
+            .expect("focus out");
+
+        // No leader: b can claim the seat.
+        session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .expect("b claims empty seat");
+    }
+
+    #[tokio::test]
+    async fn da_reply_passthrough_does_not_promote() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a sends what looks like a DA1 reply — should NOT promote.
+        session
+            .write_as(a, b"\x1b[?62;22c")
+            .await
+            .expect("DA reply");
+
+        session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .expect("b claims empty seat");
     }
 }
