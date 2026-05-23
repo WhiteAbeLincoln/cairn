@@ -223,7 +223,10 @@ async fn da1_query_suppressed_when_client_attached() {
 
     let _ = pty.wait().await;
 
-    // Drop _sub by ending its scope after subscribing the late observer.
+    // `_sub` is still alive here (primary_count == 2 once sub2 lands) and
+    // outlives this function. That's fine: the snapshot we read below was
+    // captured by the worker while the child was running, with count == 1
+    // suppressing the DA1 reply — exactly what we want to observe.
     let sub2 = pty.subscribe().await.expect("subscribe-2");
     let text = std::str::from_utf8(&sub2.snapshot).unwrap_or("<non-utf8>");
     assert!(
