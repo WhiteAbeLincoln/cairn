@@ -264,8 +264,8 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     let pending_writes: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
 
     // Shared counter of "primary attached" subscribers. Incremented in
-    // the Command::Subscribe arm; decremented by the PrimaryGuard inside
-    // each Subscription on drop. Read by libghostty callbacks
+    // the Command::Subscribe arm; decremented by the SubscriptionGuard
+    // inside each Subscription on drop. Read by libghostty callbacks
     // (installed below) to decide whether to emit backend replies.
     // Atomic (not Cell) so it can be cloned into Subscriptions, which
     // are Send.
@@ -386,6 +386,11 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
         Rc::new(RefCell::new(Some(bcast_tx)));
 
     let mut leader: Option<ClientId> = None;
+    // Updated on every input-classified write, leader or not. Currently
+    // used only for tracing/diagnostics; reserved for future handoff
+    // logic ([[client-attach-and-election]] open question 3). Underscore
+    // prefix suppresses the unused-binding lint until a reader site
+    // appears.
     let mut _last_input_at: Option<std::time::Instant> = None;
 
     let mut buf = vec![0u8; 65536];

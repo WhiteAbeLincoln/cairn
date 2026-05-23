@@ -71,6 +71,13 @@ impl Perform for Classifier {
             (b"", 'u') => self.found = true,
 
             // Legacy modified-key sequences: CSI 1 ; <mod> <final>.
+            //
+            // Note: `R` is both a legacy modified-key terminator and the
+            // final byte of a DSR cursor-position report (CSI <row>;<col> R).
+            // The `first == Some(1)` guard means a DSR for row=1 with col>=2
+            // would false-positive as a modified-key. Accepted tradeoff:
+            // a query response that happens to land at row 1 is rare and
+            // the alternative (excluding R entirely) loses real Ctrl-keys.
             (b"", 'A' | 'B' | 'C' | 'D' | 'F' | 'H' | 'P' | 'Q' | 'R' | 'S') => {
                 let first = params.iter().next().and_then(|p| p.first().copied());
                 let mod_param = params.iter().nth(1).and_then(|p| p.first().copied());

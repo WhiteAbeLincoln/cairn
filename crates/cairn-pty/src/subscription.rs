@@ -63,7 +63,7 @@ impl Subscription {
 ///   1. Decrement the worker's primary-attached counter.
 ///   2. Send `Command::Detach` so the worker can clear the leader
 ///      seat if this client held it.
-pub(crate) struct SubscriptionGuard {
+struct SubscriptionGuard {
     client_id: ClientId,
     primary_count: Arc<AtomicUsize>,
     cmd_tx: flume::Sender<Command>,

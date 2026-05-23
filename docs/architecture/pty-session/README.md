@@ -107,8 +107,8 @@ Verified by reading `crates/cairn-pty/src/pty/`:
 
 In approximate dependency order:
 
-1. **Complete the libghostty callback set** — wire `on_device_attributes`, `on_xtversion`, `on_color_scheme`, `on_size`. Gate all of them (including `on_pty_write`) on a primary-attached flag ([[query-response-delegation]]).
-2. **Multi-client semantics** — extend `Subscribe` with a client identity, track leader by most-recent input, gate resize to leader-only ([[client-attach-and-election]]).
+1. ~~**Complete the libghostty callback set** — wire `on_device_attributes`, `on_xtversion`, `on_color_scheme`, `on_size`. Gate all of them (including `on_pty_write`) on a primary-attached flag ([[query-response-delegation]]).~~ **Done.** See spec `docs/superpowers/specs/2026-05-22-libghostty-callbacks-design.md`.
+2. ~~**Multi-client semantics** — extend `Subscribe` with a client identity, track leader by most-recent input, gate resize to leader-only ([[client-attach-and-election]]).~~ **Done.** See spec `docs/superpowers/specs/2026-05-22-pty-multi-client-semantics-design.md`.
 3. **Snapshot completeness** — port zmx's two-phase serialization with full `FormatterTerminalExtra` ([[terminal-state-and-replay]]).
 4. **Daemon binary** — HTTP+WebSocket listener, session registry, routing layer between client connections and per-session workers ([[daemon-process-model]], [[internal-communication]]).
 5. **Wire protocol** — binary WebSocket frames with msgpack body and a one-byte version prefix; message types Hello/Welcome/Attach/Snapshot/Output/Input/Resize/Ping/Pong/Error/Bye/Detach ([[external-protocol]]).
