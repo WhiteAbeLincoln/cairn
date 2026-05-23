@@ -7,22 +7,25 @@
 //!
 //! [`PtySession`]: super::PtySession
 
+mod input_classifier;
 mod process;
 mod worker;
 
 use bytes::Bytes;
 use tokio::sync::oneshot;
 
-use super::{PtyError, SpawnOptions, Subscription, TermSize};
+use super::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use worker::ExitStatus;
 
 /// Commands the public API sends to the session worker thread.
-pub(super) enum Command {
+pub(crate) enum Command {
     Subscribe {
+        client_id: ClientId,
         reply: oneshot::Sender<Result<Subscription, PtyError>>,
     },
     Resize {
+        client_id: ClientId,
         size: TermSize,
         reply: oneshot::Sender<Result<(), PtyError>>,
     },
@@ -30,8 +33,14 @@ pub(super) enum Command {
         reply: oneshot::Sender<Result<TermSize, PtyError>>,
     },
     Write {
+        client_id: ClientId,
         data: Bytes,
         reply: oneshot::Sender<Result<(), PtyError>>,
+    },
+    /// Sent by `SubscriptionGuard::drop`. Worker checks if `client_id`
+    /// is the current leader and clears the seat if so.
+    Detach {
+        client_id: ClientId,
     },
     Shutdown,
 }
@@ -106,28 +115,39 @@ impl super::PtySession for GhosttyPty {
         rx.await.map_err(|_| PtyError::Closed)?
     }
 
-    async fn resize(&self, size: super::TermSize) -> Result<(), PtyError> {
+    async fn resize(&self, client_id: ClientId, size: super::TermSize) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Resize { size, reply: tx })
+            .send_async(Command::Resize {
+                client_id,
+                size,
+                reply: tx,
+            })
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
     }
 
-    async fn subscribe(&self) -> Result<Subscription, PtyError> {
+    async fn subscribe(&self, client_id: ClientId) -> Result<Subscription, PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Subscribe { reply: tx })
+            .send_async(Command::Subscribe {
+                client_id,
+                reply: tx,
+            })
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
     }
 
-    async fn write(&self, data: bytes::Bytes) -> Result<(), PtyError> {
+    async fn write(&self, client_id: ClientId, data: bytes::Bytes) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Write { data, reply: tx })
+            .send_async(Command::Write {
+                client_id,
+                data,
+                reply: tx,
+            })
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?

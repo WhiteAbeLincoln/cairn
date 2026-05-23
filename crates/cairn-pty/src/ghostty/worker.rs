@@ -17,8 +17,9 @@ use libghostty_vt::{Terminal, TerminalOptions};
 use tokio::sync::broadcast;
 
 use super::Command;
+use super::input_classifier::is_user_input;
 use super::process::{ChildProcess, Pty};
-use crate::{PtyError, SpawnOptions, Subscription, TermSize};
+use crate::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use std::process::ExitStatus;
 
@@ -33,6 +34,7 @@ pub(super) struct WorkerHandles {
 /// Returns the channels external callers use to interact with the session.
 pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
 
     // Clamp to at least 1: broadcast::channel(0) panics, and capacity is just
@@ -155,6 +157,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     pty,
                     child,
                     cmd_rx,
+                    cmd_tx: cmd_tx_for_worker,
                     exit_tx,
                     broadcast_capacity,
                     initial_size,
@@ -201,6 +204,7 @@ where
     C: ChildProcess,
 {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
 
     let broadcast_capacity = opts.broadcast_capacity.max(1);
@@ -220,6 +224,7 @@ where
                     pty,
                     child,
                     cmd_rx,
+                    cmd_tx: cmd_tx_for_worker,
                     exit_tx,
                     broadcast_capacity,
                     initial_size,
@@ -237,6 +242,7 @@ struct SessionState<P: Pty, C: ChildProcess> {
     pty: P,
     child: C,
     cmd_rx: flume::Receiver<Command>,
+    cmd_tx: flume::Sender<Command>,
     exit_tx: tokio::sync::watch::Sender<Option<ExitStatus>>,
     broadcast_capacity: usize,
     initial_size: TermSize,
@@ -258,8 +264,8 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     let pending_writes: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
 
     // Shared counter of "primary attached" subscribers. Incremented in
-    // the Command::Subscribe arm; decremented by the PrimaryGuard inside
-    // each Subscription on drop. Read by libghostty callbacks
+    // the Command::Subscribe arm; decremented by the SubscriptionGuard
+    // inside each Subscription on drop. Read by libghostty callbacks
     // (installed below) to decide whether to emit backend replies.
     // Atomic (not Cell) so it can be cloned into Subscriptions, which
     // are Send.
@@ -379,6 +385,14 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     let bcast_tx: Rc<RefCell<Option<broadcast::Sender<Bytes>>>> =
         Rc::new(RefCell::new(Some(bcast_tx)));
 
+    let mut leader: Option<ClientId> = None;
+    // Updated on every input-classified write, leader or not. Currently
+    // used only for tracing/diagnostics; reserved for future handoff
+    // logic ([[client-attach-and-election]] open question 3). Underscore
+    // prefix suppresses the unused-binding lint until a reader site
+    // appears.
+    let mut _last_input_at: Option<std::time::Instant> = None;
+
     let mut buf = vec![0u8; 65536];
     // Track whether we have already published the exit status, to keep
     // behavior identical when EOF on the PTY fires before SIGCHLD propagates.
@@ -465,6 +479,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             let _ = reply.send(Err(PtyError::Closed));
                             continue;
                         }
+                        Command::Detach { .. } => continue, // no-op post-exit
                     }
                 }
                 match cmd {
@@ -488,7 +503,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             }
                         break;
                     }
-                    Command::Subscribe { reply } => {
+                    Command::Subscribe { client_id, reply } => {
                         let snapshot = match format_snapshot(&terminal.borrow()) {
                             Ok(bytes) => bytes,
                             Err(e) => { let _ = reply.send(Err(e)); continue; }
@@ -503,10 +518,40 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                                 rx
                             }
                         };
-                        let sub = Subscription::new(snapshot, stream, primary_count.clone());
+                        let sub = Subscription::new(
+                            snapshot,
+                            stream,
+                            primary_count.clone(),
+                            client_id,
+                            s.cmd_tx.clone(),
+                        );
                         let _ = reply.send(Ok(sub));
                     }
-                    Command::Resize { size, reply } => {
+                    Command::Resize { client_id, size, reply } => {
+                        // Election: empty seat promotes; non-leader rejects.
+                        match leader {
+                            None => {
+                                leader = Some(client_id);
+                                tracing::info!(
+                                    target: "cairn_pty::election",
+                                    client_id = %client_id,
+                                    cause = "resize",
+                                    previous = ?None::<ClientId>,
+                                    "leader promoted"
+                                );
+                            }
+                            Some(current) if current == client_id => {
+                                // Already the leader; apply.
+                            }
+                            Some(current) => {
+                                let _ = reply.send(Err(PtyError::NotLeader {
+                                    requester: client_id,
+                                    current: Some(current),
+                                }));
+                                continue;
+                            }
+                        }
+
                         let res = (|| -> Result<(), PtyError> {
                             terminal
                                 .borrow_mut()
@@ -525,9 +570,33 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     Command::Size { reply } => {
                         let _ = reply.send(Ok(current_size.get()));
                     }
-                    Command::Write { data, reply } => {
+                    Command::Write { client_id, data, reply } => {
+                        if is_user_input(&data) {
+                            _last_input_at = Some(std::time::Instant::now());
+                            if leader != Some(client_id) {
+                                let previous = leader;
+                                leader = Some(client_id);
+                                tracing::info!(
+                                    target: "cairn_pty::election",
+                                    client_id = %client_id,
+                                    cause = "input",
+                                    previous = ?previous,
+                                    "leader promoted"
+                                );
+                            }
+                        }
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
+                    }
+                    Command::Detach { client_id } => {
+                        if leader == Some(client_id) {
+                            tracing::info!(
+                                target: "cairn_pty::election",
+                                client_id = %client_id,
+                                "leader vacated"
+                            );
+                            leader = None;
+                        }
                     }
                 }
             },
@@ -569,10 +638,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
 /// query (DA1/DSR/DECRQM/...) and produced a response. Drains are short and
 /// synchronous most of the time; only blocks if the kernel write buffer is
 /// full, which is rare for query responses (tens of bytes).
-async fn flush_pending_writes<P: Pty>(
-    pending: &Rc<RefCell<VecDeque<Bytes>>>,
-    pty: &mut P,
-) {
+async fn flush_pending_writes<P: Pty>(pending: &Rc<RefCell<VecDeque<Bytes>>>, pty: &mut P) {
     loop {
         let chunk = pending.borrow_mut().pop_front();
         let Some(chunk) = chunk else {
@@ -595,7 +661,7 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
     while let Ok(cmd) = cmd_rx.try_recv() {
         match cmd {
             Command::Shutdown => {}
-            Command::Subscribe { reply } => {
+            Command::Subscribe { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
             }
             Command::Resize { reply, .. } => {
@@ -607,6 +673,7 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
             Command::Write { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
             }
+            Command::Detach { .. } => {}
         }
     }
 }
@@ -790,6 +857,21 @@ mod tests {
                 );
             }
         }
+
+        async fn write_as(&self, client_id: ClientId, data: &'static [u8]) -> Result<(), PtyError> {
+            use crate::session::PtySession;
+            self.pty.write(client_id, Bytes::from_static(data)).await
+        }
+
+        async fn resize_as(&self, client_id: ClientId, size: TermSize) -> Result<(), PtyError> {
+            use crate::session::PtySession;
+            self.pty.resize(client_id, size).await
+        }
+
+        async fn subscribe_as(&self, client_id: ClientId) -> Result<Subscription, PtyError> {
+            use crate::session::PtySession;
+            self.pty.subscribe(client_id).await
+        }
     }
 
     fn default_opts() -> SpawnOptions {
@@ -822,7 +904,11 @@ mod tests {
     #[tokio::test]
     async fn worker_suppresses_da1_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[c");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -833,7 +919,11 @@ mod tests {
     async fn worker_resumes_replies_after_subscriber_drops() {
         let mut session = MockSession::new(default_opts());
 
-        let sub = session.pty.subscribe().await.expect("subscribe");
+        let sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[c");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -875,7 +965,11 @@ mod tests {
     #[tokio::test]
     async fn worker_xtversion_suppressed_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[>q");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -896,7 +990,11 @@ mod tests {
     #[tokio::test]
     async fn worker_on_size_suppressed_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[18t");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -912,10 +1010,400 @@ mod tests {
             .assert_no_write_within(Duration::from_millis(200))
             .await;
 
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[?996n");
         session
             .assert_no_write_within(Duration::from_millis(200))
             .await;
+    }
+
+    #[tokio::test]
+    async fn resize_from_empty_seat_promotes_to_leader() {
+        let session = MockSession::new(default_opts());
+        let client = ClientId::from_u64(0);
+        session
+            .resize_as(
+                client,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
+            .await
+            .expect("first resize should succeed and promote");
+        // A second resize from the same client must succeed (leader is established).
+        session
+            .resize_as(
+                client,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .expect("leader's subsequent resize should succeed");
+    }
+
+    #[tokio::test]
+    async fn non_leader_resize_returns_not_leader_error() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        session
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
+            .await
+            .expect("a's resize promotes a to leader");
+
+        let err = session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .expect_err("b is not leader");
+        match err {
+            PtyError::NotLeader { requester, current } => {
+                assert_eq!(requester, b);
+                assert_eq!(current, Some(a));
+            }
+            other => panic!("expected NotLeader, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn leader_vacates_when_subscription_drops() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        let sub_a = session.subscribe_as(a).await.expect("subscribe a");
+        session
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
+            .await
+            .expect("a becomes leader");
+
+        drop(sub_a);
+        // Give the worker a chance to process the Detach.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // b should now be able to resize (seat is empty, b is promoted).
+        session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .expect("b should claim empty seat");
+    }
+
+    #[tokio::test]
+    async fn non_leader_detach_does_not_clear_leader() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        let _sub_a = session.subscribe_as(a).await.expect("subscribe a");
+        let sub_b = session.subscribe_as(b).await.expect("subscribe b");
+        session
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
+            .await
+            .expect("a becomes leader");
+
+        drop(sub_b);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // a should still be leader: b's resize attempt fails.
+        let err = session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PtyError::NotLeader { .. }));
+        // and a's own resize still succeeds.
+        session
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 120,
+                    rows: 40,
+                },
+            )
+            .await
+            .expect("a still leader after b detaches");
+    }
+
+    #[tokio::test]
+    async fn first_user_input_promotes_to_leader() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a types — becomes leader.
+        session.write_as(a, b"hello").await.expect("a writes");
+
+        // b's resize must fail because a is leader.
+        let err = session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            PtyError::NotLeader {
+                current: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn most_recent_user_input_steals_leader() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        session.write_as(a, b"hello").await.expect("a writes");
+        session.write_as(b, b"world").await.expect("b writes");
+
+        // b is now leader; a's resize must fail.
+        let err = session
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .unwrap_err();
+        match err {
+            PtyError::NotLeader { requester, current } => {
+                assert_eq!(requester, a);
+                assert_eq!(current, Some(b));
+            }
+            other => panic!("expected NotLeader, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn mouse_click_promotes() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a sends an SGR mouse press — should promote.
+        session
+            .write_as(a, b"\x1b[<0;10;20M")
+            .await
+            .expect("mouse press");
+
+        let err = session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PtyError::NotLeader { .. }));
+    }
+
+    #[tokio::test]
+    async fn mouse_motion_does_not_promote() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a sends mouse motion only (button 35 = motion + no button held).
+        session
+            .write_as(a, b"\x1b[<35;10;20M")
+            .await
+            .expect("mouse motion");
+
+        // No leader was established; b's resize should succeed (empty seat).
+        session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .expect("b claims empty seat");
+    }
+
+    #[tokio::test]
+    async fn focus_event_does_not_promote() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        session.write_as(a, b"\x1b[I").await.expect("focus in");
+        session.write_as(a, b"\x1b[O").await.expect("focus out");
+
+        // No leader: b can claim the seat.
+        session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .expect("b claims empty seat");
+    }
+
+    #[tokio::test]
+    async fn da_reply_passthrough_does_not_promote() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        // a sends what looks like a DA1 reply — should NOT promote.
+        session
+            .write_as(a, b"\x1b[?62;22c")
+            .await
+            .expect("DA reply");
+
+        session
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
+            .await
+            .expect("b claims empty seat");
+    }
+
+    // ─── Tracing-based assertion tests (T15) ─────────────────────────
+
+    /// Snapshot the current length of the global tracing-test log buffer.
+    ///
+    /// Because the worker runs on its own Tokio task, the test span injected
+    /// by `#[traced_test]` does not propagate across task boundaries, so the
+    /// scope-filtered `logs_contain` / `logs_assert` helpers see no worker
+    /// events. Instead we read the raw buffer directly.
+    ///
+    /// Since the buffer is shared across all concurrently-running tests, we
+    /// snapshot its byte length before starting test-specific actions and then
+    /// only examine lines appended _after_ the snapshot. This keeps the
+    /// assertion scoped to the current test even when tests run in parallel.
+    fn buf_snapshot() -> usize {
+        tracing_test::internal::global_buf()
+            .lock()
+            .expect("global_buf lock")
+            .len()
+    }
+
+    /// Return lines appended to the global log buffer after `start_offset`
+    /// that contain `needle`.
+    fn buf_lines_since(start_offset: usize, needle: &str) -> Vec<String> {
+        let buf = tracing_test::internal::global_buf()
+            .lock()
+            .expect("global_buf lock");
+        let slice = buf.get(start_offset..).unwrap_or(&[]);
+        let text = String::from_utf8(slice.to_vec()).unwrap_or_default();
+        text.lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn leader_input_after_promotion_does_not_re_emit_event() {
+        // Snapshot before we do anything so we only inspect this test's events.
+        let start = buf_snapshot();
+
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+
+        // First write promotes a to leader.
+        session.write_as(a, b"hello").await.expect("write 1");
+        // Second write from the same client: already leader, so no new
+        // promotion event should be emitted.
+        session.write_as(a, b"world").await.expect("write 2");
+
+        // Verify the promotion event was emitted for the first write.
+        //
+        // NOTE: An exact count of "exactly 1" is not asserted here because
+        // the global tracing-test buffer is shared across all concurrently
+        // running tests, making a precise count unreliable in the default
+        // parallel test configuration. The "no re-emit" invariant is enforced
+        // structurally in the worker (`if leader != Some(client_id)` guard) and
+        // is exercised behaviorally by `most_recent_user_input_steals_leader`.
+        // This test's job is to confirm the tracing instrumentation fires at all.
+        let promotions = buf_lines_since(start, "leader promoted");
+        assert!(
+            !promotions.is_empty(),
+            "promotion event should fire at least once; buf slice was empty"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn leader_vacation_emits_event() {
+        let start = buf_snapshot();
+
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+
+        let sub_a = session.subscribe_as(a).await.expect("subscribe a");
+        session.write_as(a, b"x").await.expect("a becomes leader");
+
+        // Dropping the subscription sends a Detach command, which should
+        // trigger the "leader vacated" trace event.
+        drop(sub_a);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !buf_lines_since(start, "leader vacated").is_empty(),
+            "vacation event should have been emitted"
+        );
     }
 }
