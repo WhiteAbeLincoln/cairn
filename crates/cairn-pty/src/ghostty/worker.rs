@@ -268,6 +268,41 @@ async fn run_session(mut s: SessionState) {
         return;
     }
 
+    // Cached size; updated on every successful resize. pty_process::Pty has
+    // no get_size shortcut and we always set the size ourselves, so caching
+    // is authoritative. Wrapped in Rc<Cell<_>> so the on_size libghostty
+    // callback (installed immediately below) can capture a clone and read it
+    // synchronously inside vt_write.
+    let current_size: Rc<Cell<TermSize>> = Rc::new(Cell::new(s.initial_size));
+
+    // Answer XTWINOPS size queries (CSI 14/16/18 t). libghostty has no
+    // default for these — without the callback they're silently
+    // dropped. Pixel dimensions are placeholders; the backend has no
+    // font. Real pixel sizes come from the client emulator once
+    // attached. Non-zero defaults avoid divide-by-zero in image
+    // protocol code paths.
+    const DEFAULT_CELL_WIDTH_PX: u32 = 10;
+    const DEFAULT_CELL_HEIGHT_PX: u32 = 20;
+    let pc_for_size = primary_count.clone();
+    let current_size_for_cb = current_size.clone();
+    if let Err(e) = terminal.on_size(move |_term| {
+        if pc_for_size.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            let size = current_size_for_cb.get();
+            Some(libghostty_vt::terminal::SizeReportSize {
+                rows: size.rows,
+                columns: size.cols,
+                cell_width: DEFAULT_CELL_WIDTH_PX,
+                cell_height: DEFAULT_CELL_HEIGHT_PX,
+            })
+        } else {
+            None
+        }
+    }) {
+        tracing::error!(error = ?e, "failed to install SizeFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+
     let terminal = Rc::new(RefCell::new(terminal));
 
     let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
@@ -275,13 +310,6 @@ async fn run_session(mut s: SessionState) {
     // RecvError::Closed to existing subscribers even if cmd_rx is still alive.
     let bcast_tx: Rc<RefCell<Option<broadcast::Sender<Bytes>>>> =
         Rc::new(RefCell::new(Some(bcast_tx)));
-
-    // Cached size; updated on every successful resize. pty_process::Pty has
-    // no get_size shortcut and we always set the size ourselves, so caching
-    // is authoritative. Wrapped in Rc<Cell<_>> so the on_size libghostty
-    // callback (installed below) can capture a clone and read it
-    // synchronously inside vt_write.
-    let current_size: Rc<Cell<TermSize>> = Rc::new(Cell::new(s.initial_size));
 
     let mut buf = vec![0u8; 65536];
     // Track whether we have already published the exit status, to keep
