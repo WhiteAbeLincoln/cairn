@@ -217,7 +217,7 @@ async fn run_session(mut s: SessionState) {
 
     // Construct the VT emulator. The PtyWriteFn closure captures a clone of
     // pending_writes and pushes; the main loop drains and forwards to pty.
-    let mut terminal = match Terminal::new(TerminalOptions {
+    let terminal = match Terminal::new(TerminalOptions {
         cols: s.initial_size.cols,
         rows: s.initial_size.rows,
         max_scrollback: s.scrollback_lines,
@@ -229,10 +229,20 @@ async fn run_session(mut s: SessionState) {
             return;
         }
     };
+    // Wrap in Rc<RefCell<>> NOW, before any callback install. libghostty
+    // 0.1.1's `on_*` installers store a raw C pointer to &self.vtable as
+    // userdata; if we moved the Terminal after install (e.g., by doing
+    // `Rc::new(RefCell::new(terminal))` later), that pointer would dangle.
+    // Constructing the Rc first places the Terminal at a stable heap
+    // address; `borrow_mut()` returns &mut Terminal pointing to that
+    // address. Subsequent `vt_write` and callback dispatches all see the
+    // same heap location, so the userdata pointer remains valid for the
+    // life of the Rc.
+    let terminal = Rc::new(RefCell::new(terminal));
 
     let pending_for_cb = pending_writes.clone();
     let pc_for_pty_write = primary_count.clone();
-    if let Err(e) = terminal.on_pty_write(move |_term, data| {
+    if let Err(e) = terminal.borrow_mut().on_pty_write(move |_term, data| {
         // When a primary client (Subscription holder) is attached, the
         // client emulator is the authoritative answerer for queries
         // libghostty's parser would otherwise auto-reply to (DA1, DA2,
@@ -256,7 +266,7 @@ async fn run_session(mut s: SessionState) {
     // emulators take over the response when present.
     const XTVERSION_REPLY: &str = concat!("cairn ", env!("CARGO_PKG_VERSION"));
     let pc_for_xtversion = primary_count.clone();
-    if let Err(e) = terminal.on_xtversion(move |_term| {
+    if let Err(e) = terminal.borrow_mut().on_xtversion(move |_term| {
         if pc_for_xtversion.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             Some(XTVERSION_REPLY)
         } else {
@@ -285,7 +295,7 @@ async fn run_session(mut s: SessionState) {
     const DEFAULT_CELL_HEIGHT_PX: u32 = 20;
     let pc_for_size = primary_count.clone();
     let current_size_for_cb = current_size.clone();
-    if let Err(e) = terminal.on_size(move |_term| {
+    if let Err(e) = terminal.borrow_mut().on_size(move |_term| {
         if pc_for_size.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             let size = current_size_for_cb.get();
             Some(libghostty_vt::terminal::SizeReportSize {
@@ -307,13 +317,11 @@ async fn run_session(mut s: SessionState) {
     // None unconditionally is the documented policy. The callback is
     // installed (rather than left unset) so future changes to delegate
     // to attached observers live in one place.
-    if let Err(e) = terminal.on_color_scheme(|_term| None) {
+    if let Err(e) = terminal.borrow_mut().on_color_scheme(|_term| None) {
         tracing::error!(error = ?e, "failed to install ColorSchemeFn callback");
         drain_commands_with_construction_error(&s.cmd_rx);
         return;
     }
-
-    let terminal = Rc::new(RefCell::new(terminal));
 
     let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
     // Option so the EOF/exit path can drop the sender promptly, surfacing
