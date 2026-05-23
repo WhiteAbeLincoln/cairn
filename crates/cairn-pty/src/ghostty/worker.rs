@@ -855,6 +855,33 @@ mod tests {
                 );
             }
         }
+
+        #[allow(dead_code)]
+        async fn write_as(
+            &self,
+            client_id: ClientId,
+            data: &'static [u8],
+        ) -> Result<(), PtyError> {
+            use crate::session::PtySession;
+            self.pty.write(client_id, Bytes::from_static(data)).await
+        }
+
+        async fn resize_as(
+            &self,
+            client_id: ClientId,
+            size: TermSize,
+        ) -> Result<(), PtyError> {
+            use crate::session::PtySession;
+            self.pty.resize(client_id, size).await
+        }
+
+        async fn subscribe_as(
+            &self,
+            client_id: ClientId,
+        ) -> Result<Subscription, PtyError> {
+            use crate::session::PtySession;
+            self.pty.subscribe(client_id).await
+        }
     }
 
     fn default_opts() -> SpawnOptions {
@@ -982,5 +1009,96 @@ mod tests {
         session
             .assert_no_write_within(Duration::from_millis(200))
             .await;
+    }
+
+    #[tokio::test]
+    async fn resize_from_empty_seat_promotes_to_leader() {
+        let session = MockSession::new(default_opts());
+        let client = ClientId::from_u64(0);
+        session
+            .resize_as(client, TermSize { cols: 100, rows: 30 })
+            .await
+            .expect("first resize should succeed and promote");
+        // A second resize from the same client must succeed (leader is established).
+        session
+            .resize_as(client, TermSize { cols: 110, rows: 35 })
+            .await
+            .expect("leader's subsequent resize should succeed");
+    }
+
+    #[tokio::test]
+    async fn non_leader_resize_returns_not_leader_error() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        session
+            .resize_as(a, TermSize { cols: 100, rows: 30 })
+            .await
+            .expect("a's resize promotes a to leader");
+
+        let err = session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .expect_err("b is not leader");
+        match err {
+            PtyError::NotLeader { requester, current } => {
+                assert_eq!(requester, b);
+                assert_eq!(current, Some(a));
+            }
+            other => panic!("expected NotLeader, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn leader_vacates_when_subscription_drops() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        let sub_a = session.subscribe_as(a).await.expect("subscribe a");
+        session
+            .resize_as(a, TermSize { cols: 100, rows: 30 })
+            .await
+            .expect("a becomes leader");
+
+        drop(sub_a);
+        // Give the worker a chance to process the Detach.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // b should now be able to resize (seat is empty, b is promoted).
+        session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .expect("b should claim empty seat");
+    }
+
+    #[tokio::test]
+    async fn non_leader_detach_does_not_clear_leader() {
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+        let b = ClientId::from_u64(1);
+
+        let _sub_a = session.subscribe_as(a).await.expect("subscribe a");
+        let sub_b = session.subscribe_as(b).await.expect("subscribe b");
+        session
+            .resize_as(a, TermSize { cols: 100, rows: 30 })
+            .await
+            .expect("a becomes leader");
+
+        drop(sub_b);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // a should still be leader: b's resize attempt fails.
+        let err = session
+            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PtyError::NotLeader { .. }));
+        // and a's own resize still succeeds.
+        session
+            .resize_as(a, TermSize { cols: 120, rows: 40 })
+            .await
+            .expect("a still leader after b detaches");
     }
 }
