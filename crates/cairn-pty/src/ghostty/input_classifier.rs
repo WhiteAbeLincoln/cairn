@@ -44,13 +44,7 @@ impl Perform for Classifier {
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        params: &Params,
-        intermediates: &[u8],
-        _ignore: bool,
-        action: char,
-    ) {
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
         match (intermediates, action) {
             // Focus in/out — terminal back-chatter, not user input.
             (b"", 'I') | (b"", 'O') => {}
@@ -77,9 +71,7 @@ impl Perform for Classifier {
             (b"", 'u') => self.found = true,
 
             // Legacy modified-key sequences: CSI 1 ; <mod> <final>.
-            (b"", a)
-                if matches!(a, 'A' | 'B' | 'C' | 'D' | 'F' | 'H' | 'P' | 'Q' | 'R' | 'S') =>
-            {
+            (b"", 'A' | 'B' | 'C' | 'D' | 'F' | 'H' | 'P' | 'Q' | 'R' | 'S') => {
                 let first = params.iter().next().and_then(|p| p.first().copied());
                 let mod_param = params.iter().nth(1).and_then(|p| p.first().copied());
                 if first == Some(1) && mod_param.is_some_and(|m| m >= 2) {
@@ -95,14 +87,7 @@ impl Perform for Classifier {
 
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell: bool) {}
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
-    fn hook(
-        &mut self,
-        _params: &Params,
-        _intermediates: &[u8],
-        _ignore: bool,
-        _action: char,
-    ) {
-    }
+    fn hook(&mut self, _params: &Params, _intermediates: &[u8], _ignore: bool, _action: char) {}
     fn put(&mut self, _byte: u8) {}
     fn unhook(&mut self) {}
 }
@@ -229,5 +214,4 @@ mod tests {
         // Motion-only followed by 'a' — qualifies because 'a' qualifies.
         assert!(is_user_input(b"\x1b[<35;10;20Ma"));
     }
-
 }

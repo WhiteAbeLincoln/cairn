@@ -633,10 +633,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
 /// query (DA1/DSR/DECRQM/...) and produced a response. Drains are short and
 /// synchronous most of the time; only blocks if the kernel write buffer is
 /// full, which is rare for query responses (tens of bytes).
-async fn flush_pending_writes<P: Pty>(
-    pending: &Rc<RefCell<VecDeque<Bytes>>>,
-    pty: &mut P,
-) {
+async fn flush_pending_writes<P: Pty>(pending: &Rc<RefCell<VecDeque<Bytes>>>, pty: &mut P) {
     loop {
         let chunk = pending.borrow_mut().pop_front();
         let Some(chunk) = chunk else {
@@ -856,28 +853,17 @@ mod tests {
             }
         }
 
-        async fn write_as(
-            &self,
-            client_id: ClientId,
-            data: &'static [u8],
-        ) -> Result<(), PtyError> {
+        async fn write_as(&self, client_id: ClientId, data: &'static [u8]) -> Result<(), PtyError> {
             use crate::session::PtySession;
             self.pty.write(client_id, Bytes::from_static(data)).await
         }
 
-        async fn resize_as(
-            &self,
-            client_id: ClientId,
-            size: TermSize,
-        ) -> Result<(), PtyError> {
+        async fn resize_as(&self, client_id: ClientId, size: TermSize) -> Result<(), PtyError> {
             use crate::session::PtySession;
             self.pty.resize(client_id, size).await
         }
 
-        async fn subscribe_as(
-            &self,
-            client_id: ClientId,
-        ) -> Result<Subscription, PtyError> {
+        async fn subscribe_as(&self, client_id: ClientId) -> Result<Subscription, PtyError> {
             use crate::session::PtySession;
             self.pty.subscribe(client_id).await
         }
@@ -913,7 +899,11 @@ mod tests {
     #[tokio::test]
     async fn worker_suppresses_da1_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[c");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -924,7 +914,11 @@ mod tests {
     async fn worker_resumes_replies_after_subscriber_drops() {
         let mut session = MockSession::new(default_opts());
 
-        let sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+        let sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[c");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -966,7 +960,11 @@ mod tests {
     #[tokio::test]
     async fn worker_xtversion_suppressed_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[>q");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -987,7 +985,11 @@ mod tests {
     #[tokio::test]
     async fn worker_on_size_suppressed_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[18t");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -1003,7 +1005,11 @@ mod tests {
             .assert_no_write_within(Duration::from_millis(200))
             .await;
 
-        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+        let _sub = session
+            .pty
+            .subscribe(ClientId::from_u64(0))
+            .await
+            .expect("subscribe");
         session.feed(b"\x1b[?996n");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -1015,12 +1021,24 @@ mod tests {
         let session = MockSession::new(default_opts());
         let client = ClientId::from_u64(0);
         session
-            .resize_as(client, TermSize { cols: 100, rows: 30 })
+            .resize_as(
+                client,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
             .await
             .expect("first resize should succeed and promote");
         // A second resize from the same client must succeed (leader is established).
         session
-            .resize_as(client, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                client,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .expect("leader's subsequent resize should succeed");
     }
@@ -1032,12 +1050,24 @@ mod tests {
         let b = ClientId::from_u64(1);
 
         session
-            .resize_as(a, TermSize { cols: 100, rows: 30 })
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
             .await
             .expect("a's resize promotes a to leader");
 
         let err = session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .expect_err("b is not leader");
         match err {
@@ -1057,7 +1087,13 @@ mod tests {
 
         let sub_a = session.subscribe_as(a).await.expect("subscribe a");
         session
-            .resize_as(a, TermSize { cols: 100, rows: 30 })
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
             .await
             .expect("a becomes leader");
 
@@ -1067,7 +1103,13 @@ mod tests {
 
         // b should now be able to resize (seat is empty, b is promoted).
         session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .expect("b should claim empty seat");
     }
@@ -1081,7 +1123,13 @@ mod tests {
         let _sub_a = session.subscribe_as(a).await.expect("subscribe a");
         let sub_b = session.subscribe_as(b).await.expect("subscribe b");
         session
-            .resize_as(a, TermSize { cols: 100, rows: 30 })
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 100,
+                    rows: 30,
+                },
+            )
             .await
             .expect("a becomes leader");
 
@@ -1090,13 +1138,25 @@ mod tests {
 
         // a should still be leader: b's resize attempt fails.
         let err = session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, PtyError::NotLeader { .. }));
         // and a's own resize still succeeds.
         session
-            .resize_as(a, TermSize { cols: 120, rows: 40 })
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 120,
+                    rows: 40,
+                },
+            )
             .await
             .expect("a still leader after b detaches");
     }
@@ -1112,10 +1172,22 @@ mod tests {
 
         // b's resize must fail because a is leader.
         let err = session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .unwrap_err();
-        assert!(matches!(err, PtyError::NotLeader { current: Some(_), .. }));
+        assert!(matches!(
+            err,
+            PtyError::NotLeader {
+                current: Some(_),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -1129,7 +1201,13 @@ mod tests {
 
         // b is now leader; a's resize must fail.
         let err = session
-            .resize_as(a, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                a,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .unwrap_err();
         match err {
@@ -1154,7 +1232,13 @@ mod tests {
             .expect("mouse press");
 
         let err = session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, PtyError::NotLeader { .. }));
@@ -1174,7 +1258,13 @@ mod tests {
 
         // No leader was established; b's resize should succeed (empty seat).
         session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .expect("b claims empty seat");
     }
@@ -1185,18 +1275,18 @@ mod tests {
         let a = ClientId::from_u64(0);
         let b = ClientId::from_u64(1);
 
-        session
-            .write_as(a, b"\x1b[I")
-            .await
-            .expect("focus in");
-        session
-            .write_as(a, b"\x1b[O")
-            .await
-            .expect("focus out");
+        session.write_as(a, b"\x1b[I").await.expect("focus in");
+        session.write_as(a, b"\x1b[O").await.expect("focus out");
 
         // No leader: b can claim the seat.
         session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .expect("b claims empty seat");
     }
@@ -1214,7 +1304,13 @@ mod tests {
             .expect("DA reply");
 
         session
-            .resize_as(b, TermSize { cols: 110, rows: 35 })
+            .resize_as(
+                b,
+                TermSize {
+                    cols: 110,
+                    rows: 35,
+                },
+            )
             .await
             .expect("b claims empty seat");
     }

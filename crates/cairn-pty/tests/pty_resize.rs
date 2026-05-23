@@ -11,10 +11,13 @@ async fn resize_updates_size_query() {
 
     assert_eq!(pty.size().await.unwrap(), TermSize { cols: 80, rows: 24 });
 
-    pty.resize(ClientId::from_u64(0), TermSize {
-        cols: 120,
-        rows: 40,
-    })
+    pty.resize(
+        ClientId::from_u64(0),
+        TermSize {
+            cols: 120,
+            rows: 40,
+        },
+    )
     .await
     .expect("resize");
     assert_eq!(

@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 use crate::ClientId;
 use crate::ghostty::Command;
 
-/// Result of a successful [`crate::pty::PtySession::subscribe`] call.
+/// Result of a successful [`crate::PtySession::subscribe`] call.
 ///
 /// `snapshot` is an opaque VT escape sequence representing the
 /// terminal state at the moment of subscription. Feed it to a
@@ -155,13 +155,7 @@ mod tests {
         let (_tx, rx) = broadcast::channel::<Bytes>(1);
         let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
         let client_id = ClientId::from_u64(0);
-        let sub = Subscription::new(
-            Bytes::new(),
-            rx,
-            counter,
-            client_id,
-            cmd_tx,
-        );
+        let sub = Subscription::new(Bytes::new(), rx, counter, client_id, cmd_tx);
         drop(sub);
         let received = cmd_rx.try_recv().expect("Detach should have been sent");
         match received {

@@ -21,13 +21,25 @@ async fn two_clients_resize_election_against_real_pty() {
     let b = ClientId::from_u64(1);
 
     let _sub_a = pty.subscribe(a).await.expect("subscribe a");
-    pty.resize(a, TermSize { cols: 100, rows: 30 })
-        .await
-        .expect("a's first resize promotes a to leader");
+    pty.resize(
+        a,
+        TermSize {
+            cols: 100,
+            rows: 30,
+        },
+    )
+    .await
+    .expect("a's first resize promotes a to leader");
 
     let _sub_b = pty.subscribe(b).await.expect("subscribe b");
     let err = pty
-        .resize(b, TermSize { cols: 120, rows: 40 })
+        .resize(
+            b,
+            TermSize {
+                cols: 120,
+                rows: 40,
+            },
+        )
         .await
         .expect_err("b is not leader");
     match err {
@@ -43,9 +55,15 @@ async fn two_clients_resize_election_against_real_pty() {
         .await
         .expect("b writes");
     // Now b can resize.
-    pty.resize(b, TermSize { cols: 120, rows: 40 })
-        .await
-        .expect("b should now be leader");
+    pty.resize(
+        b,
+        TermSize {
+            cols: 120,
+            rows: 40,
+        },
+    )
+    .await
+    .expect("b should now be leader");
 
     pty.kill().expect("kill");
 }
@@ -59,18 +77,30 @@ async fn leader_seat_clears_on_subscription_drop_against_real_pty() {
     let b = ClientId::from_u64(1);
 
     let sub_a = pty.subscribe(a).await.expect("subscribe a");
-    pty.resize(a, TermSize { cols: 100, rows: 30 })
-        .await
-        .expect("a is leader");
+    pty.resize(
+        a,
+        TermSize {
+            cols: 100,
+            rows: 30,
+        },
+    )
+    .await
+    .expect("a is leader");
 
     drop(sub_a);
     // Give worker a moment to process Detach.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // b can now claim the empty seat.
-    pty.resize(b, TermSize { cols: 110, rows: 35 })
-        .await
-        .expect("b claims empty seat");
+    pty.resize(
+        b,
+        TermSize {
+            cols: 110,
+            rows: 35,
+        },
+    )
+    .await
+    .expect("b claims empty seat");
 
     pty.kill().expect("kill");
 }

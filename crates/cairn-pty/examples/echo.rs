@@ -13,9 +13,12 @@ async fn main() {
     let client = ClientId::from_u64(0);
     let mut sub = pty.subscribe(client).await.expect("subscribe");
     println!("snapshot length: {}", sub.snapshot.len());
-    pty.write(client, bytes::Bytes::from_static(b"echo hello-from-cairn\n"))
-        .await
-        .expect("write");
+    pty.write(
+        client,
+        bytes::Bytes::from_static(b"echo hello-from-cairn\n"),
+    )
+    .await
+    .expect("write");
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let mut total = 0usize;
     let mut buff = Vec::new();

@@ -39,7 +39,9 @@ pub(crate) enum Command {
     },
     /// Sent by `SubscriptionGuard::drop`. Worker checks if `client_id`
     /// is the current leader and clears the seat if so.
-    Detach { client_id: ClientId },
+    Detach {
+        client_id: ClientId,
+    },
     Shutdown,
 }
 

@@ -26,10 +26,7 @@ impl ClientId {
     /// reaching this case means something has gone catastrophically
     /// wrong upstream.
     pub fn from_u64(value: u64) -> Self {
-        ClientId(
-            NonZeroU64::new(value + 1)
-                .expect("ClientId from u64::MAX is unsupported"),
-        )
+        ClientId(NonZeroU64::new(value + 1).expect("ClientId from u64::MAX is unsupported"))
     }
 }
 

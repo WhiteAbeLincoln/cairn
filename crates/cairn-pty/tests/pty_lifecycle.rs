@@ -52,7 +52,10 @@ async fn drop_kills_running_child() {
     // happens inside the forwarder task once the child exits. If Drop does
     // NOT kill the child, the forwarder will be waiting for PTY EOF for the
     // full 60 seconds of the sleep.
-    let mut sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+    let mut sub = pty
+        .subscribe(ClientId::from_u64(0))
+        .await
+        .expect("subscribe");
 
     // Brief delay so the child is actually running.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -87,7 +90,10 @@ async fn write_after_exit_returns_closed() {
 
     // Subscribe before the child exits so we can deterministically wait
     // for teardown (broadcast Close signal).
-    let mut sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+    let mut sub = pty
+        .subscribe(ClientId::from_u64(0))
+        .await
+        .expect("subscribe");
 
     let _ = pty.wait().await;
 
@@ -108,7 +114,9 @@ async fn write_after_exit_returns_closed() {
     .unwrap_or(false);
     assert!(saw_close, "broadcast did not close after child exit");
 
-    let result = pty.write(ClientId::from_u64(0), Bytes::from_static(b"hello")).await;
+    let result = pty
+        .write(ClientId::from_u64(0), Bytes::from_static(b"hello"))
+        .await;
     assert!(
         matches!(result, Err(PtyError::Closed)),
         "expected Closed after child exit, got {:?}",
