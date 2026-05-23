@@ -7,6 +7,7 @@
 //!
 //! [`PtySession`]: super::PtySession
 
+mod process;
 mod worker;
 
 use bytes::Bytes;

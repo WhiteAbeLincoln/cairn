@@ -14,10 +14,10 @@ use std::sync::atomic::AtomicUsize;
 
 use bytes::Bytes;
 use libghostty_vt::{Terminal, TerminalOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use super::Command;
+use super::process::{ChildProcess, Pty};
 use crate::{PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use std::process::ExitStatus;
@@ -183,9 +183,59 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     Ok(WorkerHandles { cmd_tx, exit_rx })
 }
 
-struct SessionState {
-    pty: pty_process::Pty,
-    child: tokio::process::Child,
+/// Spawn a session worker that drives `run_session` against caller-provided
+/// `Pty` and `ChildProcess` implementations. Used by tests to inject mocks
+/// without going through pty_process / tokio::process construction.
+///
+/// Unlike `spawn`, this function performs no in-thread construction (the
+/// caller is responsible for handing over already-ready handles), so the
+/// init-mpsc back-channel isn't needed.
+#[allow(dead_code)] // used by Task 9.3 tests; no call site yet in this task
+pub(super) fn spawn_with<P, C>(
+    pty: P,
+    child: C,
+    opts: SpawnOptions,
+) -> Result<WorkerHandles, PtyError>
+where
+    P: Pty,
+    C: ChildProcess,
+{
+    let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
+
+    let broadcast_capacity = opts.broadcast_capacity.max(1);
+    let initial_size = opts.size;
+    let scrollback_lines = opts.scrollback_lines;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    std::thread::Builder::new()
+        .name("cairn-pty-session-mock".into())
+        .spawn(move || {
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                run_session(SessionState {
+                    pty,
+                    child,
+                    cmd_rx,
+                    exit_tx,
+                    broadcast_capacity,
+                    initial_size,
+                    scrollback_lines,
+                })
+                .await;
+            });
+        })
+        .map_err(|e| PtyError::Io { source: e })?;
+
+    Ok(WorkerHandles { cmd_tx, exit_rx })
+}
+
+struct SessionState<P: Pty, C: ChildProcess> {
+    pty: P,
+    child: C,
     cmd_rx: flume::Receiver<Command>,
     exit_tx: tokio::sync::watch::Sender<Option<ExitStatus>>,
     broadcast_capacity: usize,
@@ -199,7 +249,7 @@ struct SessionState {
 ///   - pty.read(...)               (PTY readable → vt_write + broadcast)
 ///   - cmd_rx.recv_async()         (external commands → dispatch)
 ///   - child.wait()                (child exit → publish status + tear down)
-async fn run_session(mut s: SessionState) {
+async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     // Pending writes from the libghostty-vt PtyWriteFn callback. The callback
     // is synchronous (fires inside terminal.vt_write); pty.write_all is async.
     // We queue bytes in the callback and drain them on the same task after
@@ -463,7 +513,7 @@ async fn run_session(mut s: SessionState) {
                                 .resize(size.cols, size.rows, 0, 0)
                                 .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
                             s.pty
-                                .resize(pty_process::Size::new(size.rows, size.cols))
+                                .set_size(size)
                                 .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
                             Ok(())
                         })();
@@ -519,7 +569,10 @@ async fn run_session(mut s: SessionState) {
 /// query (DA1/DSR/DECRQM/...) and produced a response. Drains are short and
 /// synchronous most of the time; only blocks if the kernel write buffer is
 /// full, which is rare for query responses (tens of bytes).
-async fn flush_pending_writes(pending: &Rc<RefCell<VecDeque<Bytes>>>, pty: &mut pty_process::Pty) {
+async fn flush_pending_writes<P: Pty>(
+    pending: &Rc<RefCell<VecDeque<Bytes>>>,
+    pty: &mut P,
+) {
     loop {
         let chunk = pending.borrow_mut().pop_front();
         let Some(chunk) = chunk else {
