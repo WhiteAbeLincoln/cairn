@@ -1,7 +1,7 @@
 //! Integration tests for GhosttyPty subscribe / write / scrollback I/O.
 
 use bytes::Bytes;
-use cairn_pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
+use cairn_pty::{ClientId, GhosttyPty, PtySession, SpawnOptions, TermSize};
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
@@ -42,7 +42,7 @@ async fn echo_output_is_broadcast_to_subscribers() {
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    let mut sub = pty.subscribe().await.expect("subscribe");
+    let mut sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
     let bytes = read_until_contains(&mut sub, b"hello-cairn", Duration::from_secs(2)).await;
     assert!(
         bytes
@@ -85,8 +85,8 @@ async fn write_delivers_bytes_to_child_stdin() {
     let opts = SpawnOptions::new(cmd);
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    let mut sub = pty.subscribe().await.expect("subscribe");
-    pty.write(Bytes::from_static(b"ping-cairn\n"))
+    let mut sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
+    pty.write(ClientId::from_u64(0), Bytes::from_static(b"ping-cairn\n"))
         .await
         .expect("write");
 
@@ -112,7 +112,7 @@ async fn spawn_succeeds_with_terminal_attached() {
     cmd.arg("vt-attached");
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
-    let mut sub = pty.subscribe().await.expect("subscribe");
+    let mut sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
     let bytes = read_until_contains(&mut sub, b"vt-attached", Duration::from_secs(2)).await;
     assert!(
         bytes
@@ -133,7 +133,7 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    let mut sub1 = pty.subscribe().await.expect("subscribe-1");
+    let mut sub1 = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe-1");
     let bytes1 = read_until_contains(&mut sub1, b"late-join-marker", Duration::from_secs(2)).await;
     assert!(
         bytes1
@@ -144,7 +144,7 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
     // Wait for child exit so subsequent reads return Closed promptly.
     let _ = pty.wait().await;
 
-    let sub2 = pty.subscribe().await.expect("subscribe-2");
+    let sub2 = pty.subscribe(ClientId::from_u64(1)).await.expect("subscribe-2");
     // The snapshot bytes are an opaque VT escape stream; we don't try to
     // parse them, but the literal text 'late-join-marker' (printed by
     // printf) should still appear somewhere in the encoded screen since
@@ -184,7 +184,7 @@ async fn da1_query_gets_response_without_client() {
     // `reply-len=N` line.
     let _ = pty.wait().await;
 
-    let sub = pty.subscribe().await.expect("subscribe");
+    let sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
     let text = std::str::from_utf8(&sub.snapshot).unwrap_or("<non-utf8>");
     assert!(
         text.contains("reply-len="),
@@ -219,7 +219,7 @@ async fn da1_query_suppressed_when_client_attached() {
     // Subscribe immediately — this is the "primary client" whose presence
     // suppresses backend auto-replies. Hold the Subscription across the
     // child's entire run by keeping `_sub` alive until after `wait`.
-    let _sub = pty.subscribe().await.expect("subscribe");
+    let _sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
 
     let _ = pty.wait().await;
 
@@ -227,7 +227,7 @@ async fn da1_query_suppressed_when_client_attached() {
     // outlives this function. That's fine: the snapshot we read below was
     // captured by the worker while the child was running, with count == 1
     // suppressing the DA1 reply — exactly what we want to observe.
-    let sub2 = pty.subscribe().await.expect("subscribe-2");
+    let sub2 = pty.subscribe(ClientId::from_u64(1)).await.expect("subscribe-2");
     let text = std::str::from_utf8(&sub2.snapshot).unwrap_or("<non-utf8>");
     assert!(
         text.contains("reply-len="),
@@ -245,7 +245,7 @@ async fn subscribers_observe_close_on_child_exit() {
     let opts = SpawnOptions::new(cmd);
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    let mut sub = pty.subscribe().await.expect("subscribe");
+    let mut sub = pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
     let _ = pty.wait().await;
 
     // Loop draining anything still in the channel, then assert we eventually

@@ -1,6 +1,6 @@
 //! Integration tests for GhosttyPty resize semantics.
 
-use cairn_pty::{GhosttyPty, PtySession, SpawnOptions, TermSize};
+use cairn_pty::{ClientId, GhosttyPty, PtySession, SpawnOptions, TermSize};
 
 #[tokio::test]
 async fn resize_updates_size_query() {
@@ -11,7 +11,7 @@ async fn resize_updates_size_query() {
 
     assert_eq!(pty.size().await.unwrap(), TermSize { cols: 80, rows: 24 });
 
-    pty.resize(TermSize {
+    pty.resize(ClientId::from_u64(0), TermSize {
         cols: 120,
         rows: 40,
     })

@@ -838,7 +838,7 @@ mod tests {
     #[tokio::test]
     async fn worker_suppresses_da1_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
         session.feed(b"\x1b[c");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -849,7 +849,7 @@ mod tests {
     async fn worker_resumes_replies_after_subscriber_drops() {
         let mut session = MockSession::new(default_opts());
 
-        let sub = session.pty.subscribe().await.expect("subscribe");
+        let sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
         session.feed(b"\x1b[c");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -891,7 +891,7 @@ mod tests {
     #[tokio::test]
     async fn worker_xtversion_suppressed_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
         session.feed(b"\x1b[>q");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -912,7 +912,7 @@ mod tests {
     #[tokio::test]
     async fn worker_on_size_suppressed_when_subscriber_attached() {
         let mut session = MockSession::new(default_opts());
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
         session.feed(b"\x1b[18t");
         session
             .assert_no_write_within(Duration::from_millis(200))
@@ -928,7 +928,7 @@ mod tests {
             .assert_no_write_within(Duration::from_millis(200))
             .await;
 
-        let _sub = session.pty.subscribe().await.expect("subscribe");
+        let _sub = session.pty.subscribe(ClientId::from_u64(0)).await.expect("subscribe");
         session.feed(b"\x1b[?996n");
         session
             .assert_no_write_within(Duration::from_millis(200))
