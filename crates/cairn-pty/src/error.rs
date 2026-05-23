@@ -39,6 +39,15 @@ mod tests {
     use crate::ClientId;
 
     #[test]
+    fn from_io_error_yields_io_variant() {
+        // Verifies the `From<io::Error>` conversion picks the `Io`
+        // variant, not (for instance) routing EPIPE to `Closed`.
+        let io_err = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "boom");
+        let err: PtyError = io_err.into();
+        assert!(matches!(err, PtyError::Io { .. }));
+    }
+
+    #[test]
     fn not_leader_display_includes_requester_and_current() {
         let err = PtyError::NotLeader {
             requester: ClientId::from_u64(0),
