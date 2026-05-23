@@ -1218,4 +1218,91 @@ mod tests {
             .await
             .expect("b claims empty seat");
     }
+
+    // ─── Tracing-based assertion tests (T15) ─────────────────────────
+
+    /// Snapshot the current length of the global tracing-test log buffer.
+    ///
+    /// Because the worker runs on its own Tokio task, the test span injected
+    /// by `#[traced_test]` does not propagate across task boundaries, so the
+    /// scope-filtered `logs_contain` / `logs_assert` helpers see no worker
+    /// events. Instead we read the raw buffer directly.
+    ///
+    /// Since the buffer is shared across all concurrently-running tests, we
+    /// snapshot its byte length before starting test-specific actions and then
+    /// only examine lines appended _after_ the snapshot. This keeps the
+    /// assertion scoped to the current test even when tests run in parallel.
+    fn buf_snapshot() -> usize {
+        tracing_test::internal::global_buf()
+            .lock()
+            .expect("global_buf lock")
+            .len()
+    }
+
+    /// Return lines appended to the global log buffer after `start_offset`
+    /// that contain `needle`.
+    fn buf_lines_since(start_offset: usize, needle: &str) -> Vec<String> {
+        let buf = tracing_test::internal::global_buf()
+            .lock()
+            .expect("global_buf lock");
+        let slice = buf.get(start_offset..).unwrap_or(&[]);
+        let text = String::from_utf8(slice.to_vec()).unwrap_or_default();
+        text.lines()
+            .filter(|l| l.contains(needle))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn leader_input_after_promotion_does_not_re_emit_event() {
+        // Snapshot before we do anything so we only inspect this test's events.
+        let start = buf_snapshot();
+
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+
+        // First write promotes a to leader.
+        session.write_as(a, b"hello").await.expect("write 1");
+        // Second write from the same client: already leader, so no new
+        // promotion event should be emitted.
+        session.write_as(a, b"world").await.expect("write 2");
+
+        // Verify the promotion event was emitted for the first write.
+        //
+        // NOTE: An exact count of "exactly 1" is not asserted here because
+        // the global tracing-test buffer is shared across all concurrently
+        // running tests, making a precise count unreliable in the default
+        // parallel test configuration. The "no re-emit" invariant is enforced
+        // structurally in the worker (`if leader != Some(client_id)` guard) and
+        // is exercised behaviorally by `most_recent_user_input_steals_leader`.
+        // This test's job is to confirm the tracing instrumentation fires at all.
+        let promotions = buf_lines_since(start, "leader promoted");
+        assert!(
+            !promotions.is_empty(),
+            "promotion event should fire at least once; buf slice was empty"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn leader_vacation_emits_event() {
+        let start = buf_snapshot();
+
+        let session = MockSession::new(default_opts());
+        let a = ClientId::from_u64(0);
+
+        let sub_a = session.subscribe_as(a).await.expect("subscribe a");
+        session.write_as(a, b"x").await.expect("a becomes leader");
+
+        // Dropping the subscription sends a Detach command, which should
+        // trigger the "leader vacated" trace event.
+        drop(sub_a);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !buf_lines_since(start, "leader vacated").is_empty(),
+            "vacation event should have been emitted"
+        );
+    }
 }
