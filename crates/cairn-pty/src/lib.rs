@@ -94,7 +94,8 @@ mod tests {
         let (tx, rx) = broadcast::channel::<Bytes>(4);
         let snap = Bytes::from_static(b"\x1b[2J");
         let counter = Arc::new(AtomicUsize::new(0));
-        let sub = Subscription::new(snap.clone(), rx, counter);
+        let (cmd_tx, _cmd_rx) = flume::unbounded();
+        let sub = Subscription::new(snap.clone(), rx, counter, ClientId::from_u64(0), cmd_tx);
         assert_eq!(sub.snapshot, snap);
         drop(tx); // explicit drop so test asserts type accepts a Receiver
     }
@@ -114,22 +115,25 @@ mod tests {
         async fn size(&self) -> Result<TermSize, PtyError> {
             Ok(TermSize { cols: 1, rows: 1 })
         }
-        async fn resize(&self, _: TermSize) -> Result<(), PtyError> {
+        async fn resize(&self, _: ClientId, _: TermSize) -> Result<(), PtyError> {
             Ok(())
         }
-        async fn subscribe(&self) -> Result<Subscription, PtyError> {
+        async fn subscribe(&self, _: ClientId) -> Result<Subscription, PtyError> {
             use bytes::Bytes;
             use std::sync::Arc;
             use std::sync::atomic::AtomicUsize;
             use tokio::sync::broadcast;
             let (_tx, rx) = broadcast::channel(1);
+            let (cmd_tx, _cmd_rx) = flume::unbounded();
             Ok(Subscription::new(
                 Bytes::new(),
                 rx,
                 Arc::new(AtomicUsize::new(0)),
+                ClientId::from_u64(0),
+                cmd_tx,
             ))
         }
-        async fn write(&self, _: bytes::Bytes) -> Result<(), PtyError> {
+        async fn write(&self, _: ClientId, _: bytes::Bytes) -> Result<(), PtyError> {
             Ok(())
         }
     }
