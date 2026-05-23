@@ -33,7 +33,7 @@ const DEFAULT_CELL_HEIGHT_PX: u32 = 20;
 
 /// Construct a Boxed Terminal with the gated callbacks installed,
 /// mirroring the worker's setup (currently: `on_pty_write`,
-/// `on_xtversion`, `on_size`).
+/// `on_xtversion`, `on_size`, `on_color_scheme`).
 ///
 /// IMPORTANT: the Box must be constructed *before* any callback is
 /// installed. `Box::new(term)` moves `term` off the stack to the
@@ -97,6 +97,10 @@ fn build_test_terminal(
             }
         })
         .expect("on_size");
+
+    boxed
+        .on_color_scheme(|_t| None)
+        .expect("on_color_scheme");
 
     (boxed, pending)
 }
@@ -218,4 +222,21 @@ fn on_size_suppressed_when_primary_attached() {
         "expected no reply with count == 1, got {:?}",
         pending.borrow()
     );
+}
+
+// ─── on_color_scheme always None ──────────────────────────────────────
+
+#[test]
+fn on_color_scheme_never_replies_regardless_of_count() {
+    for count in [0, 1] {
+        let counter = Arc::new(AtomicUsize::new(count));
+        let size = Rc::new(Cell::new(TermSize { cols: 80, rows: 24 }));
+        let (mut term, pending) = build_test_terminal(counter, size);
+        term.vt_write(b"\x1b[?996n"); // color scheme query
+        assert!(
+            pending.borrow().is_empty(),
+            "expected no reply at count={count}, got {:?}",
+            pending.borrow()
+        );
+    }
 }

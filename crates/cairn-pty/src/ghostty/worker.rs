@@ -303,6 +303,16 @@ async fn run_session(mut s: SessionState) {
         return;
     }
 
+    // Color scheme has no honest backend answer (no theme). Returning
+    // None unconditionally is the documented policy. The callback is
+    // installed (rather than left unset) so future changes to delegate
+    // to attached observers live in one place.
+    if let Err(e) = terminal.on_color_scheme(|_term| None) {
+        tracing::error!(error = ?e, "failed to install ColorSchemeFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+
     let terminal = Rc::new(RefCell::new(terminal));
 
     let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
