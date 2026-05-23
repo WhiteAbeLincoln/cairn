@@ -14,16 +14,18 @@ mod worker;
 use bytes::Bytes;
 use tokio::sync::oneshot;
 
-use super::{PtyError, SpawnOptions, Subscription, TermSize};
+use super::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use worker::ExitStatus;
 
 /// Commands the public API sends to the session worker thread.
-pub(super) enum Command {
+pub(crate) enum Command {
     Subscribe {
+        client_id: ClientId,
         reply: oneshot::Sender<Result<Subscription, PtyError>>,
     },
     Resize {
+        client_id: ClientId,
         size: TermSize,
         reply: oneshot::Sender<Result<(), PtyError>>,
     },
@@ -31,9 +33,13 @@ pub(super) enum Command {
         reply: oneshot::Sender<Result<TermSize, PtyError>>,
     },
     Write {
+        client_id: ClientId,
         data: Bytes,
         reply: oneshot::Sender<Result<(), PtyError>>,
     },
+    /// Sent by `SubscriptionGuard::drop`. Worker checks if `client_id`
+    /// is the current leader and clears the seat if so.
+    Detach { client_id: ClientId },
     Shutdown,
 }
 
