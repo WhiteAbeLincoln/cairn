@@ -54,6 +54,18 @@ impl GhosttyPty {
         })
     }
 
+    /// Construct a `GhosttyPty` from a `WorkerHandles` pair returned by
+    /// `spawn_with`. Used by tests that inject mock `Pty`/`ChildProcess`
+    /// implementations; the fields are private so tests inside `worker.rs`
+    /// call this rather than writing a struct literal.
+    #[cfg(test)]
+    pub(in crate::ghostty) fn from_handles(handles: worker::WorkerHandles) -> Self {
+        Self {
+            cmd_tx: handles.cmd_tx,
+            exit_rx: handles.exit_rx,
+        }
+    }
+
     /// Send a kill signal to the child and tear down the session.
     /// `wait()` will resolve shortly after.
     pub fn kill(&self) -> Result<(), PtyError> {

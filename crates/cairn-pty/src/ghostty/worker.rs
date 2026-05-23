@@ -190,7 +190,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
 /// Unlike `spawn`, this function performs no in-thread construction (the
 /// caller is responsible for handing over already-ready handles), so the
 /// init-mpsc back-channel isn't needed.
-#[allow(dead_code)] // used by Task 9.3 tests; no call site yet in this task
+#[cfg(test)]
 pub(super) fn spawn_with<P, C>(
     pty: P,
     child: C,
@@ -645,4 +645,277 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     ExitStatus::from_raw((code & 0xff) << 8)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Worker-level tests that drive `run_session` against mock `Pty` and
+    //! `ChildProcess` implementations. These tests exercise the actual
+    //! worker code — including the libghostty callback installation block,
+    //! the primary_count gate inside `on_pty_write`, and the flush path
+    //! that delivers canned replies to the PTY — rather than a parallel
+    //! copy of the same closures (which is what `tests/callback_gating.rs`
+    //! used to do, and what made that file misleading once the worker
+    //! and test closures could drift independently).
+    //!
+    //! As a side effect, these tests also pin libghostty-vt 0.1.1's
+    //! default wire bytes (DA1 = `\x1b[?62;22c`, XTWINOPS 18t format, etc.)
+    //! — a future libghostty version that changes those bytes will fail
+    //! these tests loudly.
+
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use tokio::sync::{mpsc, watch};
+
+    use super::*;
+    use crate::ghostty::GhosttyPty;
+    use crate::ghostty::process::{ChildProcess, Pty};
+    use crate::session::PtySession;
+    use crate::{SpawnOptions, TermSize};
+
+    // ─── Mock implementations ─────────────────────────────────────────
+
+    /// PTY mock backed by tokio mpsc channels.
+    struct MockPty {
+        read_rx: mpsc::UnboundedReceiver<Bytes>,
+        write_tx: mpsc::UnboundedSender<Bytes>,
+        leftover: Vec<u8>,
+    }
+
+    impl Pty for MockPty {
+        async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.leftover.is_empty() {
+                let n = buf.len().min(self.leftover.len());
+                buf[..n].copy_from_slice(&self.leftover[..n]);
+                self.leftover.drain(..n);
+                return Ok(n);
+            }
+            match self.read_rx.recv().await {
+                Some(chunk) => {
+                    let n = buf.len().min(chunk.len());
+                    buf[..n].copy_from_slice(&chunk[..n]);
+                    if chunk.len() > n {
+                        self.leftover.extend_from_slice(&chunk[n..]);
+                    }
+                    Ok(n)
+                }
+                None => Ok(0),
+            }
+        }
+
+        async fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+            let _ = self.write_tx.send(Bytes::copy_from_slice(data));
+            Ok(())
+        }
+
+        fn set_size(&self, _size: TermSize) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Child mock; `start_kill` triggers exit so the worker's Shutdown
+    /// path can complete without hanging.
+    struct MockChild {
+        exit_rx: watch::Receiver<Option<ExitStatus>>,
+        exit_tx: watch::Sender<Option<ExitStatus>>,
+    }
+
+    impl ChildProcess for MockChild {
+        async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            loop {
+                if let Some(status) = *self.exit_rx.borrow() {
+                    return Ok(status);
+                }
+                if self.exit_rx.changed().await.is_err() {
+                    return Err(std::io::Error::other("exit channel closed"));
+                }
+            }
+        }
+
+        fn start_kill(&mut self) -> std::io::Result<()> {
+            let _ = self.exit_tx.send(Some(synthetic_exit_status(0)));
+            Ok(())
+        }
+    }
+
+    // ─── Harness ─────────────────────────────────────────────────────
+
+    struct MockSession {
+        pty: GhosttyPty,
+        read_tx: mpsc::UnboundedSender<Bytes>,
+        write_rx: mpsc::UnboundedReceiver<Bytes>,
+    }
+
+    impl MockSession {
+        fn new(opts: SpawnOptions) -> Self {
+            let (read_tx, read_rx) = mpsc::unbounded_channel::<Bytes>();
+            let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
+            let (exit_tx, exit_rx) = watch::channel::<Option<ExitStatus>>(None);
+
+            let mock_pty = MockPty {
+                read_rx,
+                write_tx,
+                leftover: Vec::new(),
+            };
+            let mock_child = MockChild { exit_rx, exit_tx };
+
+            let handles = spawn_with(mock_pty, mock_child, opts).expect("spawn_with");
+            let pty = GhosttyPty::from_handles(handles);
+            Self {
+                pty,
+                read_tx,
+                write_rx,
+            }
+        }
+
+        fn feed(&self, data: &'static [u8]) {
+            self.read_tx
+                .send(Bytes::from_static(data))
+                .expect("read_tx send");
+        }
+
+        async fn recv_write(&mut self, deadline: Duration) -> Option<Bytes> {
+            tokio::time::timeout(deadline, self.write_rx.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        async fn assert_no_write_within(&mut self, deadline: Duration) {
+            if let Some(bytes) = self.recv_write(deadline).await {
+                panic!(
+                    "expected no PTY write within {deadline:?}, got {:?}",
+                    bytes.as_ref()
+                );
+            }
+        }
+    }
+
+    fn default_opts() -> SpawnOptions {
+        SpawnOptions::new(tokio::process::Command::new("/bin/true"))
+    }
+
+    fn sized_opts(cols: u16, rows: u16) -> SpawnOptions {
+        SpawnOptions::new(tokio::process::Command::new("/bin/true"))
+            .with_size(TermSize { cols, rows })
+    }
+
+    // The Command field of SpawnOptions is unused when spawn_with is the
+    // entry point (the mock doesn't spawn a real child), but SpawnOptions
+    // is shared with the production path so we still construct one.
+    // /bin/true is a safe placeholder.
+
+    // ─── Tests ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn worker_answers_da1_when_no_subscriber() {
+        let mut session = MockSession::new(default_opts());
+        session.feed(b"\x1b[c");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected DA1 reply");
+        assert_eq!(written.as_ref(), b"\x1b[?62;22c");
+    }
+
+    #[tokio::test]
+    async fn worker_suppresses_da1_when_subscriber_attached() {
+        let mut session = MockSession::new(default_opts());
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[c");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn worker_resumes_replies_after_subscriber_drops() {
+        let mut session = MockSession::new(default_opts());
+
+        let sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[c");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+
+        drop(sub);
+
+        session.feed(b"\x1b[c");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected DA1 reply after subscription drop");
+        assert_eq!(written.as_ref(), b"\x1b[?62;22c");
+    }
+
+    #[tokio::test]
+    async fn worker_xtversion_brands_as_cairn_when_no_subscriber() {
+        let mut session = MockSession::new(default_opts());
+        session.feed(b"\x1b[>q");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected XTVERSION reply");
+        let text = std::str::from_utf8(&written).unwrap_or("<non-utf8>");
+        assert!(
+            text.contains("cairn "),
+            "reply should brand as cairn, got {text:?}"
+        );
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "reply should include the crate version, got {text:?}"
+        );
+        assert!(
+            !text.contains("libghostty"),
+            "default libghostty fingerprint leaked, got {text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_xtversion_suppressed_when_subscriber_attached() {
+        let mut session = MockSession::new(default_opts());
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[>q");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn worker_on_size_answers_xtwinops_18t() {
+        let mut session = MockSession::new(sized_opts(132, 50));
+        session.feed(b"\x1b[18t");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected XTWINOPS reply");
+        assert_eq!(written.as_ref(), b"\x1b[8;50;132t");
+    }
+
+    #[tokio::test]
+    async fn worker_on_size_suppressed_when_subscriber_attached() {
+        let mut session = MockSession::new(default_opts());
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[18t");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn worker_color_scheme_never_replies() {
+        let mut session = MockSession::new(default_opts());
+
+        session.feed(b"\x1b[?996n");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[?996n");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
 }
