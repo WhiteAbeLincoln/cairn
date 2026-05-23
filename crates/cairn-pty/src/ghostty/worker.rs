@@ -17,6 +17,7 @@ use libghostty_vt::{Terminal, TerminalOptions};
 use tokio::sync::broadcast;
 
 use super::Command;
+use super::input_classifier::is_user_input;
 use super::process::{ChildProcess, Pty};
 use crate::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
@@ -384,6 +385,9 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     let bcast_tx: Rc<RefCell<Option<broadcast::Sender<Bytes>>>> =
         Rc::new(RefCell::new(Some(bcast_tx)));
 
+    let mut leader: Option<ClientId> = None;
+    let mut _last_input_at: Option<std::time::Instant> = None;
+
     let mut buf = vec![0u8; 65536];
     // Track whether we have already published the exit status, to keep
     // behavior identical when EOF on the PTY fires before SIGCHLD propagates.
@@ -518,7 +522,31 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         );
                         let _ = reply.send(Ok(sub));
                     }
-                    Command::Resize { client_id: _client_id, size, reply } => {
+                    Command::Resize { client_id, size, reply } => {
+                        // Election: empty seat promotes; non-leader rejects.
+                        match leader {
+                            None => {
+                                leader = Some(client_id);
+                                tracing::info!(
+                                    target: "cairn_pty::election",
+                                    client_id = %client_id,
+                                    cause = "resize",
+                                    previous = ?None::<ClientId>,
+                                    "leader promoted"
+                                );
+                            }
+                            Some(current) if current == client_id => {
+                                // Already the leader; apply.
+                            }
+                            Some(current) => {
+                                let _ = reply.send(Err(PtyError::NotLeader {
+                                    requester: client_id,
+                                    current: Some(current),
+                                }));
+                                continue;
+                            }
+                        }
+
                         let res = (|| -> Result<(), PtyError> {
                             terminal
                                 .borrow_mut()
@@ -537,12 +565,33 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     Command::Size { reply } => {
                         let _ = reply.send(Ok(current_size.get()));
                     }
-                    Command::Write { client_id: _client_id, data, reply } => {
+                    Command::Write { client_id, data, reply } => {
+                        if is_user_input(&data) {
+                            _last_input_at = Some(std::time::Instant::now());
+                            if leader != Some(client_id) {
+                                let previous = leader;
+                                leader = Some(client_id);
+                                tracing::info!(
+                                    target: "cairn_pty::election",
+                                    client_id = %client_id,
+                                    cause = "input",
+                                    previous = ?previous,
+                                    "leader promoted"
+                                );
+                            }
+                        }
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
                     }
-                    Command::Detach { client_id: _client_id } => {
-                        // No-op for now; Task 12 adds leader-vacation logic here.
+                    Command::Detach { client_id } => {
+                        if leader == Some(client_id) {
+                            tracing::info!(
+                                target: "cairn_pty::election",
+                                client_id = %client_id,
+                                "leader vacated"
+                            );
+                            leader = None;
+                        }
                     }
                 }
             },
