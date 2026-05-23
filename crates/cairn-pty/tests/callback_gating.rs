@@ -98,9 +98,7 @@ fn build_test_terminal(
         })
         .expect("on_size");
 
-    boxed
-        .on_color_scheme(|_t| None)
-        .expect("on_color_scheme");
+    boxed.on_color_scheme(|_t| None).expect("on_color_scheme");
 
     (boxed, pending)
 }
@@ -110,7 +108,8 @@ fn build_test_terminal(
 #[test]
 fn on_pty_write_emits_da1_reply_when_no_primary() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let (mut term, pending) = build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
+    let (mut term, pending) =
+        build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
     term.vt_write(b"\x1b[c"); // DA1
     let chunks: Vec<_> = pending.borrow_mut().drain(..).collect();
     assert_eq!(chunks.len(), 1, "expected one reply chunk, got {chunks:?}");
@@ -124,7 +123,8 @@ fn on_pty_write_emits_da1_reply_when_no_primary() {
 #[test]
 fn on_pty_write_suppresses_da1_reply_when_primary_attached() {
     let counter = Arc::new(AtomicUsize::new(1));
-    let (mut term, pending) = build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
+    let (mut term, pending) =
+        build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
     term.vt_write(b"\x1b[c");
     assert!(
         pending.borrow().is_empty(),
@@ -136,7 +136,10 @@ fn on_pty_write_suppresses_da1_reply_when_primary_attached() {
 #[test]
 fn on_pty_write_gates_decrqm_reply() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let (mut term, pending) = build_test_terminal(counter.clone(), Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
+    let (mut term, pending) = build_test_terminal(
+        counter.clone(),
+        Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })),
+    );
 
     // Count == 0: DECRQM reply queued.
     term.vt_write(b"\x1b[?7$p");
@@ -158,7 +161,8 @@ fn on_pty_write_gates_decrqm_reply() {
 #[test]
 fn on_xtversion_overrides_default_when_no_primary() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let (mut term, pending) = build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
+    let (mut term, pending) =
+        build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
     term.vt_write(b"\x1b[>q"); // XTVERSION query
     let chunks: Vec<_> = pending.borrow_mut().drain(..).collect();
     assert_eq!(chunks.len(), 1, "expected one reply, got {chunks:?}");
@@ -180,7 +184,8 @@ fn on_xtversion_overrides_default_when_no_primary() {
 #[test]
 fn on_xtversion_suppressed_when_primary_attached() {
     let counter = Arc::new(AtomicUsize::new(1));
-    let (mut term, pending) = build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
+    let (mut term, pending) =
+        build_test_terminal(counter, Rc::new(Cell::new(TermSize { cols: 80, rows: 24 })));
     term.vt_write(b"\x1b[>q");
     assert!(
         pending.borrow().is_empty(),
@@ -194,7 +199,10 @@ fn on_xtversion_suppressed_when_primary_attached() {
 #[test]
 fn on_size_reports_cell_grid_when_no_primary() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let size = Rc::new(Cell::new(TermSize { cols: 132, rows: 50 }));
+    let size = Rc::new(Cell::new(TermSize {
+        cols: 132,
+        rows: 50,
+    }));
     let (mut term, pending) = build_test_terminal(counter, size);
 
     // CSI 18 t — report text area in chars. Wire form of reply:
