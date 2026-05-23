@@ -18,7 +18,7 @@ use tokio::sync::broadcast;
 
 use super::Command;
 use super::process::{ChildProcess, Pty};
-use crate::{PtyError, SpawnOptions, Subscription, TermSize};
+use crate::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use std::process::ExitStatus;
 
@@ -33,6 +33,7 @@ pub(super) struct WorkerHandles {
 /// Returns the channels external callers use to interact with the session.
 pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
 
     // Clamp to at least 1: broadcast::channel(0) panics, and capacity is just
@@ -155,6 +156,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     pty,
                     child,
                     cmd_rx,
+                    cmd_tx: cmd_tx_for_worker,
                     exit_tx,
                     broadcast_capacity,
                     initial_size,
@@ -201,6 +203,7 @@ where
     C: ChildProcess,
 {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
 
     let broadcast_capacity = opts.broadcast_capacity.max(1);
@@ -220,6 +223,7 @@ where
                     pty,
                     child,
                     cmd_rx,
+                    cmd_tx: cmd_tx_for_worker,
                     exit_tx,
                     broadcast_capacity,
                     initial_size,
@@ -237,6 +241,7 @@ struct SessionState<P: Pty, C: ChildProcess> {
     pty: P,
     child: C,
     cmd_rx: flume::Receiver<Command>,
+    cmd_tx: flume::Sender<Command>,
     exit_tx: tokio::sync::watch::Sender<Option<ExitStatus>>,
     broadcast_capacity: usize,
     initial_size: TermSize,
@@ -465,6 +470,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             let _ = reply.send(Err(PtyError::Closed));
                             continue;
                         }
+                        Command::Detach { .. } => continue, // no-op post-exit
                     }
                 }
                 match cmd {
@@ -488,7 +494,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             }
                         break;
                     }
-                    Command::Subscribe { reply } => {
+                    Command::Subscribe { client_id, reply } => {
                         let snapshot = match format_snapshot(&terminal.borrow()) {
                             Ok(bytes) => bytes,
                             Err(e) => { let _ = reply.send(Err(e)); continue; }
@@ -503,10 +509,16 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                                 rx
                             }
                         };
-                        let sub = Subscription::new(snapshot, stream, primary_count.clone());
+                        let sub = Subscription::new(
+                            snapshot,
+                            stream,
+                            primary_count.clone(),
+                            client_id,
+                            s.cmd_tx.clone(),
+                        );
                         let _ = reply.send(Ok(sub));
                     }
-                    Command::Resize { size, reply } => {
+                    Command::Resize { client_id: _client_id, size, reply } => {
                         let res = (|| -> Result<(), PtyError> {
                             terminal
                                 .borrow_mut()
@@ -525,9 +537,12 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     Command::Size { reply } => {
                         let _ = reply.send(Ok(current_size.get()));
                     }
-                    Command::Write { data, reply } => {
+                    Command::Write { client_id: _client_id, data, reply } => {
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
+                    }
+                    Command::Detach { client_id: _client_id } => {
+                        // No-op for now; Task 12 adds leader-vacation logic here.
                     }
                 }
             },
@@ -595,7 +610,7 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
     while let Ok(cmd) = cmd_rx.try_recv() {
         match cmd {
             Command::Shutdown => {}
-            Command::Subscribe { reply } => {
+            Command::Subscribe { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
             }
             Command::Resize { reply, .. } => {
@@ -607,6 +622,7 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
             Command::Write { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
             }
+            Command::Detach { .. } => {}
         }
     }
 }
