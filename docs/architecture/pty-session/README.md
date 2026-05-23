@@ -80,7 +80,7 @@ When a child exits, cairn keeps the worker alive serving `Subscribe` against the
 - **Library callbacks installed**: cairn currently installs only `on_pty_write`. Missing `on_device_attributes`, `on_xtversion`, `on_color_scheme`, `on_size`. Tier-2 queries are silently dropped today ([[query-response-delegation]]).
 - **Backpressure**: cairn already uses `tokio::sync::broadcast` (bounded by message count). Better than zmx's unbounded per-client `ArrayList`. But the worker drops `tx.send()` errors today (`worker.rs:289`) — no `Lagged` handling, no per-client transport-level backpressure yet ([[backpressure]]).
 - **Kill semantics**: zmx escalates SIGHUP → 500ms → SIGKILL (`zmx/src/main.zig:1046-1061`). Cairn's `child.start_kill` is unconditional SIGKILL today ([[pty-lifecycle]], [[error-recovery]]).
-- **First-attach snapshot**: zmx suppresses the snapshot for the very first attach to avoid clobbering shell startup output. Cairn does not — every Subscribe currently returns a snapshot ([[client-attach-and-election]]).
+- **First-attach snapshot**: zmx suppresses the snapshot for the very first attach because in zmx the spawning client *is* the first attacher, so the snapshot would clobber shell startup output the client is about to render anyway. Cairn deliberately keeps the snapshot on first attach — its primary use case is long-running headless processes (AI agent management, background automation) that may run for hours before any client attaches. Suppressing the snapshot in that scenario would throw away exactly the state the user opened the terminal to see ([[client-attach-and-election]]).
 
 ## Non-goals (v0)
 
@@ -108,7 +108,7 @@ Verified by reading `crates/cairn-pty/src/pty/`:
 In approximate dependency order:
 
 1. **Complete the libghostty callback set** — wire `on_device_attributes`, `on_xtversion`, `on_color_scheme`, `on_size`. Gate all of them (including `on_pty_write`) on a primary-attached flag ([[query-response-delegation]]).
-2. **Multi-client semantics** — extend `Subscribe` with a client identity, track leader by most-recent input, suppress first-attach snapshot, gate resize to leader-only ([[client-attach-and-election]]).
+2. **Multi-client semantics** — extend `Subscribe` with a client identity, track leader by most-recent input, gate resize to leader-only ([[client-attach-and-election]]).
 3. **Snapshot completeness** — port zmx's two-phase serialization with full `FormatterTerminalExtra` ([[terminal-state-and-replay]]).
 4. **Daemon binary** — HTTP+WebSocket listener, session registry, routing layer between client connections and per-session workers ([[daemon-process-model]], [[internal-communication]]).
 5. **Wire protocol** — binary WebSocket frames with msgpack body and a one-byte version prefix; message types Hello/Welcome/Attach/Snapshot/Output/Input/Resize/Ping/Pong/Error/Bye/Detach ([[external-protocol]]).

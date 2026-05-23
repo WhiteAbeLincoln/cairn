@@ -174,10 +174,18 @@ Mirror zmx's policy with these changes; nothing here breaks the
   `format_snapshot` emits scrollback + viewport with zmx's OSC 133
   and synchronized-output hygiene; port the workarounds if missing.
   See [[terminal-state-and-replay]].
-- **First-attach suppression.** The worker today always returns a
-  snapshot. Add an equivalent of `has_had_client` so the first
-  subscriber gets an empty snapshot and doesn't duplicate shell
-  startup chatter.
+- **First-attach snapshot is kept, not suppressed.** zmx skips the
+  snapshot for the very first attach because in zmx the spawning
+  client *is* the first attacher: shell startup is in flight as the
+  client opens the socket, and a snapshot at that moment would
+  duplicate or fight the bytes the client is about to receive live.
+  Cairn's primary use case inverts that assumption — processes are
+  spawned headlessly and may run unattended for hours (AI agent
+  workflows, background automation) before any client looks at them.
+  Suppressing the snapshot on first attach would throw away the
+  accumulated state the user opened the terminal to see. Cairn keeps
+  the snapshot on every `subscribe()` call; the worker does not
+  track a `has_had_client` equivalent.
 - **Leader state on the session.** Add `leader: Option<ClientId>` and
   `last_input_at: Option<Instant>` to the worker's `SessionState`.
   `ClientId` comes from whatever layer owns WebSocket sessions
@@ -189,11 +197,27 @@ Mirror zmx's policy with these changes; nothing here breaks the
 - **Resize is leader-only.** `Command::Resize` should reject non-leader
   resizes. Today's doc says last-write-wins, which is more permissive
   than zmx. See [[resize-semantics]].
-- **Local ghostty as a permanent, non-electing client.** Give it a
-  stable `ClientId` exempt from election: it stays attached, never
-  claims leadership on its own input, and never vacates the seat. It
-  plays the role of zmx's daemon-internal `term` plus the
-  "no `has_terminal_client`" branch.
+- **Headless Terminal stays internal to the worker — not modeled as
+  a client.** zmx's daemon owns a `term` that participates in the
+  same dispatch loop as real client sockets (one unified collection
+  of attached endpoints, the internal `term` exempt from leader
+  election). Cairn diverges: the libghostty `Terminal` in
+  `crates/cairn-pty/src/ghostty/worker.rs:run_session` is a private
+  `Rc<RefCell<Terminal>>` owned by the worker thread. It doesn't go
+  through `Command::Subscribe` or `Command::Write`; PTY output flows
+  through `terminal.vt_write` directly inside the worker's `select!`
+  arm, and the `on_pty_write` callback queues responses to
+  `pending_writes` for the worker to drain in the same iteration.
+  This keeps the `subscribe()` snapshot atomicity contract
+  structural (snapshot + stream-start happen in one synchronous
+  block) rather than requiring coordination across a feedback edge.
+  The "is any real client attached" signal that zmx derives from
+  `has_terminal_client` is provided in cairn by the `primary_count`
+  atomic, incremented on `Subscribe` and decremented by
+  `SubscriptionGuard::drop` — no synthetic local-client identity is
+  needed. If we ever want multiple internal observers (log capture,
+  telemetry), an observer abstraction can be added then; YAGNI for
+  one.
 - **Tail-only == `subscribe()` without `write()`.** No new flag
   needed; the daemon's equivalent of `has_terminal_client` just
   becomes "has any client ever issued a write".
@@ -215,10 +239,12 @@ Mirror zmx's policy with these changes; nothing here breaks the
    the next input. For long-lived web sessions where the only human
    locks their screen, nothing can resize until they return. Should
    cairn promote the most-recent-non-leader using `last_input_at`?
-4. **Local ghostty and DA replies.** If the embedded ghostty is a
-   normal client it will answer DA queries and collide with browser
-   clients. It probably needs to live *behind* the input fan-in so its
-   replies are suppressed. Detail in [[query-response-delegation]].
+4. **Headless Terminal and DA replies.** Resolved by the
+   architecture choice above: the headless `Terminal` is internal to
+   the worker, not a client, and its query auto-replies are gated by
+   the `primary_count` atomic — when any real client is attached
+   (`primary_count > 0`), the backend stays silent and attached
+   client emulators answer. See [[query-response-delegation]].
 5. **Auth interaction.** A read-only viewer must not claim leadership
    by sending input. The election check must sit behind a write
    authorization check. See [[authentication]] and
