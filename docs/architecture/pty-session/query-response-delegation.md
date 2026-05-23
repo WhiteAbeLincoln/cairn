@@ -78,21 +78,39 @@ path exists because libghostty's DA reply requires an explicit
 
 ## libghostty-vt's callback surface
 
+> **Empirical correction (2026-05-22):** an earlier revision of this doc
+> classified DA1/DA2/DA3, XTVERSION, and DSR cursor as Tier 2 (silently
+> dropped without an explicit callback). A direct probe of libghostty-vt
+> 0.1.1 showed otherwise — those queries are auto-answered via
+> `on_pty_write` with library-default wire bytes. The tier table below
+> reflects the empirical behavior. See
+> `docs/superpowers/specs/2026-05-22-libghostty-callbacks-design.md` §
+> "Empirical libghostty behavior" for the probe results and the wire
+> values libghostty produces.
+
 libghostty-vt 0.1.1 splits query handling into two tiers:
 
-**Tier 1 — answered internally via `on_pty_write`.** The terminal parses,
-computes the reply, and emits response bytes through `on_pty_write`
-(`terminal.rs:908-922`). The doc explicitly cites "DECRQM query or device
-status report" (`terminal.rs:910`), and the module example at
-`terminal.rs:99-101` shows DECRQM `CSI ? 7 $p` triggering it. DSR cursor
-(`CSI 6n`) falls here: no dedicated callback, answered from cursor state.
+**Tier 1 — auto-answered internally via `on_pty_write`** with library
+default bytes. The terminal parses, computes the reply, and emits
+response bytes through `on_pty_write` (`terminal.rs:908-922`).
+Empirically (verified by probe), this covers:
 
-**Tier 2 — require an explicit embedder callback or the query is silently
-dropped.** No honest backend answer; the terminal asks the embedder:
+- **DA1** `CSI c` → `\x1b[?62;22c` (VT220 + ANSI_COLOR — byte-identical
+  to zmx).
+- **DA2** `CSI > c` → `\x1b[>1;0;0c`.
+- **DA3** `CSI = c` → `\x1bP!|00000000\x1b\\` (DECRPTUI).
+- **DSR cursor** `CSI 6n` → `\x1b[1;1R`.
+- **DECRQM** e.g. `CSI ? 7 $p` → `\x1b[?7;1$y` (module example at
+  `terminal.rs:99-101` documents this case).
+- **XTVERSION** `CSI > q` → `\x1bP>|libghostty\x1b\\`.
 
-- `on_device_attributes` — DA1/DA2/DA3 (`terminal.rs:1009-1027`). `None`
-  silently ignores.
-- `on_xtversion` — `CSI > q` (`terminal.rs:946-956`).
+An explicit `on_device_attributes` or `on_xtversion` callback may
+override the default wire bytes; if not installed, the library emits
+its own.
+
+**Tier 2 — silently dropped without an explicit embedder callback.**
+No backend default exists; libghostty asks the embedder:
+
 - `on_size` — XTWINOPS `CSI 14/16/18 t` (`terminal.rs:972-987`).
 - `on_color_scheme` — `CSI ? 996 n` (`terminal.rs:989-1007`).
 - `on_enquiry` — ENQ `0x05` (`terminal.rs:936-944`).
@@ -100,12 +118,20 @@ dropped.** No honest backend answer; the terminal asks the embedder:
   (`terminal.rs:962-970`) — same dispatch shape, not query responses.
 
 **Tier 2 callbacks fire synchronously inside `vt_write`**
-(`terminal.rs:43-45`). The reply decision happens at parse time, before any
-client sees the bytes.
+(`terminal.rs:43-45`). The reply decision happens at parse time, before
+any client sees the bytes. Tier 1's auto-reply also fires synchronously
+inside `vt_write`, routed through `on_pty_write`.
 
-Cairn today installs *only* `on_pty_write` (`worker.rs:224-228`): Tier 1
-answered by the backend, Tier 2 silently dropped. That is the *opposite* of
-what we want once a client is attached, and partial otherwise.
+**Consequence for cairn's gate.** Because every Tier-1 reply routes
+through `on_pty_write`, gating that one callback on `primary_count == 0`
+is sufficient to suppress all six Tier-1 backend auto-replies when a
+primary client is attached. The Tier-2 callbacks
+(`on_size`, `on_color_scheme`) close coverage gaps unrelated to the
+gate; cairn installs them with their own gating logic. The
+`on_device_attributes` override is *not* installed in v0 (libghostty's
+defaults already match zmx for DA1 and are acceptable for DA2/DA3) but
+the Tier-1 gate still suppresses them. See
+[[step-1-libghostty-callbacks-spec]] for the wire-by-wire policy.
 
 ## Proposed gating for cairn
 

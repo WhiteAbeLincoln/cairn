@@ -160,13 +160,15 @@ async fn late_subscriber_sees_prior_output_in_snapshot() {
 
 #[tokio::test]
 async fn da1_query_gets_response_without_client() {
-    // Smallest reproducible TTY query test: launch a shell script that sends
-    // ESC[c (DA1) and then reads one byte from stdin (the response). If the
-    // server responds, the read succeeds within the timeout and we see the
-    // sentinel printed. If no response, the read blocks and we print
-    // reply-len=0.
+    // Verifies the count == 0 path end-to-end: with no subscriber
+    // attached, libghostty's default DA1 reply (\x1b[?62;22c) flows
+    // through the PTY to the child, the child's `read` returns the
+    // reply bytes, and we observe a non-zero reply length.
     //
-    // Note: depends on `sh` being on PATH (true on Linux/macOS).
+    // Race-free: we wait for the child to exit BEFORE subscribing,
+    // so the entire query/reply roundtrip happens with count == 0.
+    // The post-exit snapshot contains the child's final stdout
+    // (`reply-len=N`) which we parse.
     let script = r#"
         printf '\033[c'
         read -r -n 32 -t 1 reply
@@ -177,20 +179,64 @@ async fn da1_query_gets_response_without_client() {
     let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
-    let mut sub = pty.subscribe().await.expect("subscribe");
-    let bytes = read_until_contains(&mut sub, b"reply-len=", Duration::from_secs(3)).await;
-    let text = std::str::from_utf8(&bytes).unwrap_or("<non-utf8>");
+    // Wait for the child to finish the whole script. After this, the
+    // snapshot captures the final terminal state including the
+    // `reply-len=N` line.
+    let _ = pty.wait().await;
+
+    let sub = pty.subscribe().await.expect("subscribe");
+    let text = std::str::from_utf8(&sub.snapshot).unwrap_or("<non-utf8>");
     assert!(
         text.contains("reply-len="),
-        "missing reply-len marker: {text}"
+        "missing reply-len marker in snapshot: {text}"
     );
-    // The reply length must be >0 — meaning the script received the DA1 response.
     assert!(
-        text.contains("reply-len=") && !text.contains("reply-len=0"),
+        !text.contains("reply-len=0"),
         "expected non-zero reply length (terminal responded to DA1), got: {text}"
     );
+}
+
+#[tokio::test]
+async fn da1_query_suppressed_when_client_attached() {
+    // Verifies the count >= 1 path end-to-end: with a Subscription held
+    // during the query, the worker's gate drops libghostty's default
+    // DA1 reply, the child's `read` times out, and reply-len=0 lands
+    // in the snapshot.
+    //
+    // The leading `sleep 0.2` ensures our subscribe call lands before
+    // the child issues its DA1 query, so count == 1 at query time.
+    let script = r#"
+        sleep 0.2
+        printf '\033[c'
+        read -r -n 32 -t 1 reply
+        printf 'reply-len=%d\n' "${#reply}"
+    "#;
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg(script);
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 80, rows: 24 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    // Subscribe immediately — this is the "primary client" whose presence
+    // suppresses backend auto-replies. Hold the Subscription across the
+    // child's entire run by keeping `_sub` alive until after `wait`.
+    let _sub = pty.subscribe().await.expect("subscribe");
 
     let _ = pty.wait().await;
+
+    // `_sub` is still alive here (primary_count == 2 once sub2 lands) and
+    // outlives this function. That's fine: the snapshot we read below was
+    // captured by the worker while the child was running, with count == 1
+    // suppressing the DA1 reply — exactly what we want to observe.
+    let sub2 = pty.subscribe().await.expect("subscribe-2");
+    let text = std::str::from_utf8(&sub2.snapshot).unwrap_or("<non-utf8>");
+    assert!(
+        text.contains("reply-len="),
+        "missing reply-len marker in snapshot: {text}"
+    );
+    assert!(
+        text.contains("reply-len=0"),
+        "expected reply-len=0 (gate suppressed backend DA1 reply), got: {text}"
+    );
 }
 
 #[tokio::test]

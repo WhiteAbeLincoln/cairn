@@ -6,16 +6,18 @@
 //! the architectural rationale (single thread per session, Unix-only,
 //! pty-process for AsyncRead/AsyncWrite and tokio::process::Child).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use bytes::Bytes;
 use libghostty_vt::{Terminal, TerminalOptions};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 
 use super::Command;
+use super::process::{ChildProcess, Pty};
 use crate::{PtyError, SpawnOptions, Subscription, TermSize};
 
 pub use std::process::ExitStatus;
@@ -181,9 +183,59 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     Ok(WorkerHandles { cmd_tx, exit_rx })
 }
 
-struct SessionState {
-    pty: pty_process::Pty,
-    child: tokio::process::Child,
+/// Spawn a session worker that drives `run_session` against caller-provided
+/// `Pty` and `ChildProcess` implementations. Used by tests to inject mocks
+/// without going through pty_process / tokio::process construction.
+///
+/// Unlike `spawn`, this function performs no in-thread construction (the
+/// caller is responsible for handing over already-ready handles), so the
+/// init-mpsc back-channel isn't needed.
+#[cfg(test)]
+pub(super) fn spawn_with<P, C>(
+    pty: P,
+    child: C,
+    opts: SpawnOptions,
+) -> Result<WorkerHandles, PtyError>
+where
+    P: Pty,
+    C: ChildProcess,
+{
+    let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
+
+    let broadcast_capacity = opts.broadcast_capacity.max(1);
+    let initial_size = opts.size;
+    let scrollback_lines = opts.scrollback_lines;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+
+    std::thread::Builder::new()
+        .name("cairn-pty-session-mock".into())
+        .spawn(move || {
+            let local = tokio::task::LocalSet::new();
+            local.block_on(&rt, async move {
+                run_session(SessionState {
+                    pty,
+                    child,
+                    cmd_rx,
+                    exit_tx,
+                    broadcast_capacity,
+                    initial_size,
+                    scrollback_lines,
+                })
+                .await;
+            });
+        })
+        .map_err(|e| PtyError::Io { source: e })?;
+
+    Ok(WorkerHandles { cmd_tx, exit_rx })
+}
+
+struct SessionState<P: Pty, C: ChildProcess> {
+    pty: P,
+    child: C,
     cmd_rx: flume::Receiver<Command>,
     exit_tx: tokio::sync::watch::Sender<Option<ExitStatus>>,
     broadcast_capacity: usize,
@@ -197,7 +249,7 @@ struct SessionState {
 ///   - pty.read(...)               (PTY readable → vt_write + broadcast)
 ///   - cmd_rx.recv_async()         (external commands → dispatch)
 ///   - child.wait()                (child exit → publish status + tear down)
-async fn run_session(mut s: SessionState) {
+async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     // Pending writes from the libghostty-vt PtyWriteFn callback. The callback
     // is synchronous (fires inside terminal.vt_write); pty.write_all is async.
     // We queue bytes in the callback and drain them on the same task after
@@ -205,9 +257,17 @@ async fn run_session(mut s: SessionState) {
     // single-threaded; borrow_mut is held only across sync code.
     let pending_writes: Rc<RefCell<VecDeque<Bytes>>> = Rc::default();
 
+    // Shared counter of "primary attached" subscribers. Incremented in
+    // the Command::Subscribe arm; decremented by the PrimaryGuard inside
+    // each Subscription on drop. Read by libghostty callbacks
+    // (installed below) to decide whether to emit backend replies.
+    // Atomic (not Cell) so it can be cloned into Subscriptions, which
+    // are Send.
+    let primary_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
     // Construct the VT emulator. The PtyWriteFn closure captures a clone of
     // pending_writes and pushes; the main loop drains and forwards to pty.
-    let mut terminal = match Terminal::new(TerminalOptions {
+    let terminal = match Terminal::new(TerminalOptions {
         cols: s.initial_size.cols,
         rows: s.initial_size.rows,
         max_scrollback: s.scrollback_lines,
@@ -219,29 +279,105 @@ async fn run_session(mut s: SessionState) {
             return;
         }
     };
+    // Wrap in Rc<RefCell<>> NOW, before any callback install. libghostty
+    // 0.1.1's `on_*` installers store a raw C pointer to &self.vtable as
+    // userdata; if we moved the Terminal after install (e.g., by doing
+    // `Rc::new(RefCell::new(terminal))` later), that pointer would dangle.
+    // Constructing the Rc first places the Terminal at a stable heap
+    // address; `borrow_mut()` returns &mut Terminal pointing to that
+    // address. Subsequent `vt_write` and callback dispatches all see the
+    // same heap location, so the userdata pointer remains valid for the
+    // life of the Rc.
+    let terminal = Rc::new(RefCell::new(terminal));
 
     let pending_for_cb = pending_writes.clone();
-    if let Err(e) = terminal.on_pty_write(move |_term, data| {
-        pending_for_cb
-            .borrow_mut()
-            .push_back(Bytes::copy_from_slice(data));
+    let pc_for_pty_write = primary_count.clone();
+    if let Err(e) = terminal.borrow_mut().on_pty_write(move |_term, data| {
+        // When a primary client (Subscription holder) is attached, the
+        // client emulator is the authoritative answerer for queries
+        // libghostty's parser would otherwise auto-reply to (DA1, DA2,
+        // DA3, DSR cursor, DECRQM, XTVERSION). Suppressing the backend
+        // reply here is the load-bearing half of query delegation; the
+        // other half — broadcasting the original query bytes to the
+        // client — happens unconditionally in the PTY-read arm.
+        if pc_for_pty_write.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            pending_for_cb
+                .borrow_mut()
+                .push_back(Bytes::copy_from_slice(data));
+        }
     }) {
         tracing::error!(error = ?e, "failed to install PtyWriteFn callback");
         drain_commands_with_construction_error(&s.cmd_rx);
         return;
     }
-    let terminal = Rc::new(RefCell::new(terminal));
+
+    // Override libghostty's default XTVERSION reply ("libghostty") with
+    // "cairn <version>". Gated on primary_count so attached client
+    // emulators take over the response when present.
+    const XTVERSION_REPLY: &str = concat!("cairn ", env!("CARGO_PKG_VERSION"));
+    let pc_for_xtversion = primary_count.clone();
+    if let Err(e) = terminal.borrow_mut().on_xtversion(move |_term| {
+        if pc_for_xtversion.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            Some(XTVERSION_REPLY)
+        } else {
+            None
+        }
+    }) {
+        tracing::error!(error = ?e, "failed to install XtversionFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+
+    // Cached size; updated on every successful resize. pty_process::Pty has
+    // no get_size shortcut and we always set the size ourselves, so caching
+    // is authoritative. Wrapped in Rc<Cell<_>> so the on_size libghostty
+    // callback (installed immediately below) can capture a clone and read it
+    // synchronously inside vt_write.
+    let current_size: Rc<Cell<TermSize>> = Rc::new(Cell::new(s.initial_size));
+
+    // Answer XTWINOPS size queries (CSI 14/16/18 t). libghostty has no
+    // default for these — without the callback they're silently
+    // dropped. Pixel dimensions are placeholders; the backend has no
+    // font. Real pixel sizes come from the client emulator once
+    // attached. Non-zero defaults avoid divide-by-zero in image
+    // protocol code paths.
+    const DEFAULT_CELL_WIDTH_PX: u32 = 10;
+    const DEFAULT_CELL_HEIGHT_PX: u32 = 20;
+    let pc_for_size = primary_count.clone();
+    let current_size_for_cb = current_size.clone();
+    if let Err(e) = terminal.borrow_mut().on_size(move |_term| {
+        if pc_for_size.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            let size = current_size_for_cb.get();
+            Some(libghostty_vt::terminal::SizeReportSize {
+                rows: size.rows,
+                columns: size.cols,
+                cell_width: DEFAULT_CELL_WIDTH_PX,
+                cell_height: DEFAULT_CELL_HEIGHT_PX,
+            })
+        } else {
+            None
+        }
+    }) {
+        tracing::error!(error = ?e, "failed to install SizeFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+
+    // Color scheme has no honest backend answer (no theme). Returning
+    // None unconditionally is the documented policy. The callback is
+    // installed (rather than left unset) so future changes to delegate
+    // to attached observers live in one place.
+    if let Err(e) = terminal.borrow_mut().on_color_scheme(|_term| None) {
+        tracing::error!(error = ?e, "failed to install ColorSchemeFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
 
     let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
     // Option so the EOF/exit path can drop the sender promptly, surfacing
     // RecvError::Closed to existing subscribers even if cmd_rx is still alive.
     let bcast_tx: Rc<RefCell<Option<broadcast::Sender<Bytes>>>> =
         Rc::new(RefCell::new(Some(bcast_tx)));
-
-    // Cached size; updated on every successful resize. pty_process::Pty has
-    // no get_size shortcut and we always set the size ourselves, so caching
-    // is authoritative.
-    let mut current_size = s.initial_size;
 
     let mut buf = vec![0u8; 65536];
     // Track whether we have already published the exit status, to keep
@@ -367,7 +503,8 @@ async fn run_session(mut s: SessionState) {
                                 rx
                             }
                         };
-                        let _ = reply.send(Ok(Subscription { snapshot, stream }));
+                        let sub = Subscription::new(snapshot, stream, primary_count.clone());
+                        let _ = reply.send(Ok(sub));
                     }
                     Command::Resize { size, reply } => {
                         let res = (|| -> Result<(), PtyError> {
@@ -376,17 +513,17 @@ async fn run_session(mut s: SessionState) {
                                 .resize(size.cols, size.rows, 0, 0)
                                 .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
                             s.pty
-                                .resize(pty_process::Size::new(size.rows, size.cols))
+                                .set_size(size)
                                 .map_err(|e| PtyError::Backend { source: Box::new(e) })?;
                             Ok(())
                         })();
                         if res.is_ok() {
-                            current_size = size;
+                            current_size.set(size);
                         }
                         let _ = reply.send(res);
                     }
                     Command::Size { reply } => {
-                        let _ = reply.send(Ok(current_size));
+                        let _ = reply.send(Ok(current_size.get()));
                     }
                     Command::Write { data, reply } => {
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
@@ -432,7 +569,10 @@ async fn run_session(mut s: SessionState) {
 /// query (DA1/DSR/DECRQM/...) and produced a response. Drains are short and
 /// synchronous most of the time; only blocks if the kernel write buffer is
 /// full, which is rare for query responses (tens of bytes).
-async fn flush_pending_writes(pending: &Rc<RefCell<VecDeque<Bytes>>>, pty: &mut pty_process::Pty) {
+async fn flush_pending_writes<P: Pty>(
+    pending: &Rc<RefCell<VecDeque<Bytes>>>,
+    pty: &mut P,
+) {
     loop {
         let chunk = pending.borrow_mut().pop_front();
         let Some(chunk) = chunk else {
@@ -505,4 +645,277 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     ExitStatus::from_raw((code & 0xff) << 8)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Worker-level tests that drive `run_session` against mock `Pty` and
+    //! `ChildProcess` implementations. These tests exercise the actual
+    //! worker code — including the libghostty callback installation block,
+    //! the primary_count gate inside `on_pty_write`, and the flush path
+    //! that delivers canned replies to the PTY — rather than a parallel
+    //! copy of the same closures (which is what `tests/callback_gating.rs`
+    //! used to do, and what made that file misleading once the worker
+    //! and test closures could drift independently).
+    //!
+    //! As a side effect, these tests also pin libghostty-vt 0.1.1's
+    //! default wire bytes (DA1 = `\x1b[?62;22c`, XTWINOPS 18t format, etc.)
+    //! — a future libghostty version that changes those bytes will fail
+    //! these tests loudly.
+
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use tokio::sync::{mpsc, watch};
+
+    use super::*;
+    use crate::ghostty::GhosttyPty;
+    use crate::ghostty::process::{ChildProcess, Pty};
+    use crate::session::PtySession;
+    use crate::{SpawnOptions, TermSize};
+
+    // ─── Mock implementations ─────────────────────────────────────────
+
+    /// PTY mock backed by tokio mpsc channels.
+    struct MockPty {
+        read_rx: mpsc::UnboundedReceiver<Bytes>,
+        write_tx: mpsc::UnboundedSender<Bytes>,
+        leftover: Vec<u8>,
+    }
+
+    impl Pty for MockPty {
+        async fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if !self.leftover.is_empty() {
+                let n = buf.len().min(self.leftover.len());
+                buf[..n].copy_from_slice(&self.leftover[..n]);
+                self.leftover.drain(..n);
+                return Ok(n);
+            }
+            match self.read_rx.recv().await {
+                Some(chunk) => {
+                    let n = buf.len().min(chunk.len());
+                    buf[..n].copy_from_slice(&chunk[..n]);
+                    if chunk.len() > n {
+                        self.leftover.extend_from_slice(&chunk[n..]);
+                    }
+                    Ok(n)
+                }
+                None => Ok(0),
+            }
+        }
+
+        async fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+            let _ = self.write_tx.send(Bytes::copy_from_slice(data));
+            Ok(())
+        }
+
+        fn set_size(&self, _size: TermSize) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Child mock; `start_kill` triggers exit so the worker's Shutdown
+    /// path can complete without hanging.
+    struct MockChild {
+        exit_rx: watch::Receiver<Option<ExitStatus>>,
+        exit_tx: watch::Sender<Option<ExitStatus>>,
+    }
+
+    impl ChildProcess for MockChild {
+        async fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            loop {
+                if let Some(status) = *self.exit_rx.borrow() {
+                    return Ok(status);
+                }
+                if self.exit_rx.changed().await.is_err() {
+                    return Err(std::io::Error::other("exit channel closed"));
+                }
+            }
+        }
+
+        fn start_kill(&mut self) -> std::io::Result<()> {
+            let _ = self.exit_tx.send(Some(synthetic_exit_status(0)));
+            Ok(())
+        }
+    }
+
+    // ─── Harness ─────────────────────────────────────────────────────
+
+    struct MockSession {
+        pty: GhosttyPty,
+        read_tx: mpsc::UnboundedSender<Bytes>,
+        write_rx: mpsc::UnboundedReceiver<Bytes>,
+    }
+
+    impl MockSession {
+        fn new(opts: SpawnOptions) -> Self {
+            let (read_tx, read_rx) = mpsc::unbounded_channel::<Bytes>();
+            let (write_tx, write_rx) = mpsc::unbounded_channel::<Bytes>();
+            let (exit_tx, exit_rx) = watch::channel::<Option<ExitStatus>>(None);
+
+            let mock_pty = MockPty {
+                read_rx,
+                write_tx,
+                leftover: Vec::new(),
+            };
+            let mock_child = MockChild { exit_rx, exit_tx };
+
+            let handles = spawn_with(mock_pty, mock_child, opts).expect("spawn_with");
+            let pty = GhosttyPty::from_handles(handles);
+            Self {
+                pty,
+                read_tx,
+                write_rx,
+            }
+        }
+
+        fn feed(&self, data: &'static [u8]) {
+            self.read_tx
+                .send(Bytes::from_static(data))
+                .expect("read_tx send");
+        }
+
+        async fn recv_write(&mut self, deadline: Duration) -> Option<Bytes> {
+            tokio::time::timeout(deadline, self.write_rx.recv())
+                .await
+                .ok()
+                .flatten()
+        }
+
+        async fn assert_no_write_within(&mut self, deadline: Duration) {
+            if let Some(bytes) = self.recv_write(deadline).await {
+                panic!(
+                    "expected no PTY write within {deadline:?}, got {:?}",
+                    bytes.as_ref()
+                );
+            }
+        }
+    }
+
+    fn default_opts() -> SpawnOptions {
+        SpawnOptions::new(tokio::process::Command::new("/bin/true"))
+    }
+
+    fn sized_opts(cols: u16, rows: u16) -> SpawnOptions {
+        SpawnOptions::new(tokio::process::Command::new("/bin/true"))
+            .with_size(TermSize { cols, rows })
+    }
+
+    // The Command field of SpawnOptions is unused when spawn_with is the
+    // entry point (the mock doesn't spawn a real child), but SpawnOptions
+    // is shared with the production path so we still construct one.
+    // /bin/true is a safe placeholder.
+
+    // ─── Tests ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn worker_answers_da1_when_no_subscriber() {
+        let mut session = MockSession::new(default_opts());
+        session.feed(b"\x1b[c");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected DA1 reply");
+        assert_eq!(written.as_ref(), b"\x1b[?62;22c");
+    }
+
+    #[tokio::test]
+    async fn worker_suppresses_da1_when_subscriber_attached() {
+        let mut session = MockSession::new(default_opts());
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[c");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn worker_resumes_replies_after_subscriber_drops() {
+        let mut session = MockSession::new(default_opts());
+
+        let sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[c");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+
+        drop(sub);
+
+        session.feed(b"\x1b[c");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected DA1 reply after subscription drop");
+        assert_eq!(written.as_ref(), b"\x1b[?62;22c");
+    }
+
+    #[tokio::test]
+    async fn worker_xtversion_brands_as_cairn_when_no_subscriber() {
+        let mut session = MockSession::new(default_opts());
+        session.feed(b"\x1b[>q");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected XTVERSION reply");
+        let text = std::str::from_utf8(&written).unwrap_or("<non-utf8>");
+        assert!(
+            text.contains("cairn "),
+            "reply should brand as cairn, got {text:?}"
+        );
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "reply should include the crate version, got {text:?}"
+        );
+        assert!(
+            !text.contains("libghostty"),
+            "default libghostty fingerprint leaked, got {text:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_xtversion_suppressed_when_subscriber_attached() {
+        let mut session = MockSession::new(default_opts());
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[>q");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn worker_on_size_answers_xtwinops_18t() {
+        let mut session = MockSession::new(sized_opts(132, 50));
+        session.feed(b"\x1b[18t");
+        let written = session
+            .recv_write(Duration::from_secs(1))
+            .await
+            .expect("expected XTWINOPS reply");
+        assert_eq!(written.as_ref(), b"\x1b[8;50;132t");
+    }
+
+    #[tokio::test]
+    async fn worker_on_size_suppressed_when_subscriber_attached() {
+        let mut session = MockSession::new(default_opts());
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[18t");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn worker_color_scheme_never_replies() {
+        let mut session = MockSession::new(default_opts());
+
+        session.feed(b"\x1b[?996n");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+
+        let _sub = session.pty.subscribe().await.expect("subscribe");
+        session.feed(b"\x1b[?996n");
+        session
+            .assert_no_write_within(Duration::from_millis(200))
+            .await;
+    }
 }
