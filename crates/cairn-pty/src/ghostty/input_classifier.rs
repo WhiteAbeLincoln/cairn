@@ -212,8 +212,22 @@ mod tests {
     }
 
     #[test]
+    fn x10_mouse_at_high_column_is_user_input() {
+        // X10 encodes button/col/row with a +32 offset. When all three
+        // coordinates exceed 95 (i.e. the encoded bytes are > 0x7F), vte
+        // dispatches each as execute() rather than print(), and none of
+        // those bytes match any execute() arm that sets `found = true`.
+        // The csi_dispatch for `([], 'M')` also falls through to `_ => {}`.
+        // Without the X10-specific pre-filter in is_user_input, this
+        // sequence would be incorrectly classified as non-user-input.
+        // e.g. button=100-32=68, col=100-32=68, row=100-32=68, all encoded as 0x84.
+        assert!(is_user_input(b"\x1b[M\x84\x84\x84"));
+    }
+
+    #[test]
     fn disjunctive_payload_promotes() {
         // Motion-only followed by 'a' — qualifies because 'a' qualifies.
         assert!(is_user_input(b"\x1b[<35;10;20Ma"));
     }
+
 }
