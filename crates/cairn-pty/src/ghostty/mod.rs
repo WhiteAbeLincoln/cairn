@@ -7,6 +7,7 @@
 //!
 //! [`PtySession`]: super::PtySession
 
+mod input_classifier;
 mod process;
 mod worker;
 
