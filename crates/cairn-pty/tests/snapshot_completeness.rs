@@ -472,3 +472,32 @@ async fn snapshot_preserves_scrolling_region() {
         "scrolling region not preserved (no `\\x1b[5;20r` in snapshot bytes)",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "kitty keyboard flags not preserved")]
+async fn snapshot_preserves_kitty_keyboard_flags() {
+    // Failure mode: Kitty keyboard protocol flags pushed via `CSI > <flags> u`
+    //   are not preserved across snapshot. Receiver reports default flags
+    //   (0) regardless of what the source pushed.
+    // Impact: Kitty-keyboard-aware programs (Helix, Neovim with kitty
+    //   keyboard, etc.) lose modifier disambiguation on the receiver;
+    //   Ctrl+key, Shift+key, and unmodified key all collapse into the
+    //   same sequence.
+    // Why this fails today: `extra.keyboard` is off (and `extra.screen.
+    //   kitty_keyboard` likewise), so the snapshot emits no Kitty
+    //   protocol push.
+    //
+    // Source pushes flags = 5 (disambiguate + report event types). The
+    // receiver should report kitty_keyboard_flags().bits() == 5.
+
+    let pty = spawn_raw_session().await;
+    let setup = b"\x1b[>5u_KKBD_SENT_";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"_KKBD_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    let flags = receiver.kitty_keyboard_flags().expect("kitty flags");
+    let bits = flags.bits();
+    assert!(
+        bits == 5,
+        "kitty keyboard flags not preserved (expected 5, got {bits})",
+    );
+}
