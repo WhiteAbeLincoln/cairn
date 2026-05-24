@@ -4,6 +4,7 @@ resolver = "3"
 package.version = "0.1.0"
 package.edition = "2024"
 package.rust-version = "1.93.0"
+package.authors = ["Abraham White <cairn@abewhite.dev>"]
 exclude = [".worktrees"]
 
 [workspace.dependencies]
