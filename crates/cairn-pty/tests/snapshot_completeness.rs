@@ -239,3 +239,76 @@ async fn snapshot_preserves_alt_screen_when_active() {
         "alt screen not active on receiver",
     );
 }
+
+#[tokio::test]
+async fn snapshot_does_not_leak_alt_screen_content_after_exit() {
+    // Failure mode: source enters alt screen, writes something, exits alt
+    //   screen, writes something on main. Snapshot may either (a) include
+    //   alt-screen content as if it were main-screen content, or (b)
+    //   re-emit it via a partial DECSET cycle, leaving a stale ALT_MARK
+    //   on the receiver's main buffer.
+    // Impact: scrollback / main-buffer content visible on the receiver
+    //   includes data the source never had on its main screen — a
+    //   correctness violation visible to the user as ghost text.
+    // Why this fails today: depends on what the current default formatter
+    //   emits when the source has both screens populated. Mirrors zmx's
+    //   round-trip test at `zmx/src/util.zig:1190-1209`.
+
+    let pty = spawn_raw_session().await;
+    let sub = write_setup_and_resubscribe(
+        &pty,
+        b"\x1b[?1049hALT_MARK\x1b[?1049lMAIN_MARK_SENT_",
+        b"MAIN_MARK_SENT_",
+    )
+    .await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+
+    use libghostty_vt::ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_PRIMARY as PRIMARY;
+    assert_eq!(
+        receiver.active_screen().expect("active screen"),
+        PRIMARY,
+        "receiver not on main screen after alt cycle",
+    );
+
+    // Scan the receiver's visible viewport for ALT_MARK. If found, that
+    // content has leaked from the source's alt buffer onto the receiver's
+    // main buffer.
+    let needle = b"ALT_MARK";
+    let mut leaked = false;
+    for y in 0..ROWS {
+        for x in 0..(COLS - needle.len() as u16) {
+            let mut window = Vec::with_capacity(needle.len());
+            for dx in 0..needle.len() as u16 {
+                // PointCoordinate has private fields; construct via the
+                // public ffi type and its From impl.
+                let coord = libghostty_vt::ffi::GhosttyPointCoordinate {
+                    x: x + dx,
+                    y: y as u32,
+                }
+                .into();
+                let p = libghostty_vt::terminal::Point::Viewport(coord);
+                let r = match receiver.grid_ref(p) {
+                    Ok(r) => r,
+                    Err(_) => break,
+                };
+                let cell = match r.cell() {
+                    Ok(c) => c,
+                    Err(_) => break,
+                };
+                let cp = cell.codepoint().unwrap_or(0);
+                window.push(cp as u8);
+            }
+            if window.as_slice() == needle {
+                leaked = true;
+                break;
+            }
+        }
+        if leaked {
+            break;
+        }
+    }
+    assert!(
+        !leaked,
+        "alt-screen content leaked into receiver main screen",
+    );
+}
