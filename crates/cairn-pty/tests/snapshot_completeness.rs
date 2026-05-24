@@ -558,3 +558,45 @@ async fn snapshot_does_not_leak_synchronized_output_mode() {
         "synchronized output (DECSET 2026) leaked into receiver — partial fix turned modes on without the toggle dance",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "cursor position not preserved with scrollback")]
+async fn snapshot_cursor_position_correct_with_scrollback() {
+    // Failure mode: when the source has scrollback (rows pushed out of the
+    //   active area), the snapshot interleaves scrollback rows + visible
+    //   rows without zmx's two-phase split (`\x1b[2J\x1b[H\x1b[0m` between
+    //   phases — see `zmx/src/util.zig:498-533`). Any CUP emitted at the
+    //   end lands relative to wherever the receiver's viewport ended up
+    //   after the scrollback rows pushed content down — not relative to
+    //   the source's intended row.
+    // Impact: this is the gnarliest case — the receiver's cursor is on
+    //   the wrong physical row, sometimes off the visible viewport
+    //   entirely, and subsequent text from the source lands in the wrong
+    //   place. Mirrors zmx's regression test at `util.zig:1097-1135`.
+    // Why this fails today: two-phase serialization is upstream-blocked
+    //   on `libghostty-vt 0.1.1`'s C ABI exposing a `Selection` parameter
+    //   to the formatter. Today the snapshot emits no CUP at all
+    //   (`extra.screen.cursor` is off), so the receiver's cursor lands
+    //   wherever the last cell write left it — which is essentially
+    //   guaranteed to be wrong.
+    //
+    // Setup: 48 rows of `lineNN\r\n` (2 × ROWS, enough to overflow into
+    //   scrollback), then CUP to row 5 col 10 (1-indexed; 0-indexed
+    //   (9, 4)), then sentinel `*` plus `\x08` to land cursor at (9, 4).
+
+    let pty = spawn_raw_session().await;
+    let mut setup = Vec::with_capacity(8 * 48 + 16);
+    for i in 0..48u32 {
+        setup.extend_from_slice(format!("line{i:02}\r\n").as_bytes());
+    }
+    setup.extend_from_slice(b"\x1b[5;10H*\x08");
+
+    let sub = write_setup_and_resubscribe(&pty, &setup, b"*").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    let cx = receiver.cursor_x().expect("cursor_x");
+    let cy = receiver.cursor_y().expect("cursor_y");
+    assert!(
+        cx == 9 && cy == 4,
+        "cursor position not preserved with scrollback (expected (9, 4), got ({cx}, {cy}))",
+    );
+}
