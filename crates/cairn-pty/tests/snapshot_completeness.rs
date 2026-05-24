@@ -51,7 +51,12 @@ async fn spawn_raw_session() -> GhosttyPty {
         .subscribe(ClientId::from_u64(0))
         .await
         .expect("subscribe for ready marker");
-    let _ = read_until_contains(&mut sub, READY_MARKER, READ_DEADLINE).await;
+    let buf = read_until_contains(&mut sub, READY_MARKER, READ_DEADLINE).await;
+    assert!(
+        windows_contain(&buf, READY_MARKER),
+        "harness: timed out waiting for __READY__ from raw-mode shell (stty or cat failed to start within {}s)",
+        READ_DEADLINE.as_secs(),
+    );
     drop(sub);
     pty
 }
@@ -110,7 +115,13 @@ async fn write_setup_and_resubscribe(
     pty.write(client, Bytes::copy_from_slice(setup))
         .await
         .expect("write setup bytes");
-    let _ = read_until_contains(&mut sub, sentinel, READ_DEADLINE).await;
+    let buf = read_until_contains(&mut sub, sentinel, READ_DEADLINE).await;
+    assert!(
+        windows_contain(&buf, sentinel),
+        "harness: timed out waiting for sentinel {:?} to echo back from session (write or echo path stalled within {}s)",
+        std::str::from_utf8(sentinel).unwrap_or("<non-utf8>"),
+        READ_DEADLINE.as_secs(),
+    );
     drop(sub);
     pty.subscribe(client).await.expect("resubscribe post-setup")
 }
