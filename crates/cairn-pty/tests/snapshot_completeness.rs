@@ -413,3 +413,25 @@ async fn snapshot_preserves_active_hyperlink() {
         "active hyperlink not preserved (cell at 0,0 has_hyperlink={has_link})",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "working directory not preserved")]
+async fn snapshot_preserves_working_directory() {
+    // Failure mode: OSC 7 (working-directory hint) is not preserved across
+    //   snapshot. Receiver's `pwd()` returns an empty string regardless of
+    //   what the source set.
+    // Impact: terminal integrations that use OSC 7 — "new tab here",
+    //   prompt PWD display, file-drop relative-path resolution — fail
+    //   silently on attach.
+    // Why this fails today: `extra.pwd` is off.
+
+    let pty = spawn_raw_session().await;
+    let setup = b"\x1b]7;file:///home/abe/projects\x1b\\_PWD_SENT_";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"_PWD_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    let pwd = receiver.pwd().expect("pwd query");
+    assert!(
+        pwd == "/home/abe/projects",
+        "working directory not preserved (got {pwd:?})",
+    );
+}
