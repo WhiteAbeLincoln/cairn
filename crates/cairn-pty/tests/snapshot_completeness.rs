@@ -531,22 +531,22 @@ async fn snapshot_preserves_charset_designation() {
 
 #[tokio::test]
 async fn snapshot_does_not_leak_synchronized_output_mode() {
-    // Tripwire: this test currently PASSES because `format_snapshot` emits
-    // no DECSET sequences at all (`extra.modes` is off), so the
-    // synchronized-output mode (DECSET 2026) the source is holding is
-    // simply absent from the snapshot — there's nothing to leak yet.
-    //
-    // It will start FAILING the moment a partial fix flips
-    // `extra.modes = true` without also implementing the toggle-off /
-    // restore dance that zmx performs at `util.zig:488-491`. zmx
-    // temporarily clears mode 2026 *before* formatting and restores it
-    // after, specifically because a client that attaches while 2026 is
-    // held will defer rendering until its local timeout fires — visible
-    // to the user as a blank or flickering screen on attach.
-    //
-    // Impact when it fires: every attach to a session whose program is
-    // mid-synchronized-update (modern TUIs that batch redraws) shows a
-    // blank screen until the receiver's 2026 timeout (typically 150ms).
+    // Tripwire: source pushes DECSET 2026 (synchronized output) without
+    //   ever resetting it. Today this test PASSES cleanly because
+    //   `format_snapshot` emits no DECSET sequences at all (`extra.modes`
+    //   is off), so the mode 2026 the source holds is simply absent from
+    //   the snapshot — there's nothing to leak yet.
+    // Impact: when this tripwire fires, every attach to a session whose
+    //   program is mid-synchronized-update (modern TUIs that batch
+    //   redraws) shows a blank or flickering screen until the receiver's
+    //   2026 timeout fires (typically 150ms) — a visible regression on
+    //   attach.
+    // What trips it: a partial fix that flips `extra.modes = true`
+    //   without also implementing zmx's toggle-off / restore dance
+    //   (`zmx/src/util.zig:488-491` — clear mode 2026 before formatting,
+    //   restore it after). The assertion below catches the receiver
+    //   ending up in synchronized-output mode by replaying the snapshot
+    //   bytes.
 
     let pty = spawn_raw_session().await;
     let setup = b"\x1b[?2026h_SYNCOUT_SENT_";
