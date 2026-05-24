@@ -312,3 +312,36 @@ async fn snapshot_does_not_leak_alt_screen_content_after_exit() {
         "alt-screen content leaked into receiver main screen",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "cursor position not preserved")]
+async fn snapshot_preserves_cursor_position() {
+    // Failure mode: CUP (`\x1b[<row>;<col>H`) is not preserved across
+    //   snapshot. Receiver's cursor lands wherever the printed content
+    //   ended, not at the source's saved CUP position.
+    // Impact: next keystroke from the reattaching client renders at the
+    //   wrong column — visible artifact in shell prompts mid-edit, in
+    //   readline command-line builders, and anywhere a TUI relies on
+    //   "current cursor is here".
+    // Why this fails today: `extra.screen.cursor` is off, so the snapshot
+    //   emits no CUP at all. Receiver cursor is wherever the last cell
+    //   write left it.
+    //
+    // Setup design: `hello`, advance two lines, CUP to (10, 20) (1-indexed),
+    //   print sentinel `*`, then `\b` so the source cursor lands at (9, 4)
+    //   when expressed as 0-indexed (col 19, row 9) — note: cursor_x is
+    //   COLUMN (0-indexed), cursor_y is ROW (0-indexed). `\b` rolls back
+    //   one column; without the sentinel + `\b` trick we'd have no
+    //   echo-able byte to wait on, so we synchronize then rewind.
+
+    let pty = spawn_raw_session().await;
+    let setup = b"hello\r\n\x1b[10;20H*\x08";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"*").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    let cx = receiver.cursor_x().expect("cursor_x");
+    let cy = receiver.cursor_y().expect("cursor_y");
+    assert!(
+        cx == 19 && cy == 9,
+        "cursor position not preserved (expected (19, 9), got ({cx}, {cy}))",
+    );
+}
