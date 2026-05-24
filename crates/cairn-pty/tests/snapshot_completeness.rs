@@ -345,3 +345,36 @@ async fn snapshot_preserves_cursor_position() {
         "cursor position not preserved (expected (19, 9), got ({cx}, {cy}))",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "current SGR style not preserved")]
+async fn snapshot_preserves_current_sgr_style() {
+    // Failure mode: the SGR attributes active at the source cursor (bold,
+    //   red, italic, …) are not preserved across snapshot. Receiver's
+    //   cursor sits with default style, so the next character printed
+    //   renders in default attributes instead of inheriting the active
+    //   style.
+    // Impact: visible artifact in shells where a colored prompt segment
+    //   ends with the cursor positioned mid-segment — next keystrokes
+    //   render in white-on-black instead of the intended color, and stay
+    //   that way until the program issues a fresh SGR.
+    // Why this fails today: `extra.screen.style` is off; the snapshot
+    //   emits no SGR-restoration sequence for the cursor.
+
+    let pty = spawn_raw_session().await;
+    // Bold + red FG, cursor home, sentinel (overwrites READY at top-left),
+    // then `\b` to leave cursor adjacent to the styled sentinel.
+    let setup = b"\x1b[1;31m\x1b[H_SGR_SENT_\x08";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"_SGR_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    let style = receiver.cursor_style().expect("cursor_style");
+
+    use libghostty_vt::style::{PaletteIndex, StyleColor};
+    let is_bold_red = style.bold && style.fg_color == StyleColor::Palette(PaletteIndex::RED);
+    assert!(
+        is_bold_red,
+        "current SGR style not preserved (bold={}, fg_color={:?})",
+        style.bold,
+        style.fg_color,
+    );
+}
