@@ -22,3 +22,4 @@ vte = "0.13"
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full", "test-util", "macros"] }
 tracing-test = "0.2"
+libghostty-vt = "0.1.1"
