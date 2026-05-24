@@ -528,3 +528,33 @@ async fn snapshot_preserves_charset_designation() {
         "charset designation not preserved (cell 0,0 codepoint {cp:#x}, expected 0x250c U+250C ┌)",
     );
 }
+
+#[tokio::test]
+async fn snapshot_does_not_leak_synchronized_output_mode() {
+    // Tripwire: this test currently PASSES because `format_snapshot` emits
+    // no DECSET sequences at all (`extra.modes` is off), so the
+    // synchronized-output mode (DECSET 2026) the source is holding is
+    // simply absent from the snapshot — there's nothing to leak yet.
+    //
+    // It will start FAILING the moment a partial fix flips
+    // `extra.modes = true` without also implementing the toggle-off /
+    // restore dance that zmx performs at `util.zig:488-491`. zmx
+    // temporarily clears mode 2026 *before* formatting and restores it
+    // after, specifically because a client that attaches while 2026 is
+    // held will defer rendering until its local timeout fires — visible
+    // to the user as a blank or flickering screen on attach.
+    //
+    // Impact when it fires: every attach to a session whose program is
+    // mid-synchronized-update (modern TUIs that batch redraws) shows a
+    // blank screen until the receiver's 2026 timeout (typically 150ms).
+
+    let pty = spawn_raw_session().await;
+    let setup = b"\x1b[?2026h_SYNCOUT_SENT_";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"_SYNCOUT_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    let leaked = receiver.mode(Mode::SYNC_OUTPUT).expect("mode query");
+    assert!(
+        !leaked,
+        "synchronized output (DECSET 2026) leaked into receiver — partial fix turned modes on without the toggle dance",
+    );
+}
