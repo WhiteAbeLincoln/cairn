@@ -242,16 +242,16 @@ async fn snapshot_preserves_alt_screen_when_active() {
 
 #[tokio::test]
 async fn snapshot_does_not_leak_alt_screen_content_after_exit() {
-    // Failure mode: source enters alt screen, writes something, exits alt
-    //   screen, writes something on main. Snapshot may either (a) include
-    //   alt-screen content as if it were main-screen content, or (b)
-    //   re-emit it via a partial DECSET cycle, leaving a stale ALT_MARK
+    // Tripwire: source enters alt screen, writes ALT_MARK, exits alt screen,
+    //   then writes MAIN_MARK_SENT_ on main. A buggy snapshot formatter could
+    //   (a) include alt-screen content as if it were main-screen content, or
+    //   (b) re-emit it via a partial DECSET cycle, leaving a stale ALT_MARK
     //   on the receiver's main buffer.
     // Impact: scrollback / main-buffer content visible on the receiver
     //   includes data the source never had on its main screen — a
     //   correctness violation visible to the user as ghost text.
-    // Why this fails today: depends on what the current default formatter
-    //   emits when the source has both screens populated. Mirrors zmx's
+    // What trips it: any change to `format_snapshot` that causes alt-buffer
+    //   content to bleed into the main-buffer rendering path. Mirrors zmx's
     //   round-trip test at `zmx/src/util.zig:1190-1209`.
 
     let pty = spawn_raw_session().await;
