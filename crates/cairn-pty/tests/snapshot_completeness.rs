@@ -186,3 +186,23 @@ async fn snapshot_preserves_application_cursor_keys() {
         "application cursor keys mode not preserved",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "focus event mode not preserved")]
+async fn snapshot_preserves_focus_event_mode() {
+    // Failure mode: DECSET 1004 (focus events) is not preserved across
+    //   snapshot.
+    // Impact: programs that watch for FocusIn / FocusOut (`\x1b[I` / `\x1b[O`)
+    //   — e.g., vim's `:autoread`, tmux session activity tracking — miss
+    //   focus transitions on the reattaching client because mode 1004 is
+    //   not active on the receiver.
+    // Why this fails today: same as #1 — `extra.modes` is off.
+
+    let pty = spawn_raw_session().await;
+    let sub = write_setup_and_resubscribe(&pty, b"\x1b[?1004h_FOCUS_SENT_", b"_FOCUS_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    assert!(
+        receiver.mode(Mode::FOCUS_EVENT).expect("mode query"),
+        "focus event mode not preserved",
+    );
+}
