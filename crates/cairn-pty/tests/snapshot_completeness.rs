@@ -378,3 +378,38 @@ async fn snapshot_preserves_current_sgr_style() {
         style.fg_color,
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "active hyperlink not preserved")]
+async fn snapshot_preserves_active_hyperlink() {
+    // Failure mode: an OSC 8 hyperlink open mid-stream (no closing
+    //   `\x1b]8;;\x1b\\`) at snapshot time is not preserved. Cells printed
+    //   to the receiver after attach lose their hyperlink annotation.
+    // Impact: link-aware terminals show the linked text as plain text
+    //   after attach; clicks no longer open the URL.
+    // Why this fails today: `extra.screen.hyperlink` is off and
+    //   `extra.modes` (which would emit any required mode state) is also
+    //   off. The snapshot emits no OSC 8 sequence to re-open the link.
+    //
+    // Readback: we print a sentinel character INSIDE the open link and
+    // inspect that cell on the receiver via grid_ref → cell.has_hyperlink().
+
+    let pty = spawn_raw_session().await;
+    // CUP home, open hyperlink, print one char inside the link, leave the
+    // link open. `LINK_SENT_` is used as the readback marker.
+    let setup = b"\x1b[H\x1b]8;;https://example.com\x1b\\LINK_SENT_";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"LINK_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+
+    // The sentinel was printed from (0, 0). Inspect cell (0, 0) — its
+    // codepoint should be 'L' and it should carry a hyperlink.
+    let coord = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 0u32 }.into();
+    let p = libghostty_vt::terminal::Point::Viewport(coord);
+    let gref = receiver.grid_ref(p).expect("grid_ref");
+    let cell = gref.cell().expect("cell");
+    let has_link = cell.has_hyperlink().unwrap_or(false);
+    assert!(
+        has_link,
+        "active hyperlink not preserved (cell at 0,0 has_hyperlink={has_link})",
+    );
+}
