@@ -164,3 +164,25 @@ async fn snapshot_preserves_bracketed_paste_mode() {
         "bracketed paste not preserved",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "application cursor keys mode not preserved")]
+async fn snapshot_preserves_application_cursor_keys() {
+    // Failure mode: DECSET 1 (DECCKM, application cursor keys) is not
+    //   preserved across snapshot.
+    // Impact: DECCKM controls whether the arrow keys send `\x1bOA`/`B`/`C`/`D`
+    //   (application mode) or `\x1b[A`/`B`/`C`/`D` (normal mode). TUIs like
+    //   vim and readline-based shells switch into application mode on entry;
+    //   if a client attaches afterward, arrow keys send the wrong sequences
+    //   and cursor movement misbehaves.
+    // Why this fails today: same as #1 — `extra.modes` is off so the
+    //   snapshot emits no DECSET sequence.
+
+    let pty = spawn_raw_session().await;
+    let sub = write_setup_and_resubscribe(&pty, b"\x1b[?1h_DECCKM_SENT_", b"_DECCKM_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+    assert!(
+        receiver.mode(Mode::DECCKM).expect("mode query"),
+        "application cursor keys mode not preserved",
+    );
+}
