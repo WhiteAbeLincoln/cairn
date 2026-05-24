@@ -487,8 +487,8 @@ async fn snapshot_preserves_kitty_keyboard_flags() {
     //   kitty_keyboard` likewise), so the snapshot emits no Kitty
     //   protocol push.
     //
-    // Source pushes flags = 5 (disambiguate + report event types). The
-    // receiver should report kitty_keyboard_flags().bits() == 5.
+    // Source pushes flags = 5 = DISAMBIGUATE (bit 0) | REPORT_ALTERNATES
+    //   (bit 2). Receiver should report kitty_keyboard_flags().bits() == 5.
 
     let pty = spawn_raw_session().await;
     let setup = b"\x1b[>5u_KKBD_SENT_";
