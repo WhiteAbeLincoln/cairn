@@ -437,76 +437,38 @@ async fn snapshot_preserves_working_directory() {
 }
 
 #[tokio::test]
+#[should_panic(expected = "scrolling region not preserved")]
 async fn snapshot_preserves_scrolling_region() {
-    // Tripwire: DECSTBM (`\x1b[<top>;<bot>r`) scroll-region preservation.
-    //   This test PASSES today (the behavioral probe shows the region is
-    //   honored on the receiver), but is retained as a tripwire so any
-    //   future regression that breaks DECSTBM round-trip surfaces
-    //   immediately rather than silently.
+    // Failure mode: DECSTBM (`\x1b[<top>;<bot>r`) — the top/bottom scroll
+    //   margins — is not preserved across snapshot. Receiver has the
+    //   default full-screen scroll region regardless of source state.
+    // Impact: TUIs that set a scroll region for a "status bar at bottom"
+    //   layout (e.g., older mc/htop variants) clobber the status row on
+    //   the receiver — content scrolls past it instead of being held
+    //   below the region.
+    // Why this fails today: `extra.scrolling_region` is off, so the
+    //   snapshot emits no DECSTBM sequence at all.
     //
-    // Readback strategy: libghostty-vt 0.1.1's safe API doesn't expose
-    // the active scroll region directly. We probe behaviorally — print
-    // `(rows - 5)` newlines after positioning inside what *should* be
-    // the scroll region. If the region is honored, content scrolls within
-    // rows 5..=20; if not, content scrolls across the whole screen and
-    // line 21+ shows up. After replay, we check that the source's setup
-    // sequence's effects survived by reading the cell at row 4 col 0 —
-    // it should be empty because the scroll region top is at row 5.
+    // Readback strategy: behavioral probing of DECSTBM via grid_ref turned
+    // out to be non-discriminating (row 4 col 0 stays empty whether or not
+    // the region was preserved, because both branches scroll only at the
+    // viewport-bottom edge). Fall back to byte-pattern matching on the
+    // snapshot — explicitly allowed by the spec for tests where state
+    // readback cannot distinguish the two cases. This directly tests "did
+    // format_snapshot emit a DECSTBM sequence with top=5, bottom=20" rather
+    // than the receiver's resulting behavior. When the gap is closed, the
+    // snapshot will contain `\x1b[5;20r` and the assertion will start
+    // succeeding.
 
     let pty = spawn_raw_session().await;
-    // DECSTBM(5,20), then print sentinel at row 5 col 0 via CUP, then go
-    // to the bottom of the region and emit several LF to force scrolling
-    // inside the region. After the scroll, the cell at row 4 col 0
-    // (outside the region) MUST still be the post-READY space if the
-    // region was honored.
-    let setup = b"\x1b[5;20r\x1b[5;1H_REGION_SENT_\x1b[20;1H\n\n\n\n\n";
+    // DECSTBM(5,20), then sentinel for the sync wait. We don't need any
+    // further state on the source — the question is purely "does this
+    // sequence survive into the snapshot bytes?".
+    let setup = b"\x1b[5;20r_REGION_SENT_";
     let sub = write_setup_and_resubscribe(&pty, setup, b"_REGION_SENT_").await;
-    let receiver = replay_into_receiver(&sub.snapshot);
-
-    // If the snapshot preserved DECSTBM, replaying it onto the receiver
-    // will replay the scroll region too. We then issue ONE more LF
-    // through the receiver and watch where the scroll happens: with the
-    // region honored, row 4 stays untouched. Probe by writing an LF and
-    // re-checking via grid_ref that row 4 col 0 is still its original
-    // codepoint.
-    let coord_before = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 3u32 }.into();
-    let p_before = libghostty_vt::terminal::Point::Viewport(coord_before);
-    let before_cp = receiver
-        .grid_ref(p_before)
-        .expect("grid_ref before")
-        .cell()
-        .expect("cell before")
-        .codepoint()
-        .unwrap_or(0);
-
-    // We can't mutate the receiver after construction here without &mut,
-    // so make a fresh receiver and re-feed the snapshot followed by a
-    // single CUP+LF probe to force-scroll inside-or-outside the region.
-    let mut probe = libghostty_vt::Terminal::new(libghostty_vt::TerminalOptions {
-        cols: COLS,
-        rows: ROWS,
-        max_scrollback: 1000,
-    })
-    .expect("probe receiver");
-    probe.vt_write(&sub.snapshot);
-    // Position at bottom of intended region and emit a scroll-trigger LF.
-    probe.vt_write(b"\x1b[20;1H\n");
-    let coord_after = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 3u32 }.into();
-    let p_after = libghostty_vt::terminal::Point::Viewport(coord_after);
-    let after_cp = probe
-        .grid_ref(p_after)
-        .expect("grid_ref after")
-        .cell()
-        .expect("cell after")
-        .codepoint()
-        .unwrap_or(0);
-
-    // If the region was honored on the receiver, row 4 (y=3) is OUTSIDE
-    // the [5..20] region and should not have been disturbed by the
-    // extra LF. Equality means the region was preserved; inequality
-    // means it wasn't.
+    let snapshot_has_decstbm = windows_contain(&sub.snapshot, b"\x1b[5;20r");
     assert!(
-        before_cp == after_cp,
-        "scrolling region not preserved (row 4 col 0 changed: {before_cp:#x} → {after_cp:#x})",
+        snapshot_has_decstbm,
+        "scrolling region not preserved (no `\\x1b[5;20r` in snapshot bytes)",
     );
 }
