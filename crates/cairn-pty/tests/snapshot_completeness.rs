@@ -501,3 +501,30 @@ async fn snapshot_preserves_kitty_keyboard_flags() {
         "kitty keyboard flags not preserved (expected 5, got {bits})",
     );
 }
+
+#[tokio::test]
+async fn snapshot_preserves_charset_designation() {
+    // Tripwire: G0 character set designation (`\x1b(0` for DEC special
+    //   graphics) is preserved across snapshot — receiver cell (0, 0)
+    //   shows U+250C (┌) not ASCII 'l' (0x6c).
+    // Impact: TUIs using box-drawing for borders (mc, ncurses dialogs,
+    //   classic htop) render correctly on the receiver.
+    // What trips it: any change to `format_snapshot` that drops
+    //   `extra.screen.charsets` or the G0 designation sequence, causing
+    //   the receiver to display ASCII letters instead of line-drawing
+    //   characters.
+
+    let pty = spawn_raw_session().await;
+    let setup = b"\x1b[H\x1b(0lqqqk_CHARSET_SENT_";
+    let sub = write_setup_and_resubscribe(&pty, setup, b"_CHARSET_SENT_").await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+
+    let coord = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 0u32 }.into();
+    let p = libghostty_vt::terminal::Point::Viewport(coord);
+    let cell = receiver.grid_ref(p).expect("grid_ref").cell().expect("cell");
+    let cp = cell.codepoint().unwrap_or(0);
+    assert!(
+        cp == 0x250c,
+        "charset designation not preserved (cell 0,0 codepoint {cp:#x}, expected 0x250c U+250C ┌)",
+    );
+}
