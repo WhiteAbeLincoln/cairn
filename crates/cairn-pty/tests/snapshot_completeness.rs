@@ -206,3 +206,36 @@ async fn snapshot_preserves_focus_event_mode() {
         "focus event mode not preserved",
     );
 }
+
+#[tokio::test]
+#[should_panic(expected = "alt screen not active on receiver")]
+async fn snapshot_preserves_alt_screen_when_active() {
+    // Failure mode: when the source is in the alternate screen (DECSET
+    //   1049) at snapshot time, the snapshot does NOT switch the receiver
+    //   into the alt screen. The alt-screen content is rendered onto the
+    //   receiver's MAIN screen instead, irreversibly corrupting it.
+    // Impact: catastrophic for the common case of "vim / htop is running
+    //   when a new client attaches" — the receiver's main-screen buffer
+    //   gets overwritten with the alt-screen rendering, and when the
+    //   program later exits alt-screen (DECRST 1049) on the live stream,
+    //   the receiver swaps to a now-empty main screen (no shell scrollback,
+    //   no prompt).
+    // Why this fails today: `extra.modes` is off, so the snapshot never
+    //   contains `\x1b[?1049h`. The receiver stays on its main screen.
+
+    let pty = spawn_raw_session().await;
+    let sub = write_setup_and_resubscribe(
+        &pty,
+        b"\x1b[?1049hALT_VISIBLE_SENT_",
+        b"ALT_VISIBLE_SENT_",
+    )
+    .await;
+    let receiver = replay_into_receiver(&sub.snapshot);
+
+    use libghostty_vt::ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE as ALTERNATE;
+    assert_eq!(
+        receiver.active_screen().expect("active screen"),
+        ALTERNATE,
+        "alt screen not active on receiver",
+    );
+}
