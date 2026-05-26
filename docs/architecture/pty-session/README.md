@@ -111,7 +111,7 @@ In approximate dependency order:
 2. ~~**Multi-client semantics** — extend `Subscribe` with a client identity, track leader by most-recent input, gate resize to leader-only ([[client-attach-and-election]]).~~ **Done.** See spec `docs/superpowers/specs/2026-05-22-pty-multi-client-semantics-design.md`.
 3. **Snapshot completeness** — port zmx's two-phase serialization with full `FormatterTerminalExtra` ([[terminal-state-and-replay]]).
 4. **Daemon binary** — HTTP+WebSocket listener, session registry, routing layer between client connections and per-session workers ([[daemon-process-model]], [[internal-communication]]).
-5. **Wire protocol** — binary WebSocket frames with msgpack body and a one-byte version prefix; message types Hello/Welcome/Attach/Snapshot/Output/Input/Resize/Ping/Pong/Error/Bye/Detach ([[external-protocol]]).
+5. ~~**Wire protocol** — wRPC over a `cairn:daemon@0.1.0` WIT schema; transports are Unix Domain Socket (local) and WebTransport (remote, browser and CLI).~~ **Done.** See spec `docs/superpowers/specs/2026-05-26-daemon-protocol-design.md` and crate `crates/cairn-protocol/`. (Daemon binary and per-transport listener wiring remain — items 4, 6, 9 below.)
 6. **Authentication** — bearer-token + Origin checks; Unix socket fallback ([[authentication]]).
 7. **CLI client binary** — termios raw mode, Ctrl+\ detach detection, SIGWINCH propagation, signal forwarding ([[web-vs-cli-clients]]).
 8. **Backpressure policy** — per-client transport backpressure via `Sink::poll_ready`, lag → close → reconnect-with-snapshot ([[backpressure]]).
