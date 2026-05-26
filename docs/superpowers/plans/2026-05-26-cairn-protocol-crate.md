@@ -6,7 +6,7 @@
 
 **Architecture:** New workspace crate at `crates/cairn-protocol/`. A single WIT package (`cairn:daemon@0.1.0`) covers the `types`, `sessions`, and `meta` interfaces from `docs/superpowers/specs/2026-05-26-daemon-protocol-design.md`. The `wit_bindgen_wrpc::generate!{}` procedural macro produces Rust traits and client functions at compile time. The crate's `tests/round_trip.rs` spawns a stub wRPC server on a tempdir Unix domain socket, connects with the wRPC unix client, and asserts that representative operations round-trip values cleanly. The stub server lives in test code only — production daemon implementation is the next plan.
 
-**Tech Stack:** Rust 2024 (edition matches workspace), Tokio (current-thread suffices for tests), `wit-bindgen-wrpc` 0.11, `wrpc-transport` 0.29 (with `net` feature for Unix sockets), `anyhow` 1, `tempfile` 3, `tokio` 1, `futures` 0.3, `cargo-nextest` for running tests.
+**Tech Stack:** Rust 2024 (edition matches workspace), Tokio (current-thread suffices for tests), `wit-bindgen-wrpc` 0.10 (latest published on crates.io as of 2026-05-26), `wrpc-transport` 0.28 (latest published; `net` feature for Unix sockets), `anyhow` 1, `tempfile` 3, `tokio` 1, `futures` 0.3, `cargo-nextest` for running tests.
 
 **Out of scope for this plan (future plans):**
 - The `cairn-daemon` binary, session registry, real handler implementations.
@@ -65,8 +65,8 @@ anyhow = { version = "1", default-features = false, features = ["std"] }
 bytes = { version = "1", default-features = false }
 futures = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
-wit-bindgen-wrpc = { version = "0.11", default-features = false }
-wrpc-transport = { version = "0.29", default-features = false, features = ["net"] }
+wit-bindgen-wrpc = { version = "0.10", default-features = false }
+wrpc-transport = { version = "0.28", default-features = false, features = ["net"] }
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }
