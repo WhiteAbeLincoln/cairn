@@ -187,6 +187,22 @@ impl super::PtySession for GhosttyPty {
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
     }
+
+    async fn signal(&self, sig: i32) -> Result<(), PtyError> {
+        GhosttyPty::signal(self, sig).await
+    }
+
+    async fn inject(&self, data: bytes::Bytes) -> Result<(), PtyError> {
+        GhosttyPty::inject(self, data).await
+    }
+
+    async fn wait(&self) -> crate::ExitStatus {
+        GhosttyPty::wait(self).await
+    }
+
+    fn try_exit_status(&self) -> Option<crate::ExitStatus> {
+        GhosttyPty::try_exit_status(self)
+    }
 }
 
 impl Drop for GhosttyPty {

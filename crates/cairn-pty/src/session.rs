@@ -1,6 +1,6 @@
 use bytes::Bytes;
 
-use super::{ClientId, PtyError, Subscription, TermSize};
+use super::{ClientId, ExitStatus, PtyError, Subscription, TermSize};
 
 /// A live pseudo-terminal session wrapping a child process.
 ///
@@ -34,4 +34,18 @@ pub trait PtySession: Send + Sync {
     /// tasks serialize at byte boundaries via the session's command
     /// channel.
     async fn write(&self, client_id: ClientId, data: Bytes) -> Result<(), PtyError>;
+
+    /// Deliver a signal (libc number) to the child's process group. Not
+    /// leader-gated. `Ok(())` if the child has already exited.
+    async fn signal(&self, sig: i32) -> Result<(), PtyError>;
+
+    /// Write bytes to the PTY with no client identity and no leader
+    /// promotion. Backs `cairn send`.
+    async fn inject(&self, data: Bytes) -> Result<(), PtyError>;
+
+    /// Resolve when the child exits, returning status + exit timestamp.
+    async fn wait(&self) -> ExitStatus;
+
+    /// Non-blocking peek at exit state; `None` while running.
+    fn try_exit_status(&self) -> Option<ExitStatus>;
 }
