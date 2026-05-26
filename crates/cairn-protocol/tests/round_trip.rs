@@ -448,3 +448,162 @@ async fn sessions_list_all_round_trips_two_entries_with_optional_fields() {
     assert!(result[1].spec.idle_timeout_secs.is_none());
     assert_eq!(result[1].spec.scrollback_lines, 1000);
 }
+
+#[tokio::test]
+async fn meta_authenticate_round_trips_error_variant() {
+    #[derive(Clone)]
+    struct Stub;
+
+    impl bindings::exports::cairn::daemon::meta::Handler<tokio::net::unix::SocketAddr> for Stub {
+        async fn authenticate(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            token: String,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            if token == "valid-token" {
+                Ok(Ok(()))
+            } else {
+                Ok(Err(bindings::cairn::daemon::types::Error {
+                    code: "auth.invalid_token".to_string(),
+                    message: "supplied token did not match".to_string(),
+                }))
+            }
+        }
+
+        async fn whoami(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+        ) -> anyhow::Result<Result<String, bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn version(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+        ) -> anyhow::Result<bindings::exports::cairn::daemon::meta::VersionInfo> {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
+        async fn list_all(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+        ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn inspect(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+        ) -> anyhow::Result<Result<bindings::cairn::daemon::types::SessionInfo, bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn create(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _spec: bindings::cairn::daemon::types::SessionSpec,
+        ) -> anyhow::Result<Result<bindings::cairn::daemon::types::SessionInfo, bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn rename(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _new_name: String,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn restart(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _force: bool,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn kill(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _sig: bindings::cairn::daemon::types::Signal,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn kick(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _client: Option<String>,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn wait(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+        ) -> anyhow::Result<std::pin::Pin<Box<dyn std::future::Future<Output = bindings::cairn::daemon::types::ExitStatus> + Send + 'static>>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn logs(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _window: bindings::cairn::daemon::types::LogWindow,
+            _follow: bool,
+        ) -> anyhow::Result<std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn attach(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _init: bindings::cairn::daemon::types::AttachInit,
+            _events: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ClientEvent>> + Send + 'static>>,
+        ) -> anyhow::Result<std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ServerEvent>> + Send + 'static>>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn send(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    let harness = spawn_server(Stub).await.expect("spawn_server");
+
+    // Success path.
+    let ok = bindings::client::cairn::daemon::meta::authenticate(
+        &harness.unix_client(),
+        (),
+        "valid-token",
+    )
+    .await
+    .expect("authenticate invocation (ok)");
+    assert!(ok.is_ok(), "expected Ok(_), got {ok:?}");
+
+    // Failure path.
+    let err = bindings::client::cairn::daemon::meta::authenticate(
+        &harness.unix_client(),
+        (),
+        "wrong-token",
+    )
+    .await
+    .expect("authenticate invocation (err)");
+    let err = err.expect_err("expected error variant");
+    assert_eq!(err.code, "auth.invalid_token");
+    assert_eq!(err.message, "supplied token did not match");
+}
