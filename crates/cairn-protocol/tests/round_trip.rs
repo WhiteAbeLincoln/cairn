@@ -181,6 +181,7 @@ async fn meta_version_round_trips_record_fields() {
             _ctx: tokio::net::unix::SocketAddr,
             _id: String,
             _sig: bindings::cairn::daemon::types::Signal,
+            _grace_ms: Option<u32>,
         ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
             unimplemented!("not exercised by this test")
         }
@@ -323,6 +324,7 @@ async fn sessions_list_all_round_trips_two_entries_with_optional_fields() {
             _ctx: tokio::net::unix::SocketAddr,
             _id: String,
             _sig: bindings::cairn::daemon::types::Signal,
+            _grace_ms: Option<u32>,
         ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
             unimplemented!("not exercised by this test")
         }
@@ -532,6 +534,7 @@ async fn meta_authenticate_round_trips_error_variant() {
             _ctx: tokio::net::unix::SocketAddr,
             _id: String,
             _sig: bindings::cairn::daemon::types::Signal,
+            _grace_ms: Option<u32>,
         ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
             unimplemented!("not exercised by this test")
         }
@@ -606,4 +609,153 @@ async fn meta_authenticate_round_trips_error_variant() {
     let err = err.expect_err("expected error variant");
     assert_eq!(err.code, "auth.invalid_token");
     assert_eq!(err.message, "supplied token did not match");
+}
+
+#[tokio::test]
+async fn sessions_kill_round_trips_grace_ms() {
+    #[derive(Clone)]
+    struct Stub;
+
+    impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
+        async fn kill(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            id: String,
+            sig: bindings::cairn::daemon::types::Signal,
+            grace_ms: Option<u32>,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            let named = matches!(sig, bindings::cairn::daemon::types::Signal::Named(_));
+            Ok(Err(bindings::cairn::daemon::types::Error {
+                code: "echo".to_string(),
+                message: format!("id={id} named={named} grace={grace_ms:?}"),
+            }))
+        }
+
+        async fn list_all(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+        ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn inspect(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+        ) -> anyhow::Result<Result<bindings::cairn::daemon::types::SessionInfo, bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn create(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _spec: bindings::cairn::daemon::types::SessionSpec,
+        ) -> anyhow::Result<Result<bindings::cairn::daemon::types::SessionInfo, bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn rename(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _new_name: String,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn restart(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _force: bool,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn kick(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _client: Option<String>,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn wait(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+        ) -> anyhow::Result<std::pin::Pin<Box<dyn std::future::Future<Output = bindings::cairn::daemon::types::ExitStatus> + Send + 'static>>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn logs(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _window: bindings::cairn::daemon::types::LogWindow,
+            _follow: bool,
+        ) -> anyhow::Result<std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn attach(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _init: bindings::cairn::daemon::types::AttachInit,
+            _events: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ClientEvent>> + Send + 'static>>,
+        ) -> anyhow::Result<std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ServerEvent>> + Send + 'static>>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn send(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _id: String,
+            _chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    impl bindings::exports::cairn::daemon::meta::Handler<tokio::net::unix::SocketAddr> for Stub {
+        async fn authenticate(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+            _token: String,
+        ) -> anyhow::Result<Result<(), bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn whoami(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+        ) -> anyhow::Result<Result<String, bindings::cairn::daemon::types::Error>> {
+            unimplemented!("not exercised by this test")
+        }
+
+        async fn version(
+            &self,
+            _ctx: tokio::net::unix::SocketAddr,
+        ) -> anyhow::Result<bindings::exports::cairn::daemon::meta::VersionInfo> {
+            unimplemented!("not exercised by this test")
+        }
+    }
+
+    let harness = spawn_server(Stub).await.expect("spawn_server");
+    let sig = bindings::cairn::daemon::types::Signal::Named(
+        bindings::cairn::daemon::types::SignalName::Term,
+    );
+    let res = bindings::client::cairn::daemon::sessions::kill(
+        &harness.unix_client(),
+        (),
+        "dev",
+        &sig,
+        Some(5000u32),
+    )
+    .await
+    .expect("kill invocation");
+    let err = res.expect_err("stub echoes via Err");
+    assert_eq!(err.message, "id=dev named=true grace=Some(5000)");
 }

@@ -89,7 +89,7 @@ interface sessions {
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;
     restart: func(id: session-id, force: bool) -> result<_, error>;
-    kill:    func(id: session-id, sig: signal) -> result<_, error>;
+    kill:    func(id: session-id, sig: signal, grace-ms: option<u32>) -> result<_, error>;
     kick:    func(id: session-id, client: option<client-id>) -> result<_, error>;
 
     wait:    func(id: session-id) -> future<exit-status>;
