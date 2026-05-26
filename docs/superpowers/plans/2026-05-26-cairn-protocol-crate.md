@@ -243,11 +243,20 @@ world daemon {
     export sessions;
     export meta;
 }
+
+// `wit-bindgen-wrpc` only generates client-invocation free functions for
+// `import`ed interfaces, so a separate world is needed to produce the
+// client-side API used by tests and the CLI.
+world daemon-client {
+    import sessions;
+    import meta;
+}
 ```
 
 Notes vs the spec sketch:
 - The spec used `signal: signal` as a parameter name inside the `kill` signature; `signal` is a reserved-feeling name in many languages and clashes with the type. Renamed the parameter to `sig`.
 - `meta` interface now imports `error` from `types`, since `authenticate` and `whoami` both reference it.
+- A `daemon-client` world was added so the wRPC macro emits client-invocation free functions (the macro only generates those for `import`ed interfaces, not `export`ed ones).
 
 - [ ] **Step 2: Verify the file parses (no compile-time check yet; we add codegen in Task 3)**
 
@@ -533,7 +542,7 @@ async fn meta_version_round_trips_record_fields() {
         // `Pin<Box<dyn Stream<Item = ...> + Send>>` and similar.
         // The pattern is documented in
         // /Users/abe/Projects/wrpc/examples/rust/streams-quic-server/src/main.rs:43-50.
-        async fn list(
+        async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,
         ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
@@ -651,7 +660,7 @@ async fn sessions_list_round_trips_two_entries_with_optional_fields() {
     struct Stub;
 
     impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
-        async fn list(
+        async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,
         ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
@@ -786,7 +795,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     }
 
     impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
-        async fn list(
+        async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,
         ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {

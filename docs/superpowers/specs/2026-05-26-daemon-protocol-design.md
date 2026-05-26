@@ -147,7 +147,7 @@ interface sessions {
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;
     restart: func(id: session-id, force: bool) -> result<_, error>;
-    kill:    func(id: session-id, signal: signal) -> result<_, error>;
+    kill:    func(id: session-id, sig: signal) -> result<_, error>;
     kick:    func(id: session-id, client: option<client-id>) -> result<_, error>;
 
     /// Resolves when the session exits.
@@ -169,6 +169,8 @@ interface sessions {
 }
 
 interface meta {
+    use types.{error};
+
     record version-info {
         daemon: string,
         protocol: string,    // "cairn:daemon@0.1.0"
