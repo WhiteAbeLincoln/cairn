@@ -16,8 +16,6 @@ use tokio::sync::oneshot;
 
 use super::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
-pub use worker::ExitStatus;
-
 /// Commands the public API sends to the session worker thread.
 pub(crate) enum Command {
     Subscribe {
@@ -50,7 +48,7 @@ pub(crate) enum Command {
 /// Construct via [`GhosttyPty::spawn`]. Send + Sync — share across tasks.
 pub struct GhosttyPty {
     cmd_tx: flume::Sender<Command>,
-    exit_rx: tokio::sync::watch::Receiver<Option<ExitStatus>>,
+    exit_rx: tokio::sync::watch::Receiver<Option<crate::ExitStatus>>,
 }
 
 impl GhosttyPty {
@@ -86,7 +84,7 @@ impl GhosttyPty {
     /// Wait for the child to exit. Returns the exit status.
     ///
     /// Multiple calls are safe; all resolve once the child exits.
-    pub async fn wait(&self) -> ExitStatus {
+    pub async fn wait(&self) -> crate::ExitStatus {
         let mut rx = self.exit_rx.clone();
         loop {
             if let Some(status) = *rx.borrow() {
@@ -98,7 +96,8 @@ impl GhosttyPty {
             // before publishing, the borrow is None — fall back to a
             // synthetic failing status so callers don't see a phantom success.
             if rx.changed().await.is_err() {
-                return (*rx.borrow()).unwrap_or_else(|| worker::synthetic_exit_status(1));
+                return (*rx.borrow())
+                    .unwrap_or_else(|| crate::ExitStatus::synthetic(1, crate::types::now_unix_ms()));
             }
         }
     }

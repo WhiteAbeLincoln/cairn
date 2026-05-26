@@ -11,8 +11,7 @@ mod types;
 
 pub use client_id::ClientId;
 pub use error::PtyError;
-pub use ghostty::ExitStatus;
 pub use ghostty::GhosttyPty;
 pub use session::PtySession;
 pub use subscription::Subscription;
-pub use types::{SpawnOptions, TermSize};
+pub use types::{ExitStatus, SpawnOptions, TermSize};

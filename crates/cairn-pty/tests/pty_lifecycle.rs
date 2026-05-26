@@ -80,6 +80,31 @@ async fn drop_kills_running_child() {
 }
 
 #[tokio::test]
+async fn wait_returns_status_with_code_and_timestamp() {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg("exit 7");
+    let pty = GhosttyPty::spawn(SpawnOptions::new(cmd)).expect("spawn");
+
+    let before = now_ms();
+    let status = pty.wait().await;
+    let after = now_ms();
+
+    assert_eq!(status.code(), Some(7));
+    assert!(
+        status.unix_ms() >= before && status.unix_ms() <= after,
+        "exit timestamp {} not within [{before}, {after}]",
+        status.unix_ms()
+    );
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[tokio::test]
 async fn write_after_exit_returns_closed() {
     use std::time::Duration;
 
