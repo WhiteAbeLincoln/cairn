@@ -1,0 +1,125 @@
+package cairn:daemon@0.1.0;
+
+interface types {
+    type session-id = string;     // UUIDv7
+    type client-id = string;
+
+    record session-spec {
+        name: option<string>,
+        command: list<string>,
+        env: list<tuple<string, string>>,
+        env-inherit: bool,
+        workdir: option<string>,
+        tty: bool,
+        stdin: bool,
+        idle-timeout-secs: option<u64>,
+        scrollback-lines: u32,
+    }
+
+    record session-info {
+        id: session-id,
+        name: option<string>,
+        pid: option<u32>,
+        cols: u16,
+        rows: u16,
+        attached-clients: list<client-id>,
+        created-at-unix-ms: u64,
+        exit: option<exit-status>,
+        spec: session-spec,
+    }
+
+    record exit-status {
+        code: option<s32>,
+        signal: option<u8>,
+        unix-ms: u64,
+    }
+
+    variant signal {
+        named(signal-name),
+        numbered(u8),
+    }
+
+    enum signal-name {
+        hup, int, quit, ill, trap, abrt, bus, fpe, kill,
+        usr1, segv, usr2, pipe, alrm, term, chld, cont,
+        stop, tstp, ttin, ttou, urg, xcpu, xfsz, vtalrm,
+        prof, winch, io, sys,
+    }
+
+    variant log-window {
+        tail(u32),
+        since-unix-ms(u64),
+        all,
+    }
+
+    record attach-init {
+        cols: u16,
+        rows: u16,
+        no-stdin: bool,
+    }
+
+    variant client-event {
+        input(list<u8>),
+        resize(tuple<u16, u16>),
+        detach,
+    }
+
+    variant server-event {
+        snapshot(list<u8>),
+        output(list<u8>),
+        exited(exit-status),
+        error(error),
+    }
+
+    record error {
+        code: string,
+        message: string,
+    }
+}
+
+interface sessions {
+    use types.{
+        session-id, client-id, session-spec, session-info, signal,
+        log-window, attach-init, client-event, server-event,
+        exit-status, error,
+    };
+
+    list:    func() -> list<session-info>;
+    inspect: func(id: session-id) -> result<session-info, error>;
+
+    create:  func(spec: session-spec) -> result<session-info, error>;
+    rename:  func(id: session-id, new-name: string) -> result<_, error>;
+    restart: func(id: session-id, force: bool) -> result<_, error>;
+    kill:    func(id: session-id, sig: signal) -> result<_, error>;
+    kick:    func(id: session-id, client: option<client-id>) -> result<_, error>;
+
+    wait:    func(id: session-id) -> future<exit-status>;
+
+    logs:    func(id: session-id, window: log-window, follow: bool)
+             -> stream<list<u8>>;
+
+    attach:  func(id: session-id, init: attach-init,
+                  events: stream<client-event>) -> stream<server-event>;
+
+    send:    func(id: session-id, chunks: stream<list<u8>>)
+             -> result<_, error>;
+}
+
+interface meta {
+    use types.{error};
+
+    record version-info {
+        daemon: string,
+        protocol: string,    // "cairn:daemon@0.1.0"
+    }
+
+    authenticate: func(token: string) -> result<_, error>;
+
+    whoami:  func() -> result<string, error>;
+    version: func() -> version-info;
+}
+
+world daemon {
+    export sessions;
+    export meta;
+}
