@@ -70,7 +70,7 @@ Two transports are served simultaneously by the daemon. See [[transports]] for
 path conventions and connection lifecycle details.
 
 - **Unix Domain Socket** — local CLI clients. Path
-  `$XDG_RUNTIME_DIR/cairn/cairn.sock` (Linux) or `$TMPDIR/cairn.sock`
+  `$XDG_RUNTIME_DIR/cairn/cairn.sock` (Linux) or `$TMPDIR/cairn/cairn.sock`
   (macOS). Socket mode `0o600`, parent dir `0o700`. Auth via filesystem DAC +
   `SO_PEERCRED` / `getpeereid`; no bearer token.
 - **WebTransport** (HTTP/3 over QUIC) — browser and remote CLI. Each
@@ -102,7 +102,10 @@ two worlds:
 - `session-spec`, `session-info`, `exit-status` — session lifecycle records
 - `signal` variant (`named(signal-name)` | `numbered(u8)`) and the full
   `signal-name` enum (30 variants: `hup` through `sys`)
-- `log-window` variant (`tail(u32)` | `since-unix-ms(u64)` | `all`)
+- `log-window` variant (`tail(u32)` | `all`); a time-based `since` window is
+  intentionally **not** in v0 — cairn keeps no timestamped transcript (every
+  reattach is a fresh snapshot, see [[terminal-state-and-replay]]), so `since`
+  cannot be honored precisely. Possible future work if a transcript is added.
 - `attach-init { cols, rows, no-stdin }` — parameters for an attach call
 - `client-event` variant: `input(list<u8>)`, `resize(tuple<u16, u16>)`,
   `detach`

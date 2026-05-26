@@ -34,7 +34,7 @@ Trade-offs:
 
 ### Unix Domain Socket (local CLI)
 
-- **Path**: `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux, `$TMPDIR/cairn.sock` on macOS. Socket mode `0o600`, parent dir mode `0o700`.
+- **Path**: `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux, `$TMPDIR/cairn/cairn.sock` on macOS. Socket mode `0o600`, parent dir mode `0o700` (both configurable via `--socket-mode`/`--dir-mode`; see the daemon binary design spec).
 - **Carrier**: wRPC's UDS transport. Per wRPC's `SPEC.md`, the framed-stream spec applies — one connection per invocation. On UDS this is microseconds, negligible.
 - **Auth**: filesystem DAC (the user only sees their own socket) plus `SO_PEERCRED` (Linux) / `getpeereid` (macOS) to record the invoking uid for audit. No bearer token is consulted, matching the contract documented at `crates/cairn-client/src/cli.rs:14-26`.
 - **Connection lifecycle**: each CLI process opens a fresh UDS connection per invocation; long-running operations (`attach`) hold the connection until the operation ends.
@@ -105,7 +105,6 @@ interface types {
 
     variant log-window {
         tail(u32),
-        since-unix-ms(u64),
         all,
     }
 
@@ -204,6 +203,7 @@ Notes:
 - **Session IDs are always server-assigned.** UUIDv7 gives free chronological sort. The `name` field is the user-facing correlation key for tying a session to an external system (Jira ticket, database row, etc.). Idempotent create-under-retry is intentionally not in v0; if it becomes a real need, it gets a separate `idempotency-key` field with explicit semantics (window, conflict behavior) rather than being folded into the resource id.
 - **`attach` is genuinely bidi.** Two independent streams. wRPC's indexing handles them without extra ceremony.
 - **`session-spec` mirrors `cli.rs` field-for-field** where reasonable; the CLI argument parser is the spec for which fields exist.
+- **`log-window` has no time-based variant.** A `since` window would need a timestamped transcript cairn does not keep — every reattach is a fresh VT snapshot, not a replayable byte/line log (see `terminal-state-and-replay.md`). `tail(n)` (last *n* lines of the snapshot) and `all` are supported; `since` was removed from the schema and CLI and is deferred as possible future work if a transcript is ever added.
 
 ### Mapping CLI commands to WIT operations
 

@@ -48,7 +48,6 @@ interface types {
 
     variant log-window {
         tail(u32),
-        since-unix-ms(u64),
         all,
     }
 

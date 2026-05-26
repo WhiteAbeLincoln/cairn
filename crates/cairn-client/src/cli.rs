@@ -21,7 +21,7 @@ pub struct Cli {
     ///
     /// If unset, defaults to the platform-standard local socket
     /// (`$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux,
-    /// `$TMPDIR/cairn.sock` otherwise).
+    /// `$TMPDIR/cairn/cairn.sock` otherwise).
     #[clap(long, env = "CAIRN_DAEMON", global = true)]
     pub daemon: Option<String>,
 
@@ -135,13 +135,8 @@ pub enum Command {
         #[clap(long, short = 'f')]
         follow: bool,
         /// Limit output to the last N lines of buffered scrollback.
-        /// Mutually exclusive with `--since`.
-        #[clap(long, short = 'n', conflicts_with = "since")]
+        #[clap(long, short = 'n')]
         tail: Option<usize>,
-        /// Limit output to data produced within the given duration
-        /// (e.g. `5m`, `1h`). Mutually exclusive with `--tail`.
-        #[clap(long, value_parser = humantime::parse_duration)]
-        since: Option<Duration>,
     },
     /// List active PTY sessions.
     //

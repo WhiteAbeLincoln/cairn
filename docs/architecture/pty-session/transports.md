@@ -21,7 +21,7 @@ The properties mobile *additionally* wants are connection migration (network han
 
 ### Unix Domain Socket — local CLI
 
-The local CLI opens a fresh UDS connection per invocation against `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux or `$TMPDIR/cairn.sock` on macOS. Socket mode `0o600`, parent directory mode `0o700`.
+The local CLI opens a fresh UDS connection per invocation against `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux or `$TMPDIR/cairn/cairn.sock` on macOS. Socket mode `0o600`, parent directory mode `0o700` (both configurable — see the daemon binary design spec).
 
 - **Carrier**: wRPC's UDS transport (`wrpc_transport::unix`). The framed-stream spec applies — one connection per invocation — but on a loopback socket this is microseconds.
 - **Auth**: filesystem DAC (user only sees their own socket) plus `SO_PEERCRED` (Linux) / `getpeereid` (macOS) to record the invoking uid for audit. No bearer token.

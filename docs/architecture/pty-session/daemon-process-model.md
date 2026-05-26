@@ -129,7 +129,7 @@ Listener: the daemon binds two endpoints —
   a configured non-loopback address); browser and remote CLI clients
   both connect via wRPC over `wrpc-transport-web`.
 - A Unix socket at `$XDG_RUNTIME_DIR/cairn/cairn.sock` (Linux) or
-  `$TMPDIR/cairn.sock` (macOS) for local CLI clients, also speaking
+  `$TMPDIR/cairn/cairn.sock` (macOS) for local CLI clients, also speaking
   wRPC (`wrpc-transport`'s `net` feature).
 
 Both surfaces feed the same in-process session registry through wRPC

@@ -126,7 +126,7 @@ remote and browser). Minimum the daemon must know:
   listener; defaults to loopback ([[daemon-process-model]],
   [[transports]]).
 - **UDS path** — defaults to `$XDG_RUNTIME_DIR/cairn/cairn.sock` on
-  Linux, `$TMPDIR/cairn.sock` on macOS ([[transports]]).
+  Linux, `$TMPDIR/cairn/cairn.sock` on macOS ([[transports]]).
 - **Token store location** — for client auth on the WT path
   ([[authentication]]). Plausible default: `$XDG_RUNTIME_DIR/cairn/token`.
 - **TLS material** — cert + key paths for the WT endpoint (QUIC
