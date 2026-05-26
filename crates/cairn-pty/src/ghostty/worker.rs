@@ -460,8 +460,10 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     Err(_) => break, // all GhosttyPty handles dropped
                 };
                 if exit_published {
-                    // Post-exit normalisation: reply Closed to everything except
-                    // Shutdown (no-op) and Subscribe (still returns final state).
+                    // Post-exit normalisation: reply Closed to writes/resizes.
+                    // Shutdown (no-op), Subscribe (final state), and Size (the
+                    // cached value — an in-memory read, no kernel call) still
+                    // succeed.
                     match cmd {
                         Command::Shutdown => break,
                         Command::Subscribe { .. } => {} // fall through to normal handler
@@ -470,7 +472,8 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             continue;
                         }
                         Command::Size { reply } => {
-                            let _ = reply.send(Err(PtyError::Closed));
+                            // In-memory read, no kernel call — safe post-exit.
+                            let _ = reply.send(Ok(current_size.get()));
                             continue;
                         }
                         Command::Write { reply, .. } => {

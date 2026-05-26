@@ -13,7 +13,8 @@ use super::{ClientId, ExitStatus, PtyError, Subscription, TermSize};
 #[async_trait::async_trait]
 pub trait PtySession: Send + Sync {
     /// Current terminal size in cells. Reports the kernel's TIOCGWINSZ
-    /// value (what the child process actually sees).
+    /// value (what the child process actually sees). Post-exit, returns the
+    /// last-applied size rather than an error.
     async fn size(&self) -> Result<TermSize, PtyError>;
 
     /// Resize the terminal grid. Only honored when `client_id` is the
