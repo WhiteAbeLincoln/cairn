@@ -96,18 +96,21 @@ cairn's current tests sit in two places:
 ## Divergence: where cairn must do more than zmx
 
 zmx's BATS suite is sufficient as an end-to-end gate because zmx exposes a
-single CLI binary over Unix sockets. cairn's daemon will expose a
-**WebSocket** transport so browser clients (ghostty-web) can attach (see
-[[external-protocol]] and [[web-vs-cli-clients]]). That cleaves the test
-surface in two:
+single CLI binary over Unix sockets. cairn's daemon exposes two transports
+(UDS for local CLI, WebTransport for remote browser and CLI — see
+[[external-protocol]], [[transports]], [[web-vs-cli-clients]]). That
+cleaves the test surface in two:
 
-- The WebSocket codec, frame routing, and auth handshake (see
-  [[authentication]]) are pure-function-ish and want Rust unit tests in the
-  spirit of zmx's `ipc.zig:255-280` wire-size freezes.
-- The daemon-as-process integration tests are harder because there's no
-  equivalent of `nc -U` for WebSocket. We'll need either an in-process
-  `tokio-tungstenite` client driven from a `#[tokio::test]`, or a small
-  scripted Python/Node client invoked from a bats-equivalent shell harness.
+- **Wire-protocol conformance** rides on the wRPC + WIT schema in
+  `crates/cairn-protocol/`. The codec is wRPC's canonical-ABI; we don't
+  re-test it. What we *do* test is the schema's encoding of representative
+  messages over the wire — the round-trip tests at
+  `crates/cairn-protocol/tests/round_trip.rs` are the existing template.
+- **Daemon-as-process integration tests** are harder because there's no
+  equivalent of `nc -U` for wRPC over WebTransport. The UDS path is easier
+  — spawn the daemon binary, connect via `wrpc_transport::unix::Client`
+  from a `#[tokio::test]`. WebTransport requires a QUIC client (likely
+  `wtransport`'s Rust client) inside the test to cover that path.
 
 ## Recommended layering for cairn
 
@@ -115,8 +118,8 @@ surface in two:
 | --- | --- | --- | --- |
 | libghostty-vt | Upstream terminal correctness | not ours | We pin behavior with golden snapshots, mirror zmx's `serializeTerminalState` roundtrip suite. |
 | Worker (single-session) | Spawn + write + broadcast + resize + exit | `crates/cairn-pty/tests/pty_*.rs` | Real PTY, real child, broadcast as sync barrier. Already exists. |
-| Daemon (multi-client) | Session registry, election, detach cascade | TBD `tests/daemon_*.rs` | Spawn daemon as subprocess; drive via in-process WS client. See [[client-attach-and-election]]. |
-| Wire protocol | Codec, framing, auth | TBD `cairn-protocol/src/.../tests` | Pure unit tests over byte slices. |
+| Daemon (multi-client) | Session registry, election, detach cascade | TBD `tests/daemon_*.rs` | Spawn daemon as subprocess; drive via in-process wRPC client (UDS) and a wtransport-based client (WT). See [[client-attach-and-election]]. |
+| Wire protocol | WIT schema round-trip; per-operation encoding | `crates/cairn-protocol/tests/round_trip.rs` | Stub `Handler` impl + in-process server on a tempdir UDS; assert server-produced values arrive intact at the client. Three tests exist (`meta.version`, `sessions.list-all`, `meta.authenticate`); extend as new operations get implementations. |
 | Browser | ghostty-web attach + render | out of scope here | Separate repo; integration boundary documented in [[web-vs-cli-clients]]. |
 
 ### Snapshot regression for replay
@@ -162,17 +165,22 @@ eviction tests (see [[backpressure]]), `tokio::time::pause()` plus
 realism. The existing `read_until_contains` helper is the right primitive for
 data-driven barriers; do not add fixed sleeps.
 
-### WebSocket testing
+### wRPC transport testing
 
 Two patterns to pick between:
 
-- **In-process** — `tokio-tungstenite` connected to a daemon hosted on
-  `127.0.0.1:0` inside the test. Fast, deterministic, no subprocess. Best for
+- **In-process** — spawn a wRPC server on a tempdir UDS path inside the
+  test, connect via `wrpc_transport::unix::Client::from(path)`. Fast,
+  deterministic, no subprocess. The `cairn-protocol` round-trip tests
+  use this pattern; reuse the `spawn_server` helper. Best for
   protocol-conformance tests of [[external-protocol]] and [[authentication]].
-- **Subprocess** — spawn the daemon binary, connect from the test. Slower but
-  catches packaging issues (env vars, default paths, etc.). Best for the
-  equivalent of zmx's BATS suite. See [[observability]] for the log-capture
-  story.
+  For WebTransport coverage, a `wtransport`-based client peer connects to a
+  daemon-hosted WT endpoint on `127.0.0.1:0` — same shape, different
+  carrier.
+- **Subprocess** — spawn the daemon binary, connect from the test. Slower
+  but catches packaging issues (env vars, default paths, signal handling).
+  Best for the equivalent of zmx's BATS suite. See [[observability]] for
+  the log-capture story.
 
 ### Performance / fuzz
 
@@ -182,7 +190,10 @@ Out of scope for the v1 test plan but worth scaffolding:
   drain; assert eviction policy, see [[backpressure]].
 - Many-sessions — spawn N sessions, list, kill all; equivalent to zmx's churn
   test at `session.bats:257-267` but parameterized over N.
-- Fuzz the WebSocket codec with `cargo-fuzz` once the protocol stabilizes.
+- Fuzz the wRPC canonical-ABI decode path with `cargo-fuzz` once the
+  schema stabilises — though most of the surface is already covered by
+  wRPC's own upstream tests; focus on cairn-specific WIT types
+  (variants with binary payloads, nested options).
 
 ### Organization
 
@@ -197,8 +208,9 @@ the existing style.
 
 - Does cairn want a BATS-equivalent shell harness for the CLI client, or are
   in-process Rust tests sufficient given there's no socket-path edge case
-  (WebSocket uses TCP/Unix domain socket addresses that don't have the
-  `sockaddr_un` 108-byte limit zmx tests at `socket.zig:122-190`)?
+  (the UDS transport's path is fixed by `$XDG_RUNTIME_DIR/cairn/` plus a
+  fixed basename, well under the `sockaddr_un` 108-byte limit zmx tests at
+  `socket.zig:122-190`)?
 - How do we handle CI without a controlling tty for the daemon process model
   ([[daemon-process-model]])? Forked `setsid` + redirect, or rely on
   `pty_process::Pty` to allocate one?
@@ -207,7 +219,7 @@ the existing style.
   shared with ghostty-web for cross-implementation validation?
 - Browser-side rendering verification (ghostty-web attach + paint) is out of
   scope here, but the integration boundary needs a contract test on the
-  WebSocket frame stream. Where does that live — in this repo or downstream?
+  wRPC server-event stream. Where does that live — in this repo or downstream?
 - Do we need a fault-injection layer ([[error-recovery]]) for "PTY master
   read errors" beyond what `pty_process` surfaces naturally, or is killing
   the child sufficient coverage?

@@ -232,8 +232,9 @@ for the broader capacity-tuning discussion.
    [[external-protocol]] for a `cairn history`-style flow?
 6. **Snapshot cost at large scrollback.** No benchmark exists. A
    million-line scrollback in `Format::Vt` could be tens of megabytes —
-   does the WebSocket transport (see [[web-vs-cli-clients]]) handle that
-   gracefully on attach?
+   does the WebTransport carrier (see [[transports]]) handle that as a
+   single `server-event::snapshot` payload, or do we need to fragment
+   it across multiple stream messages?
 7. **Snapshot determinism across libghostty versions.** Format is
    whatever libghostty emits today. A bump could change bytes. Worth a
    snapshot test in [[testing]].

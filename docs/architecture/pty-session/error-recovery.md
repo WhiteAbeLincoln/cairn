@@ -2,11 +2,11 @@
 
 How cairn classifies failures and what it does when each fires. The
 taxonomy starts at `PtyError` (`crates/cairn-pty/src/pty/error.rs:8-20`)
-and extends outward to WebSocket transport errors, daemon-level resource
+and extends outward to wRPC transport errors, daemon-level resource
 exhaustion, and the worker thread itself. zmx is the reference for the
-pre-WebSocket failure modes. Adjacent: [[pty-lifecycle]] (teardown
-ordering), [[backpressure]] (lag-as-error), [[external-protocol]] (WS
-framing), [[client-attach-and-election]] (re-attach),
+pre-wRPC failure modes. Adjacent: [[pty-lifecycle]] (teardown
+ordering), [[backpressure]] (lag-as-error), [[external-protocol]] (wire
+errors), [[client-attach-and-election]] (re-attach),
 [[daemon-process-model]] (resource caps), [[observability]] (logging).
 
 ## Failure taxonomy
@@ -131,43 +131,45 @@ calls `subscribe()` again and pays one snapshot serialisation cost
 
 ### Malformed wire protocol message
 
-The WebSocket transport fails to deserialize an inbound binary frame
-against the MessagePack schema ([[external-protocol]]). zmx's
-equivalent — unknown tag — falls through to a `_` arm that logs and
-ignores (`zmx/src/main.zig:2685-2688`) so old daemons stay
-forward-compatible. cairn distinguishes: schema-less MessagePack
-already gives forward-compat at the field level, but a malformed
-*envelope* indicates a client bug. Close the WebSocket with RFC 6455
-`1002`, log once at the transport task, let the client reconnect.
-Per-WebSocket-task isolation means one bad client never poisons
-another's subscription.
+The wRPC transport fails to decode an inbound invocation against
+the WIT schema ([[external-protocol]]). zmx's equivalent — unknown
+tag — falls through to a `_` arm that logs and ignores
+(`zmx/src/main.zig:2685-2688`) so old daemons stay forward-compatible.
+cairn relies on wRPC's instance + function-name dispatch for
+forward-compat (unknown function = ignore-with-error response), but a
+malformed *value* in a known function indicates a client bug. Close
+the underlying stream / connection, log once at the handler task,
+let the client reconnect. Per-stream isolation means one bad client
+never poisons another's subscription.
 
-### WebSocket frame errors (oversize, invalid UTF-8)
+### Wire size and codec errors
 
-`tokio-tungstenite` surfaces these as `Error::Capacity` (oversize) or
-`Error::Utf8`. cairn uses binary frames exclusively, so `Error::Utf8`
-indicates a misconfigured client. Close with `1009` (oversize) or
-`1003` (unsupported data); same isolation as malformed-protocol.
-`max_message_size` is sized for the largest legitimate snapshot (tens
-of KiB; [[backpressure]] §"Interaction with WebSocket framing").
+QUIC streams (WT) and UDS connections both have implementation
+limits on message size that wRPC surfaces as transport errors.
+Close the stream / connection; same isolation as malformed-protocol.
+Per-stream sizing for the attach output is governed by libghostty
+snapshot serialisation cost (tens of KiB initial, smaller per
+steady-state `server-event::output` element; see [[backpressure]]).
 
 ### Lagging client
 
 `broadcast::Receiver::recv()` returns `RecvError::Lagged(n)`. The
 worker is oblivious (`worker.rs:288-290`); detection lives in the
-transport. Kick the WebSocket, force a reconnect; the new
-`subscribe()` resynchronises via snapshot. Full discussion in
+attach handler task. Kick the wRPC stream, force the client to
+reconnect with a fresh `sessions.attach` invocation; its first
+`server-event::snapshot` resynchronises. Full discussion in
 [[backpressure]]. **A lag-kick is not a session failure** — must not
 show up in any session-failure metric ([[observability]]).
 
 ### Network partition (heartbeat)
 
-The transport task sends a WebSocket `Ping` every N seconds; missing
-two consecutive `Pong`s constitutes a partition. TCP keep-alive
-(default ~2 h) is too slow. Close the socket; flow from here matches
-abrupt disconnect. Cadence and threshold are operator-tunable
-([[configuration]]). zmx has no equivalent — Unix sockets see RST or
-HUP immediately on peer death.
+For WebTransport the QUIC layer has its own idle timeout, but
+application-level liveness still wants a heartbeat. Specific
+mechanism TBD (see [[external-protocol]] open questions). For UDS
+attach connections, TCP-keepalive-style detection or an
+application heartbeat. Cadence and threshold are operator-tunable
+([[configuration]]). zmx has no equivalent — its blocking-poll UDS
+attaches see RST or HUP immediately on peer death.
 
 ### Daemon-level resource exhaustion (FDs, memory, max sessions)
 
@@ -196,12 +198,12 @@ question) — so no `~/.bash_logout`, no shell history flush.
 
 ## Error signalling to clients
 
-| Source | WebSocket signal |
+| Source | wRPC signal |
 |---|---|
-| Post-exit op (`PtyError::Closed`) | In-band error frame correlated to request |
-| `write()` returning `PtyError::Io` | In-band error frame |
-| Session terminated mid-stream | Close `1000` |
-| Lag-kick | Close `1008` (policy violation) |
+| Post-exit op (`PtyError::Closed`) | `Err(types::Error { code, message })` returned by the failing operation |
+| `write()` returning `PtyError::Io` | `Err(types::Error { … })` on `sessions.send` |
+| Session terminated mid-stream | `server-event::exited(exit-status)` then stream end |
+| Lag-kick | Stream closed by handler; reconnect path is a fresh `sessions.attach` |
 | Malformed inbound | Close `1002` |
 | Oversize frame | Close `1009` |
 | Heartbeat timeout | Close `1011` |

@@ -42,7 +42,7 @@ source of segfaults) out of the daemon's address space.
 | **In-process** | Daemon thread | tokio channels | n/a | None (dev) |
 | **Local subprocess** | Forked child of daemon | Unix socket | Daemon → session | seccomp / landlock |
 | **Local VM** | Guest agent in Firecracker / Hypervisor.framework microVM | vsock | Daemon → session (daemon boots VM) | Hypervisor |
-| **Remote** | Process on a different machine | WebSocket over TLS | Spawner → daemon (outbound) | Physical / network |
+| **Remote** | Process on a different machine | wRPC over WebTransport | Spawner → daemon (outbound) | Physical / network |
 
 All four implement the same `PtySession` trait
 (`crates/cairn-pty/src/pty/session.rs`). The daemon never branches
@@ -142,7 +142,7 @@ not own the spawner's lifecycle.
 | Aspect | Local VM | Remote |
 |---|---|---|
 | Spawner process | `cairn-vm-agent` (inside guest) | `cairn-spawner` (on remote machine) |
-| Transport | vsock | WebSocket over TLS |
+| Transport | vsock | wRPC over WebTransport |
 | Initiated by | Daemon (boots VM, connects vsock) | Spawner (registers outbound) |
 | Spawner lifecycle | Tied to VM lifecycle | Independent of daemon |
 | Trust establishment | Daemon controls VM boot → implicit trust | mTLS / pre-shared token at registration |
@@ -248,15 +248,15 @@ is held warm in a pool (configurable).
 ### Remote (v3)
 
 A `cairn-spawner` runs on a separate machine, connects outbound to
-the daemon's WebSocket endpoint, registers with capabilities and
+the daemon's WebTransport endpoint, registers with capabilities and
 capacity, and accepts session-creation requests.
 
 Properties:
 
 - Multi-tenant pooled spawner. One spawner can host many concurrent
   sessions (one process each).
-- Transport: WebSocket over TLS. Same WS stack as browser clients
-  (see [[external-protocol]]), reused for daemon ↔ spawner.
+- Transport: wRPC over WebTransport. Same wRPC stack as browser
+  clients (see [[external-protocol]]), reused for daemon ↔ spawner.
 - Connection direction: spawner-initiated. Critical for NAT / firewall
   traversal.
 - Sandbox: physical and network separation. The remote machine itself
@@ -279,8 +279,8 @@ if exposed beyond loopback.
 
 ## Wire format
 
-All session-direction messages reuse the `Command`/`Output` shapes
-from [[external-protocol]]'s msgpack-tagged envelope. The
+All session-direction messages reuse the `sessions.*` operations
+from [[external-protocol]]'s `cairn:daemon@0.1.0` WIT schema. The
 session-channel is the same regardless of transport.
 
 Spawner-management messages are new but small:
@@ -335,7 +335,7 @@ What happens when each kind of unit dies:
 | v0 | In-process | No spawner needed | n/a |
 | v1 | + Local subprocess | Daemon as implicit spawner | Unix socket IPC layer |
 | v2 | + Local VM | Daemon-initiated spawner via vsock | + vsock + serialization |
-| v3 | + Remote | Spawner-initiated registration over WS | + reuses WS stack from client connections |
+| v3 | + Remote | Spawner-initiated registration over WT | + reuses wRPC stack from client connections |
 
 Each phase reuses the prior phase's infrastructure; nothing has to be
 redesigned. The session abstraction is stable across all of them.
