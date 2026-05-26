@@ -11,15 +11,15 @@ chrono.workspace = true
 serde_json.workspace = true
 snafu.workspace = true
 tracing.workspace = true
+bytes.workspace = true
+tokio = { workspace = true, features = ["full"] }
 libghostty-vt = { version = "0.1.1" }
-tokio = { version = "1.52", features = ["full"] }
 async-trait = "0.1"
-bytes = "1"
 flume = "0.12"
 pty-process = { version = "0.4", features = ["async"] }
 vte = "0.13"
 
 [dev-dependencies]
-tokio = { version = "1.52", features = ["full", "test-util", "macros"] }
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }
 tracing-test = "0.2"
 libghostty-vt = "0.1.1"
