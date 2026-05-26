@@ -477,6 +477,14 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             let _ = reply.send(Err(PtyError::Closed));
                             continue;
                         }
+                        Command::Signal { reply, .. } => {
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+                        Command::Inject { reply, .. } => {
+                            let _ = reply.send(Err(PtyError::Closed));
+                            continue;
+                        }
                         Command::Detach { .. } => continue, // no-op post-exit
                     }
                 }
@@ -586,6 +594,26 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
                     }
+                    Command::Signal { sig, reply } => {
+                        let res = match s.child.id() {
+                            Some(pid) => {
+                                // child is its own process-group leader (setsid).
+                                let rc = unsafe { libc::killpg(pid as libc::pid_t, sig) };
+                                if rc == 0 {
+                                    Ok(())
+                                } else {
+                                    Err(PtyError::from(std::io::Error::last_os_error()))
+                                }
+                            }
+                            None => Ok(()), // already reaped — desired state reached
+                        };
+                        let _ = reply.send(res);
+                    }
+                    Command::Inject { data, reply } => {
+                        // No leader election: identity-less injection.
+                        let res = s.pty.write_all(&data).await.map_err(PtyError::from);
+                        let _ = reply.send(res);
+                    }
                     Command::Detach { client_id } => {
                         if leader == Some(client_id) {
                             tracing::info!(
@@ -669,6 +697,12 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
                 let _ = reply.send(Err(make_err()));
             }
             Command::Write { reply, .. } => {
+                let _ = reply.send(Err(make_err()));
+            }
+            Command::Signal { reply, .. } => {
+                let _ = reply.send(Err(make_err()));
+            }
+            Command::Inject { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
             }
             Command::Detach { .. } => {}
@@ -807,6 +841,10 @@ mod tests {
         fn start_kill(&mut self) -> std::io::Result<()> {
             let _ = self.exit_tx.send(Some(synthetic_exit_status(0)));
             Ok(())
+        }
+
+        fn id(&self) -> Option<u32> {
+            None // mock — never fire killpg at a fake pid
         }
     }
 
