@@ -147,9 +147,9 @@ attach over the client set.
 - **ClientId:** `ClientId::from_u64(next_client_id.fetch_add(1, Relaxed))`. The
   daemon owns identity; the worker only does equality on it for leader election.
 - **Resolution** (`resolve(key) -> Option<Arc<SessionEntry>>`): exact live-name
-  match first, then exact id — the contract in `cli.rs:478-485`.
-  `--latest`/`--all`/globs never reach the daemon; per the protocol design they
-  are resolved client-side via `list-all` + per-target calls.
+  match first, then exact id — the contract in `cli.rs:478-485`. Single-target
+  ops pass one already-resolved name-or-id. `--latest`/`--all`/globs never reach
+  the daemon — see [Bulk / selector resolution](#bulk--selector-resolution).
 
 ### Lifecycle semantics
 
@@ -165,6 +165,39 @@ attach over the client set.
   (its `Drop` kills the old child; `force` gates restarting a still-running
   session). Attached clients' broadcast streams close, so they reconnect. Exit
   state resets for free — the new handle has a fresh `exit_rx`.
+
+### Bulk / selector resolution
+
+`--latest`, `--all`, and name globs (`SessionTargets` in `cli.rs`) are resolved
+**client-side**: the client calls `list-all`, filters/selects, then issues one
+independent per-target unary call. This deliberately stays out of the WIT, and
+it is *not* the same decision as `kill`'s grace. `kill` escalation is a durable
+multi-step policy that must survive client death, so it lives server-side; bulk
+resolution is stateless fan-out — globs and `--latest` are CLI input sugar (the
+web UI selects from its rendered list and never parses globs), and a client that
+dies mid-fan-out leaves no half-applied state.
+
+The list→act gap is a TOCTOU window, but benign for these ops: a session created
+after "all" was named simply was not part of "all", and a target that vanished
+in the gap is already in the desired state. Two requirements keep batch behavior
+correct and consistent across clients:
+
+1. **Per-target calls are independent and each returns its own result.** A batch
+   is N unary RPCs, not one aggregate RPC; the daemon already returns a per-call
+   `result<_, error>`.
+2. **The client aggregates per-target outcomes — a batch never collapses to a
+   single error.** Each target's result is reported individually; the command
+   exits non-zero only if one or more targets *genuinely* failed. A per-target
+   `not_found` in a `--all`/glob batch (a session that vanished in the gap) is
+   treated as benign, not a failure, and never aborts the rest of the batch. A
+   single explicitly-named target still surfaces `not_found` as an error — that
+   is a typo, not a race. (In v0 exited sessions linger in the registry, so a
+   batch target going `not_found` is rare until reaping lands.)
+
+Escape hatch if this ever needs to move server-side (a third client that needs
+glob matching, or atomic bulk semantics): add a `target` selector variant to the
+unary ops and have bulk ops return `list<result>`. Out of scope for v0 — the
+benign-drift / CLI-sugar analysis says the WIT expansion is not warranted yet.
 
 ## cairn-pty changes
 
