@@ -123,3 +123,11 @@ world daemon {
     export sessions;
     export meta;
 }
+
+// Client world used for testing and CLI integration.
+// Importing the interfaces generates free client-invocation functions
+// at `bindings::cairn::daemon::{sessions,meta}::*`.
+world daemon-client {
+    import sessions;
+    import meta;
+}
