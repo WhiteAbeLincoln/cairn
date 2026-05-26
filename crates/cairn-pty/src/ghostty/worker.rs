@@ -21,12 +21,10 @@ use super::input_classifier::is_user_input;
 use super::process::{ChildProcess, Pty};
 use crate::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
-pub use std::process::ExitStatus;
-
 /// State shared between the worker thread's setup phase and the caller.
 pub(super) struct WorkerHandles {
     pub cmd_tx: flume::Sender<Command>,
-    pub exit_rx: tokio::sync::watch::Receiver<Option<ExitStatus>>,
+    pub exit_rx: tokio::sync::watch::Receiver<Option<crate::ExitStatus>>,
 }
 
 /// Spawn the dedicated OS thread that owns the PTY and runs the dispatcher.
@@ -35,7 +33,7 @@ pub(super) struct WorkerHandles {
 pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
     let cmd_tx_for_worker = cmd_tx.clone();
-    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<crate::ExitStatus>>(None);
 
     // Clamp to at least 1: broadcast::channel(0) panics, and capacity is just
     // a tuning knob — silently promoting 0 → 1 is more forgiving than erroring.
@@ -205,7 +203,7 @@ where
 {
     let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
     let cmd_tx_for_worker = cmd_tx.clone();
-    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<ExitStatus>>(None);
+    let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<crate::ExitStatus>>(None);
 
     let broadcast_capacity = opts.broadcast_capacity.max(1);
     let initial_size = opts.size;
@@ -243,7 +241,7 @@ struct SessionState<P: Pty, C: ChildProcess> {
     child: C,
     cmd_rx: flume::Receiver<Command>,
     cmd_tx: flume::Sender<Command>,
-    exit_tx: tokio::sync::watch::Sender<Option<ExitStatus>>,
+    exit_tx: tokio::sync::watch::Sender<Option<crate::ExitStatus>>,
     broadcast_capacity: usize,
     initial_size: TermSize,
     scrollback_lines: usize,
@@ -426,7 +424,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         *bcast_tx.borrow_mut() = None;
                         if !exit_published
                             && let Ok(status) = s.child.wait().await {
-                                let _ = s.exit_tx.send(Some(status));
+                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms())));
                                 exit_published = true;
                             }
                     }
@@ -448,7 +446,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         *bcast_tx.borrow_mut() = None;
                         if !exit_published
                             && let Ok(status) = s.child.wait().await {
-                                let _ = s.exit_tx.send(Some(status));
+                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms())));
                                 exit_published = true;
                             }
                     }
@@ -462,8 +460,10 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     Err(_) => break, // all GhosttyPty handles dropped
                 };
                 if exit_published {
-                    // Post-exit normalisation: reply Closed to everything except
-                    // Shutdown (no-op) and Subscribe (still returns final state).
+                    // Post-exit normalisation: reply Closed to writes/resizes.
+                    // Shutdown (no-op), Subscribe (final state), and Size (the
+                    // cached value — an in-memory read, no kernel call) still
+                    // succeed.
                     match cmd {
                         Command::Shutdown => break,
                         Command::Subscribe { .. } => {} // fall through to normal handler
@@ -472,10 +472,19 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                             continue;
                         }
                         Command::Size { reply } => {
-                            let _ = reply.send(Err(PtyError::Closed));
+                            // In-memory read, no kernel call — safe post-exit.
+                            let _ = reply.send(Ok(current_size.get()));
                             continue;
                         }
                         Command::Write { reply, .. } => {
+                            let _ = reply.send(Err(PtyError::Closed));
+                            continue;
+                        }
+                        Command::Signal { reply, .. } => {
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+                        Command::Inject { reply, .. } => {
                             let _ = reply.send(Err(PtyError::Closed));
                             continue;
                         }
@@ -499,7 +508,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         // is freely borrowable.
                         if !exit_published
                             && let Ok(status) = s.child.wait().await {
-                                let _ = s.exit_tx.send(Some(status));
+                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms())));
                             }
                         break;
                     }
@@ -588,6 +597,36 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
                     }
+                    Command::Signal { sig, reply } => {
+                        let res = match s.child.id() {
+                            Some(pid) => {
+                                // child is its own process-group leader (setsid).
+                                let rc = unsafe { libc::killpg(pid as libc::pid_t, sig) };
+                                if rc == 0 {
+                                    Ok(())
+                                } else {
+                                    let err = std::io::Error::last_os_error();
+                                    // ESRCH: the group is already gone (child
+                                    // exited in the window between id() and
+                                    // killpg). The requested terminal state is
+                                    // reached, so report success — keeps signal
+                                    // delivery idempotent against the exit race.
+                                    if err.raw_os_error() == Some(libc::ESRCH) {
+                                        Ok(())
+                                    } else {
+                                        Err(PtyError::from(err))
+                                    }
+                                }
+                            }
+                            None => Ok(()), // already reaped — desired state reached
+                        };
+                        let _ = reply.send(res);
+                    }
+                    Command::Inject { data, reply } => {
+                        // No leader election: identity-less injection.
+                        let res = s.pty.write_all(&data).await.map_err(PtyError::from);
+                        let _ = reply.send(res);
+                    }
                     Command::Detach { client_id } => {
                         if leader == Some(client_id) {
                             tracing::info!(
@@ -611,10 +650,10 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
             // post-exit normalisation) until the caller drops GhosttyPty.
             status = s.child.wait(), if !exit_published => {
                 match status {
-                    Ok(s_val) => { let _ = s.exit_tx.send(Some(s_val)); }
+                    Ok(s_val) => { let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms()))); }
                     Err(e) => {
                         tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
-                        let _ = s.exit_tx.send(Some(synthetic_exit_status(1)));
+                        let _ = s.exit_tx.send(Some(crate::ExitStatus::synthetic(1, crate::types::now_unix_ms())));
                     }
                 }
                 exit_published = true;
@@ -673,6 +712,12 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
             Command::Write { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
             }
+            Command::Signal { reply, .. } => {
+                let _ = reply.send(Err(make_err()));
+            }
+            Command::Inject { reply, .. } => {
+                let _ = reply.send(Err(make_err()));
+            }
             Command::Detach { .. } => {}
         }
     }
@@ -706,12 +751,14 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 
 /// Construct a synthetic `std::process::ExitStatus` with the given exit code.
 ///
-/// Used when `child.wait()` itself fails (rare). We surface this as a failing
-/// exit so callers see the session as broken rather than reporting success.
-#[cfg(unix)]
-pub(super) fn synthetic_exit_status(code: i32) -> ExitStatus {
+/// Test-only: the `MockChild` uses it to fabricate the std exit status that
+/// `ChildProcess::wait()` would return. Production exit publishing goes through
+/// `crate::ExitStatus::{from_std, synthetic}`, so this is never used in a
+/// non-test build.
+#[cfg(all(test, unix))]
+pub(super) fn synthetic_exit_status(code: i32) -> std::process::ExitStatus {
     use std::os::unix::process::ExitStatusExt;
-    ExitStatus::from_raw((code & 0xff) << 8)
+    std::process::ExitStatus::from_raw((code & 0xff) << 8)
 }
 
 #[cfg(test)]
@@ -730,6 +777,10 @@ mod tests {
     //! — a future libghostty version that changes those bytes will fail
     //! these tests loudly.
 
+    // The MockChild uses watch::<Option<ExitStatus>> where ExitStatus is
+    // std::process::ExitStatus — that is the type returned by ChildProcess::wait().
+    // Making this explicit prevents the bare name from resolving to crate::ExitStatus.
+    use std::process::ExitStatus;
     use std::time::Duration;
 
     use bytes::Bytes;
@@ -803,6 +854,10 @@ mod tests {
         fn start_kill(&mut self) -> std::io::Result<()> {
             let _ = self.exit_tx.send(Some(synthetic_exit_status(0)));
             Ok(())
+        }
+
+        fn id(&self) -> Option<u32> {
+            None // mock — never fire killpg at a fake pid
         }
     }
 

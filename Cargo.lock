@@ -181,6 +181,7 @@ dependencies = [
  "bytes",
  "chrono",
  "flume",
+ "libc",
  "libghostty-vt",
  "pty-process",
  "serde",

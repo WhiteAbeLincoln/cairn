@@ -37,6 +37,9 @@ pub(super) trait Pty: Send + 'static {
 pub(super) trait ChildProcess: Send + 'static {
     async fn wait(&mut self) -> std::io::Result<ExitStatus>;
     fn start_kill(&mut self) -> std::io::Result<()>;
+    /// Returns the OS process ID of the child, or `None` if the child has
+    /// already been reaped.
+    fn id(&self) -> Option<u32>;
 }
 
 // ─── Production impls ─────────────────────────────────────────────────
@@ -69,5 +72,9 @@ impl ChildProcess for tokio::process::Child {
 
     fn start_kill(&mut self) -> std::io::Result<()> {
         tokio::process::Child::start_kill(self)
+    }
+
+    fn id(&self) -> Option<u32> {
+        tokio::process::Child::id(self)
     }
 }

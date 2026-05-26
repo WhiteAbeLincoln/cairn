@@ -1,3 +1,44 @@
+/// Outcome of a finished session: the child's exit status plus the wall-clock
+/// time (Unix epoch ms) the exit was detected. The timestamp is captured by the
+/// worker at exit-detection time so a caller that was not waiting can still
+/// report when the session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitStatus {
+    code: Option<i32>,
+    signal: Option<i32>,
+    unix_ms: u64,
+}
+
+impl ExitStatus {
+    /// Exit code if the child exited normally.
+    pub fn code(&self) -> Option<i32> { self.code }
+    /// Terminating signal number if the child was killed by a signal.
+    pub fn signal(&self) -> Option<i32> { self.signal }
+    /// Wall-clock time (Unix epoch ms) the exit was detected.
+    pub fn unix_ms(&self) -> u64 { self.unix_ms }
+    /// True iff the child exited with code 0.
+    pub fn success(&self) -> bool { self.code == Some(0) }
+
+    /// Build from the std exit status the child reports, stamping `unix_ms`.
+    pub(crate) fn from_std(status: std::process::ExitStatus, unix_ms: u64) -> Self {
+        use std::os::unix::process::ExitStatusExt;
+        Self { code: status.code(), signal: status.signal(), unix_ms }
+    }
+
+    /// Synthetic status for the "wait itself failed" fallback.
+    pub(crate) fn synthetic(code: i32, unix_ms: u64) -> Self {
+        Self { code: Some(code), signal: None, unix_ms }
+    }
+}
+
+/// Current Unix epoch time in milliseconds (saturating to 0 before the epoch).
+pub(crate) fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 /// Terminal grid size in cells. Matches the kernel TIOCGWINSZ representation
 /// of cols (width) and rows (height).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

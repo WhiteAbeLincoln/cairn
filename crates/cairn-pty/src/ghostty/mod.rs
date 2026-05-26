@@ -16,8 +16,6 @@ use tokio::sync::oneshot;
 
 use super::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
-pub use worker::ExitStatus;
-
 /// Commands the public API sends to the session worker thread.
 pub(crate) enum Command {
     Subscribe {
@@ -42,6 +40,17 @@ pub(crate) enum Command {
     Detach {
         client_id: ClientId,
     },
+    /// Deliver `sig` to the child's process group. Not leader-gated.
+    Signal {
+        sig: i32,
+        reply: oneshot::Sender<Result<(), PtyError>>,
+    },
+    /// Write to the PTY with no client identity and no leader promotion.
+    /// Backs `cairn send`.
+    Inject {
+        data: Bytes,
+        reply: oneshot::Sender<Result<(), PtyError>>,
+    },
     Shutdown,
 }
 
@@ -50,7 +59,7 @@ pub(crate) enum Command {
 /// Construct via [`GhosttyPty::spawn`]. Send + Sync — share across tasks.
 pub struct GhosttyPty {
     cmd_tx: flume::Sender<Command>,
-    exit_rx: tokio::sync::watch::Receiver<Option<ExitStatus>>,
+    exit_rx: tokio::sync::watch::Receiver<Option<crate::ExitStatus>>,
 }
 
 impl GhosttyPty {
@@ -86,7 +95,7 @@ impl GhosttyPty {
     /// Wait for the child to exit. Returns the exit status.
     ///
     /// Multiple calls are safe; all resolve once the child exits.
-    pub async fn wait(&self) -> ExitStatus {
+    pub async fn wait(&self) -> crate::ExitStatus {
         let mut rx = self.exit_rx.clone();
         loop {
             if let Some(status) = *rx.borrow() {
@@ -98,9 +107,35 @@ impl GhosttyPty {
             // before publishing, the borrow is None — fall back to a
             // synthetic failing status so callers don't see a phantom success.
             if rx.changed().await.is_err() {
-                return (*rx.borrow()).unwrap_or_else(|| worker::synthetic_exit_status(1));
+                return (*rx.borrow())
+                    .unwrap_or_else(|| crate::ExitStatus::synthetic(1, crate::types::now_unix_ms()));
             }
         }
+    }
+
+    /// Non-blocking peek at the exit state. `None` while the child is running.
+    pub fn try_exit_status(&self) -> Option<crate::ExitStatus> {
+        *self.exit_rx.borrow()
+    }
+
+    /// Deliver a signal (libc number) to the child's process group.
+    pub async fn signal(&self, sig: i32) -> Result<(), PtyError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send_async(Command::Signal { sig, reply: tx })
+            .await
+            .map_err(|_| PtyError::Closed)?;
+        rx.await.map_err(|_| PtyError::Closed)?
+    }
+
+    /// Write bytes to the PTY without claiming leadership (backs `send`).
+    pub async fn inject(&self, data: Bytes) -> Result<(), PtyError> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send_async(Command::Inject { data, reply: tx })
+            .await
+            .map_err(|_| PtyError::Closed)?;
+        rx.await.map_err(|_| PtyError::Closed)?
     }
 }
 
@@ -151,6 +186,22 @@ impl super::PtySession for GhosttyPty {
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
+    }
+
+    async fn signal(&self, sig: i32) -> Result<(), PtyError> {
+        GhosttyPty::signal(self, sig).await
+    }
+
+    async fn inject(&self, data: bytes::Bytes) -> Result<(), PtyError> {
+        GhosttyPty::inject(self, data).await
+    }
+
+    async fn wait(&self) -> crate::ExitStatus {
+        GhosttyPty::wait(self).await
+    }
+
+    fn try_exit_status(&self) -> Option<crate::ExitStatus> {
+        GhosttyPty::try_exit_status(self)
     }
 }
 

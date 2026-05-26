@@ -80,6 +80,31 @@ async fn drop_kills_running_child() {
 }
 
 #[tokio::test]
+async fn wait_returns_status_with_code_and_timestamp() {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg("exit 7");
+    let pty = GhosttyPty::spawn(SpawnOptions::new(cmd)).expect("spawn");
+
+    let before = now_ms();
+    let status = pty.wait().await;
+    let after = now_ms();
+
+    assert_eq!(status.code(), Some(7));
+    assert!(
+        status.unix_ms() >= before && status.unix_ms() <= after,
+        "exit timestamp {} not within [{before}, {after}]",
+        status.unix_ms()
+    );
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+#[tokio::test]
 async fn write_after_exit_returns_closed() {
     use std::time::Duration;
 
@@ -122,4 +147,29 @@ async fn write_after_exit_returns_closed() {
         "expected Closed after child exit, got {:?}",
         result
     );
+}
+
+#[tokio::test]
+async fn try_exit_status_is_none_before_exit_and_some_after() {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg("sleep 100");
+    let pty = GhosttyPty::spawn(SpawnOptions::new(cmd)).expect("spawn");
+
+    assert!(pty.try_exit_status().is_none(), "should be running");
+
+    pty.kill().expect("kill");
+    let _ = pty.wait().await; // ensure exit published
+    assert!(pty.try_exit_status().is_some(), "should be exited");
+}
+
+#[tokio::test]
+async fn size_returns_cached_value_after_exit() {
+    let cmd = tokio::process::Command::new("true");
+    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 100, rows: 40 });
+    let pty = GhosttyPty::spawn(opts).expect("spawn");
+
+    let _ = pty.wait().await; // `true` exits immediately
+
+    let size = pty.size().await.expect("size should still work post-exit");
+    assert_eq!(size, TermSize { cols: 100, rows: 40 });
 }
