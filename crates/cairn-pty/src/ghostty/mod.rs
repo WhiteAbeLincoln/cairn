@@ -101,6 +101,11 @@ impl GhosttyPty {
             }
         }
     }
+
+    /// Non-blocking peek at the exit state. `None` while the child is running.
+    pub fn try_exit_status(&self) -> Option<crate::ExitStatus> {
+        *self.exit_rx.borrow()
+    }
 }
 
 #[async_trait::async_trait]

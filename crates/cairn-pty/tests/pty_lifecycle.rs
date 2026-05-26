@@ -148,3 +148,16 @@ async fn write_after_exit_returns_closed() {
         result
     );
 }
+
+#[tokio::test]
+async fn try_exit_status_is_none_before_exit_and_some_after() {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c").arg("sleep 100");
+    let pty = GhosttyPty::spawn(SpawnOptions::new(cmd)).expect("spawn");
+
+    assert!(pty.try_exit_status().is_none(), "should be running");
+
+    pty.kill().expect("kill");
+    let _ = pty.wait().await; // ensure exit published
+    assert!(pty.try_exit_status().is_some(), "should be exited");
+}
