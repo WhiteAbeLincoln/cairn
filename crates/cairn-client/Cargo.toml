@@ -12,7 +12,6 @@ description = "A client for the cairn session manager daemon"
 clap = { version = "4.0", features = ["derive", "wrap_help", "env"] }
 clap_complete = { version = "4.6" }
 anyhow = { version = "1.0", features = ["backtrace"] }
-uuid = { version = "1.23", features = ["v4", "v7"] }
 strum = { version = "0.28", features = ["derive"] }
 humantime = { version = "2.3" }
 url = { version = "2.5" }

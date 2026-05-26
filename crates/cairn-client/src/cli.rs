@@ -334,14 +334,12 @@ pub struct SessionTargets {
 #[derive(clap::Args, Debug)]
 pub struct ExecArgs {
     /// Human-friendly session name. If omitted, the daemon assigns
-    /// a default. Must be unique across active sessions.
+    /// a default. Must be unique across active sessions. The name is
+    /// the correlation key for tying a session to an external system
+    /// (e.g. a ticket id); the session's UUIDv7 id is always assigned
+    /// by the daemon.
     #[clap(long, short = 'n')]
     pub name: Option<String>,
-    /// Optional uuid for the session. Useful for correlating with
-    /// external systems (database rows, log streams) or for
-    /// idempotent session creation under retry.
-    #[clap(long)]
-    pub id: Option<uuid::Uuid>,
     /// Run the session detached: the daemon creates it and the
     /// client returns immediately. The session's TTY and stdin
     /// allocation are independent of this flag — `cairn run -d`
