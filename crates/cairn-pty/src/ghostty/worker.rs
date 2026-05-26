@@ -605,7 +605,17 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                                 if rc == 0 {
                                     Ok(())
                                 } else {
-                                    Err(PtyError::from(std::io::Error::last_os_error()))
+                                    let err = std::io::Error::last_os_error();
+                                    // ESRCH: the group is already gone (child
+                                    // exited in the window between id() and
+                                    // killpg). The requested terminal state is
+                                    // reached, so report success — keeps signal
+                                    // delivery idempotent against the exit race.
+                                    if err.raw_os_error() == Some(libc::ESRCH) {
+                                        Ok(())
+                                    } else {
+                                        Err(PtyError::from(err))
+                                    }
                                 }
                             }
                             None => Ok(()), // already reaped — desired state reached
