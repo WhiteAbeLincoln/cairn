@@ -2,7 +2,7 @@
 
 How data and commands move *inside* a single cairn daemon process. The wire
 protocol to clients lives in [[external-protocol]]; this document stops at the
-WebSocket boundary and the public `PtySession` trait.
+wRPC handler boundary and the public `PtySession` trait.
 
 Scope: threading model, channel topology, single-writer invariants, and the
 `Send`/`Sync` constraints that `libghostty-vt` imposes. Closely related:
@@ -37,8 +37,8 @@ zmx pays for its simplicity with a process-per-session boundary and gets the
 
 ## cairn: threading model
 
-cairn embeds `libghostty-vt` in the same daemon process as the WebSocket
-server, so it cannot hide behind `fork()`. The constraint that drives
+cairn embeds `libghostty-vt` in the same daemon process as the wRPC
+listener, so it cannot hide behind `fork()`. The constraint that drives
 everything is in `libghostty-vt/src/lib.rs:19-23`:
 
 > All `libghostty-vt` objects are **not** thread-safe, and have been marked
@@ -147,7 +147,7 @@ point on the same task.
 Three queues are on the hot path:
 
 - **`flume::unbounded` command channel** (`worker.rs:33`): unbounded. Callers
-  (WebSocket tasks) are themselves rate-limited by network reads, so runaway
+  (wRPC handler tasks) are themselves rate-limited by network reads, so runaway
   producers are unlikely. A bounded variant would force `write()` callers to
   block or fail; we currently choose blocking implicitly.
 - **`broadcast::channel(capacity)`** (`worker.rs:235`): bounded ring, default
@@ -164,14 +164,14 @@ trade-off cairn does not make. See [[backpressure]] for the client edge.
 ## Daemon-level orchestration (speculative)
 
 The current code ships only the per-session worker; the routing layer between
-WebSocket connections and `GhosttyPty` instances is not yet in tree.
+wRPC client sessions and `GhosttyPty` instances is not yet in tree.
 Speculating from zmx and the trait shape:
 
 - A `SessionRegistry` (likely `dashmap` or
   `Arc<Mutex<HashMap<SessionId, Arc<dyn PtySession>>>>`) maps session IDs to
   handles. Because `Arc<dyn PtySession>` is `Send + Sync`, the lock is held
   only across map operations, never across PTY I/O.
-- WebSocket handlers on the main tokio multi-thread runtime look up the
+- wRPC handlers on the main tokio multi-thread runtime look up the
   handle, then call `subscribe()` / `write()` / `resize()` without holding
   the registry lock. The flume channel handles the cross-thread hop into
   the per-session worker.
@@ -181,7 +181,7 @@ Speculating from zmx and the trait shape:
   up.
 
 zmx avoids this layer by handing routing to the filesystem — a luxury cairn
-cannot share because all sessions must live in the WebSocket process so
+cannot share because all sessions must live in the wRPC-listening process so
 browsers can attach. See [[daemon-process-model]].
 
 ## Send/Sync summary
@@ -206,7 +206,7 @@ for `pending_writes`) and never escapes.
 
 - **Should the command channel be bounded?** Unbounded `flume` is simple but
   lets a misbehaving client grow worker memory. A bounded channel with
-  `send_async` back-pressure would propagate naturally to WebSocket reads —
+  `send_async` back-pressure would propagate naturally to wRPC inbound stream reads —
   but could deadlock if the worker is itself waiting on a slow
   `pty.write_all`. Pick one based on measured behaviour in [[backpressure]].
 - **Where does the registry live?** `dashmap` keyed by session ID is the

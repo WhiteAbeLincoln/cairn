@@ -104,10 +104,12 @@ the existing `run_session` task in `worker.rs:200–427`.
 `info_span!("pty_session", session_id, child_pid)` `.entered()` for
 the lifetime of the task; `child_pid` is recorded via
 `Span::current().record` once `pty_process::Command::spawn` returns.
-Same-task awaits inherit the span automatically. Cross-task WebSocket
-handlers in the host crate should open `pty_client` child spans with
-`client_id`, `peer_addr`, `auth_method` (see
-[[client-attach-and-election]], [[authentication]]).
+Same-task awaits inherit the span automatically. Cross-task wRPC
+attach handlers in the host crate should open `pty_client` child
+spans with `client_id`, `peer_addr`, `auth_method`, `transport`
+(`uds` or `wt`), plus wRPC's `instance` + `name` on the invocation
+span itself (see [[client-attach-and-election]], [[authentication]],
+[[external-protocol]]).
 
 **Events to add**, mapping zmx's `info`/`warn` set to cairn:
 
@@ -121,8 +123,8 @@ handlers in the host crate should open `pty_client` child spans with
   `child.wait()` arm (`worker.rs:406–415`). zmx parallel
   `main.zig:2559`.
 - Client attach / detach — `info!(client_id, auth_method,
-  client_type)` in the WebSocket layer. zmx parallels `main.zig:2541`,
-  `:635`.
+  transport, client_type)` in the wRPC attach handler. zmx parallels
+  `main.zig:2541`, `:635`.
 - Leader transition — `info!(prev, next, reason, "leader changed")`
   in the dispatcher for [[query-response-delegation]]. zmx parallel
   `main.zig:644`.
@@ -132,10 +134,12 @@ handlers in the host crate should open `pty_client` child spans with
   `RecvError::Lagged(n)` surfaces on the receive side. Today
   `worker.rs:289` is a fire-and-forget `let _ = tx.send(chunk)`. See
   [[backpressure]].
-- Auth failure — `warn!(peer_addr, reason)` in the WebSocket upgrade
-  handler. See [[authentication]].
-- Protocol error — `warn!(client_id, opcode)` in the frame parser.
-  See [[external-protocol]].
+- Auth failure — `warn!(peer_addr, reason)` in the
+  `meta.authenticate` handler (or, for UDS, on `SO_PEERCRED` mismatch
+  at accept). See [[authentication]].
+- Protocol error — `warn!(client_id, instance, name, kind)` whenever
+  a wRPC invocation surfaces a decode or transport error. See
+  [[external-protocol]].
 
 ## Privacy: byte-level tracing
 
@@ -193,8 +197,9 @@ owner. Minimum useful set:
   (per `format_snapshot`, `worker.rs:356`).
 
 Recommended exposure: Prometheus text format at
-`GET /metrics` on the daemon's HTTP server (same listener that
-serves WebSockets, gated by [[authentication]]). OpenTelemetry is
+`GET /metrics` on a small HTTP listener bound alongside the wRPC
+endpoints (loopback by default, gated by [[authentication]]).
+OpenTelemetry is
 plausible but adds a heavy dep tree for a self-hosted daemon; defer
 unless an integration partner demands it.
 

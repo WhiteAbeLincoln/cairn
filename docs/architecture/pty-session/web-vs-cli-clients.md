@@ -1,13 +1,16 @@
 # Web Client vs CLI Client
 
-Cairn's attach surface is one WebSocket protocol
-([[external-protocol]]) but two very different consumers: the CLI
-client in a real terminal (`cairn attach`), and `ghostty-web`, a WASM
-build of libghostty running in a browser tab. The wire format is
-identical; the **environments around the wire** are not. zmx solves
-only the CLI half (`src/main.zig:1935-2028` `attach`,
-`src/main.zig:2284-2456` `clientLoop`); cairn inherits that verbatim
-for its CLI client and grafts on a new transport for browsers.
+Cairn's attach surface is one wRPC operation
+(`sessions.attach`, see [[external-protocol]]) reachable over two
+transports ([[transports]]: UDS for local CLI, WebTransport for
+browser and remote CLI). Two very different consumers ride this:
+the CLI client in a real terminal (`cairn attach`), and `ghostty-web`,
+a WASM build of libghostty running in a browser tab. The wire format
+is identical; the **environments around the wire** are not. zmx
+solves only the CLI half (`src/main.zig:1935-2028` `attach`,
+`src/main.zig:2284-2456` `clientLoop`); cairn inherits the termios /
+signal-forwarding shape verbatim for its CLI client and adds a
+browser-only WT path.
 
 ## CLI client concerns
 
@@ -67,8 +70,9 @@ readability re-queries TTY size and sends a `Resize` frame
 `signal::unix::SignalKind::window_change()`.
 
 Signals on the **client process itself** (SIGTERM, SIGHUP) are not
-forwarded — they tear down the CLI, which closes the WebSocket, which
-the daemon treats as a normal detach. The session keeps running.
+forwarded — they tear down the CLI, which closes the UDS attach
+connection (or the WT stream for a remote CLI), which the daemon
+treats as a normal detach. The session keeps running.
 
 ### Bootstrap sequence
 
@@ -126,9 +130,11 @@ client (Ctrl+\\) has no place here — closing the tab *is* detach.
 
 ### Reconnect-as-attach
 
-Browsers disconnect WebSockets routinely: backgrounded tabs drop,
-network blips kill the socket, OS sleep kills the socket. Every
-reconnect is a fresh `Hello` → `Welcome` → `Attach` → `Snapshot` cycle
+Browsers disconnect WebTransport sessions routinely: backgrounded
+tabs drop, network blips kill the connection, OS sleep kills the
+connection. Every reconnect is a fresh QUIC session followed by
+`meta.authenticate` then a new `sessions.attach` invocation whose
+first inbound `server-event::snapshot` repaints the screen
 ([[external-protocol]]). The browser keeps its WASM emulator alive
 across reconnects and feeds it the new snapshot, so the user sees
 continuity even though the connection was destroyed and remade. CLI
@@ -137,12 +143,13 @@ because their terminal flickers; the browser hides it entirely.
 
 ### Backgrounded tabs
 
-Hidden tabs throttle JS timers to ~1 Hz and may stop processing
-WebSocket frames promptly, eventually surfacing as a slow consumer the
-broadcast channel (`crates/cairn-pty/src/pty/subscription.rs`) drops.
-Full treatment in [[backpressure]]; the **client-side** contribution is
-to reconnect cleanly on `document.visibilitychange` rather than expect
-the socket to survive a hidden hour.
+Hidden tabs throttle JS timers to ~1 Hz and may stop pulling chunks
+off the WT bidirectional stream promptly, eventually surfacing as a
+slow consumer the broadcast channel
+(`crates/cairn-pty/src/pty/subscription.rs`) drops. Full treatment
+in [[backpressure]]; the **client-side** contribution is to reconnect
+cleanly on `document.visibilitychange` rather than expect the
+connection to survive a hidden hour.
 
 ### Clipboard (OSC 52)
 
@@ -151,43 +158,45 @@ whether to honour it (most prompt the user). In the browser ghostty-web
 bridges it into `navigator.clipboard.writeText`, which **requires a
 user gesture** and HTTPS — silent paste is impossible. The daemon
 doesn't need to know any of this: it forwards the escape bytes as
-ordinary `Output` and lets each client's policy decide.
+ordinary `server-event::output` payload and lets each client's policy
+decide.
 
 ### Origin, CSP, and the trust model
 
-CLI clients connect to `localhost` and authenticate with a token loaded
-from the user's filesystem; the local-only path can probably skip TLS
-([[authentication]]). Browser clients connect over `wss://` from an
-arbitrary origin and must be validated:
+Local CLI clients connect over UDS and authenticate via filesystem
+permissions plus `SO_PEERCRED`; no token. Remote CLI and browser
+clients connect over WebTransport and must be validated:
 
-- **Origin checks** on the WebSocket upgrade — reject any origin not on
-  the configured allowlist. WebSocket has no same-origin policy by
-  default; the daemon must enforce it.
-- **CSP `connect-src`** on the ghostty-web page itself, set tight enough
-  that a compromised third-party script can't open a WebSocket to the
-  daemon.
-- **Same auth scheme as CLI** (bearer token in subprotocol or first
-  `Hello` frame) but assume the browser is a less-trustworthy custodian
-  — short-lived tokens, no long-lived secret in `localStorage`.
+- **First-message auth** via the `meta.authenticate(token)` wRPC
+  invocation. The token never appears in URLs, headers, or access
+  logs — see [[authentication]] for the rationale. Forced by the
+  browser `WebTransport` constructor not accepting custom headers.
+- **CSP `connect-src`** on the ghostty-web page itself, set tight
+  enough that a compromised third-party script can't open a
+  WebTransport session to the daemon.
+- **Same auth scheme as remote CLI** (bearer token in first frame),
+  but assume the browser is a less-trustworthy custodian — short-lived
+  tokens, no long-lived secret in `localStorage`.
 
-See [[authentication]] for the token issuance flow and
-[[external-protocol]] (open question 1) for the placement debate.
+See [[authentication]] for the token issuance flow.
 
 ## Where the daemon is identical for both
 
-By design, almost everywhere. Both clients speak the same versioned
-msgpack-over-WebSocket-binary protocol; both send `Attach { cols, rows
-}` on connect and receive a `Snapshot` if there's prior PTY output
+By design, almost everywhere. Both clients speak the same
+wRPC + WIT protocol (`cairn:daemon@0.1.0`); both invoke
+`sessions.attach` with an `attach-init { cols, rows, no-stdin }` and
+consume the resulting `stream<server-event>` whose first element is
+a `snapshot` if the session has prior output
 ([[terminal-state-and-replay]]); both participate in leader election
 the same way ([[client-attach-and-election]]) — the worker doesn't
 distinguish CLI from browser; both are subject to the same
 broadcast-drop policy ([[backpressure]]) and `Resize` semantics
 ([[resize-semantics]]).
 
-The split surfaces only in the **control plane**: `Info`, `History`,
-`Kill`, `Switch` are CLI-flavoured operations
-([[external-protocol]] message table). v1 keeps them off the attach
-WebSocket and routes them over HTTP/JSON.
+There is no split control plane: list, kill, exec, inspect, send,
+logs, wait, kick, rename, restart all flow through the same wRPC
+endpoint as `attach`, just as unary or unidirectional-streaming
+invocations rather than bidi.
 
 ## Open Questions
 
@@ -199,7 +208,7 @@ WebSocket and routes them over HTTP/JSON.
    keyboard. Do we ship a virtual-keyboard overlay, or punt? Affects
    what `Input` frames a browser can produce.
 3. **Local-loopback CLI fast path.** A CLI client on the same host as
-   the daemon over `wss://localhost` is paying TLS + msgpack tax for no
+   the daemon over loopback WebTransport is paying TLS + QUIC tax for no
    security gain. Worth a Unix-socket variant of the WS protocol, or
    accept the cost for transport uniformity? Cross-ref
    [[internal-communication]].

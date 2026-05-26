@@ -6,7 +6,7 @@
 
 **Architecture:** New workspace crate at `crates/cairn-protocol/`. A single WIT package (`cairn:daemon@0.1.0`) covers the `types`, `sessions`, and `meta` interfaces from `docs/superpowers/specs/2026-05-26-daemon-protocol-design.md`. The `wit_bindgen_wrpc::generate!{}` procedural macro produces Rust traits and client functions at compile time. The crate's `tests/round_trip.rs` spawns a stub wRPC server on a tempdir Unix domain socket, connects with the wRPC unix client, and asserts that representative operations round-trip values cleanly. The stub server lives in test code only — production daemon implementation is the next plan.
 
-**Tech Stack:** Rust 2024 (edition matches workspace), Tokio (current-thread suffices for tests), `wit-bindgen-wrpc` 0.11, `wrpc-transport` 0.29 (with `net` feature for Unix sockets), `anyhow` 1, `tempfile` 3, `tokio` 1, `futures` 0.3, `cargo-nextest` for running tests.
+**Tech Stack:** Rust 2024 (edition matches workspace), Tokio (current-thread suffices for tests), `wit-bindgen-wrpc` 0.10 (latest published on crates.io as of 2026-05-26), `wrpc-transport` 0.28 (latest published; `net` feature for Unix sockets), `anyhow` 1, `tempfile` 3, `tokio` 1, `futures` 0.3, `cargo-nextest` for running tests.
 
 **Out of scope for this plan (future plans):**
 - The `cairn-daemon` binary, session registry, real handler implementations.
@@ -65,8 +65,8 @@ anyhow = { version = "1", default-features = false, features = ["std"] }
 bytes = { version = "1", default-features = false }
 futures = { version = "0.3", default-features = false }
 tokio = { version = "1", default-features = false }
-wit-bindgen-wrpc = { version = "0.11", default-features = false }
-wrpc-transport = { version = "0.29", default-features = false, features = ["net"] }
+wit-bindgen-wrpc = { version = "0.10", default-features = false }
+wrpc-transport = { version = "0.28", default-features = false, features = ["net"] }
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }
@@ -204,8 +204,8 @@ interface sessions {
         exit-status, error,
     };
 
-    list:    func() -> list<session-info>;
-    inspect: func(id: session-id) -> result<session-info, error>;
+    list-all: func() -> list<session-info>;
+    inspect:  func(id: session-id) -> result<session-info, error>;
 
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;
@@ -243,11 +243,20 @@ world daemon {
     export sessions;
     export meta;
 }
+
+// `wit-bindgen-wrpc` only generates client-invocation free functions for
+// `import`ed interfaces, so a separate world is needed to produce the
+// client-side API used by tests and the CLI.
+world daemon-client {
+    import sessions;
+    import meta;
+}
 ```
 
 Notes vs the spec sketch:
 - The spec used `signal: signal` as a parameter name inside the `kill` signature; `signal` is a reserved-feeling name in many languages and clashes with the type. Renamed the parameter to `sig`.
 - `meta` interface now imports `error` from `types`, since `authenticate` and `whoami` both reference it.
+- A `daemon-client` world was added so the wRPC macro emits client-invocation free functions (the macro only generates those for `import`ed interfaces, not `export`ed ones).
 
 - [ ] **Step 2: Verify the file parses (no compile-time check yet; we add codegen in Task 3)**
 
@@ -533,7 +542,7 @@ async fn meta_version_round_trips_record_fields() {
         // `Pin<Box<dyn Stream<Item = ...> + Send>>` and similar.
         // The pattern is documented in
         // /Users/abe/Projects/wrpc/examples/rust/streams-quic-server/src/main.rs:43-50.
-        async fn list(
+        async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,
         ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
@@ -544,7 +553,7 @@ async fn meta_version_round_trips_record_fields() {
 
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
-    let info = bindings::cairn::daemon::meta::version(&harness.unix_client(), ())
+    let info = bindings::client::cairn::daemon::meta::version(&harness.unix_client(), ())
         .await
         .expect("version invocation");
 
@@ -569,7 +578,7 @@ The client-side invocation pattern from `wrpc/examples/rust/hello-unix-client/sr
 bindings::wrpc_examples::hello::handler::hello(&wrpc, ()).await
 ```
 
-So for us it's `bindings::cairn::daemon::meta::version(&client, ())`. Note: client-side path uses `cairn::daemon::meta`, server-side path uses `exports::cairn::daemon::meta`.
+So for us it's `bindings::client::cairn::daemon::meta::version(&client, ())`. Note: client-side path is `client::cairn::daemon::meta` (a second `generate!` invocation in `src/lib.rs` against a `daemon-client` world that *imports* the interfaces — needed because the macro only emits client-invocation functions for imports); server-side path is `exports::cairn::daemon::meta` (from the original `daemon` world that *exports*).
 
 - [ ] **Step 2: Run the test, expect a compile error if the path/trait names are off; fix paths until it compiles AND the test panics on `unimplemented!()` from `sessions::Handler` methods the wRPC plumbing somehow exercises (it shouldn't, but worth knowing)**
 
@@ -599,7 +608,7 @@ EOF
 
 ---
 
-## Task 6: Round-trip test — `sessions.list` with a non-empty result
+## Task 6: Round-trip test — `sessions.list-all` with a non-empty result
 
 This exercises a more interesting type graph: `Vec<SessionInfo>`, nested `Option<...>` and `Option<ExitStatus>`, plus a populated `SessionSpec`. Catches encoder/decoder bugs on optional and nested-record paths.
 
@@ -651,7 +660,7 @@ async fn sessions_list_round_trips_two_entries_with_optional_fields() {
     struct Stub;
 
     impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
-        async fn list(
+        async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,
         ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
@@ -690,7 +699,7 @@ async fn sessions_list_round_trips_two_entries_with_optional_fields() {
 
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
-    let result = bindings::cairn::daemon::sessions::list(&harness.unix_client(), ())
+    let result = bindings::client::cairn::daemon::sessions::list_all(&harness.unix_client(), ())
         .await
         .expect("list invocation");
 
@@ -726,7 +735,7 @@ Expected: 2 tests pass.
 ```bash
 git add crates/cairn-protocol/tests/round_trip.rs
 git commit -m "$(cat <<'EOF'
-test(cairn-protocol): assert sessions.list round-trips nested records
+test(cairn-protocol): assert sessions.list-all round-trips nested records
 
 Exercises Vec<SessionInfo>, nested SessionSpec, optional fields, and
 list-of-tuples (env). Catches codec bugs that wouldn't surface from
@@ -786,7 +795,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     }
 
     impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
-        async fn list(
+        async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,
         ) -> anyhow::Result<Vec<bindings::cairn::daemon::types::SessionInfo>> {
@@ -803,7 +812,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
     // Success path.
-    let ok = bindings::cairn::daemon::meta::authenticate(
+    let ok = bindings::client::cairn::daemon::meta::authenticate(
         &harness.unix_client(),
         (),
         "valid-token",
@@ -813,7 +822,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     assert!(ok.is_ok(), "expected Ok(_), got {ok:?}");
 
     // Failure path.
-    let err = bindings::cairn::daemon::meta::authenticate(
+    let err = bindings::client::cairn::daemon::meta::authenticate(
         &harness.unix_client(),
         (),
         "wrong-token",

@@ -4,9 +4,12 @@ Companion to [[pty-lifecycle]], [[terminal-state-and-replay]], and
 [[query-response-delegation]]. This doc covers **what happens when a client
 joins or leaves an existing PTY session**, and **how zmx picks the single
 "leader" among N attached clients**. zmx is the reference; cairn
-([[daemon-process-model]]) matches its semantics over WebSocket transport
-so browser clients can attach. See [[external-protocol]] and
-[[web-vs-cli-clients]].
+([[daemon-process-model]]) matches its semantics over wRPC (transports:
+UDS for local CLI, WebTransport for browser and remote CLI) so all
+client types can attach uniformly. The attach flow runs through the WIT
+`sessions.attach` operation — a bidirectional stream pair of
+`client-event`s flowing inbound and `server-event`s flowing outbound,
+documented in [[external-protocol]]. See also [[web-vs-cli-clients]].
 
 ---
 
@@ -188,9 +191,9 @@ Mirror zmx's policy with these changes; nothing here breaks the
   track a `has_had_client` equivalent.
 - **Leader state on the session.** Add `leader: Option<ClientId>` and
   `last_input_at: Option<Instant>` to the worker's `SessionState`.
-  `ClientId` comes from whatever layer owns WebSocket sessions
-  ([[internal-communication]]); the PTY worker doesn't distinguish
-  CLI vs. browser.
+  `ClientId` is assigned by whichever wRPC-attach handler owns the
+  client's stream pair ([[internal-communication]]); the PTY worker
+  doesn't distinguish CLI vs. browser, nor UDS vs. WT.
 - **`Command::Write { client_id, ... }`.** Threading a client id
   through writes is mandatory — otherwise the worker has no way to
   apply `isUserInput` and promote leadership.
@@ -252,8 +255,9 @@ Mirror zmx's policy with these changes; nothing here breaks the
 6. **Observability.** Mirror zmx's `setting new leader` log
    (`src/main.zig:644`) as a tracing event with `client_id` and
    `cause` (`init`/`resize`/`input`/`detach`). See [[observability]].
-7. **Stuck leader recovery.** A half-open WebSocket leader blocks
-   everyone else's resizes until TCP keepalive fires. zmx has the
-   same problem but Unix sockets fail faster. Heartbeat-driven kick
-   vs. explicit "steal" command? See [[backpressure]] and
-   [[error-recovery]].
+7. **Stuck leader recovery.** A half-open WT or UDS leader blocks
+   everyone else's resizes until the underlying carrier detects the
+   gap (QUIC idle timeout for WT; TCP-keepalive-style detection for
+   UDS attaches). zmx has the same problem but its blocking-poll
+   UDS attaches fail faster. Heartbeat-driven kick vs. explicit
+   "steal" command? See [[backpressure]] and [[error-recovery]].

@@ -23,8 +23,8 @@ one OS process per session, no separate registry.
 caller-driven constructor that returns a `Send + Sync` handle. The
 PTY lifecycle is **not** coupled to attach: the cairn daemon
 ([[daemon-process-model]]) calls `GhosttyPty::spawn` when it decides
-a session should exist, and clients later attach via WebSocket
-([[client-attach-and-election]]). zmx ties "session exists" to "PTY
+a session should exist, and clients later attach via the wRPC
+`sessions.attach` operation ([[client-attach-and-election]]). zmx ties "session exists" to "PTY
 master exists" at the process level; cairn keeps the PTY as an
 object the host process holds inside an `Arc<dyn PtySession>`
 (`crates/cairn-pty/src/pty/session.rs`), making session registry,

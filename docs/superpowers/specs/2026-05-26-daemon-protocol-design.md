@@ -141,13 +141,13 @@ interface sessions {
         exit-status, error,
     };
 
-    list:    func() -> list<session-info>;
-    inspect: func(id: session-id) -> result<session-info, error>;
+    list-all: func() -> list<session-info>;
+    inspect:  func(id: session-id) -> result<session-info, error>;
 
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;
     restart: func(id: session-id, force: bool) -> result<_, error>;
-    kill:    func(id: session-id, signal: signal) -> result<_, error>;
+    kill:    func(id: session-id, sig: signal) -> result<_, error>;
     kick:    func(id: session-id, client: option<client-id>) -> result<_, error>;
 
     /// Resolves when the session exits.
@@ -169,6 +169,8 @@ interface sessions {
 }
 
 interface meta {
+    use types.{error};
+
     record version-info {
         daemon: string,
         protocol: string,    // "cairn:daemon@0.1.0"
@@ -186,6 +188,14 @@ world daemon {
     export sessions;
     export meta;
 }
+
+// `wit-bindgen-wrpc` only generates client-invocation free functions for
+// `import`ed interfaces, so a separate world is needed to produce the
+// client-side API used by the CLI and tests.
+world daemon-client {
+    import sessions;
+    import meta;
+}
 ```
 
 Notes:
@@ -199,7 +209,7 @@ Notes:
 
 | CLI command                                | Operation                                   | Shape                                |
 |--------------------------------------------|---------------------------------------------|--------------------------------------|
-| `cairn list`                               | `sessions.list`                             | unary                                |
+| `cairn list`                               | `sessions.list-all`                         | unary                                |
 | `cairn inspect`                            | `sessions.inspect`                          | unary                                |
 | `cairn exec` / `run` with `--detach`       | `sessions.create`                           | unary                                |
 | `cairn exec` / `run` attached              | `sessions.create` + `sessions.attach`       | unary then bidi                      |
@@ -215,7 +225,7 @@ Notes:
 | `cairn version`                            | `meta.version`                              | unary                                |
 | `cairn completion`                         | (local-only, no daemon round-trip)          | n/a                                  |
 
-Glob and `--all` expansion (`SessionTargets` in `cli.rs`) is resolved client-side via `sessions.list` plus per-target unary calls. Keeps the WIT surface narrower at the cost of one extra round-trip per bulk command. See [Open questions](#open-questions).
+Glob and `--all` expansion (`SessionTargets` in `cli.rs`) is resolved client-side via `sessions.list-all` plus per-target unary calls. Keeps the WIT surface narrower at the cost of one extra round-trip per bulk command. See [Open questions](#open-questions).
 
 ## Plugin API
 

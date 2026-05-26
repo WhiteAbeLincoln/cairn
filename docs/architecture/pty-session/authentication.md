@@ -53,35 +53,37 @@ single-trust-domain.
 
 ## Why this doesn't port
 
-Move the listener from `AF_UNIX` to `AF_INET` (loopback, ws://) and the
+Move the listener from `AF_UNIX` to WebTransport over UDP/QUIC and the
 kernel's authorization story evaporates:
 
-1. **No file-permission gate.** TCP listens are not protected by a path
-   the kernel can DAC-check; any local process — of any user — can
-   `connect(2)` to `127.0.0.1:PORT`. Including user-namespaced
-   containers and processes running as `nobody`.
+1. **No file-permission gate.** UDP listens are not protected by a
+   path the kernel can DAC-check; any local process — of any user —
+   can dial `127.0.0.1:PORT`. Including user-namespaced containers
+   and processes running as `nobody`.
 2. **No `SO_PEERCRED` analogue.** That `getsockopt` works only on
-   `AF_UNIX`; TCP gives us peer IP and port, nothing about UID or PID.
-3. **Browsers are now in scope.** Any HTTP page the user visits can
-   attempt `new WebSocket("ws://localhost:PORT/...")` — cross-site
-   WebSocket hijacking (CSWSH). Same-origin policy does **not** apply
-   to WebSockets; CORS doesn't either. The browser will happily make
-   the connection and forward any cookies for `localhost` it has.
-4. **The `Hello` frame from [[external-protocol]] arrives *after* the
-   socket is open.** By that point a malicious peer has already opened
-   the WS and (without auth) is a client.
+   `AF_UNIX`; UDP gives us peer IP and port, nothing about UID or PID.
+3. **Browsers are now in scope.** Any HTTPS page the user visits can
+   attempt `new WebTransport("https://localhost:PORT/...")`. The
+   WebTransport spec does enforce origin-style restrictions and
+   requires QUIC + cert validation, but those are weaker than "this
+   connection came from the local user's CLI."
+4. **The `meta.authenticate` invocation arrives *after* the QUIC
+   session is open.** By that point a malicious peer has already
+   completed a QUIC handshake and (without auth) holds an
+   unauthenticated session.
 
 ## Cairn v0 scheme
 
 A single mechanism that covers both browser and CLI clients, with a
 Unix-socket fallback for CLI when present.
 
-### Bind: loopback only
+### Bind: loopback only by default
 
-The cairn HTTP/WS listener binds **only** to `127.0.0.1` (and `::1`),
-never to `0.0.0.0`. This is a hard rule, not a configurable. Exposing
-the daemon on a routable interface is out of scope for v0 and would
-need mTLS / a reverse proxy — see Open Questions.
+The cairn WebTransport (HTTP/3) listener binds to `127.0.0.1` (and
+`::1`) by default. Operators can configure a non-loopback bind for
+remote browser/CLI access, but that turns the bearer token into the
+sole defence — mTLS / a reverse proxy in front of the daemon become
+desirable. See Open Questions.
 
 ### Token: per-daemon bearer token
 
@@ -94,92 +96,69 @@ directory mirrors zmx's `0o750`-style gate (`src/main.zig:474`),
 tightened to `0o700` because we are the only writer and there is no
 Unix-socket sharing story to preserve.
 
-Token presentation: **first-message authentication** for all clients.
+Token presentation: **first-message authentication** via a
+`meta.authenticate(token)` wRPC invocation. This is not a preference
+— it's forced by the browser API. `new WebTransport(url, opts)`
+only accepts `allowPooling`, `congestionControl`,
+`requireUnreliable`, and `serverCertificateHashes`; no `Authorization`
+header path exists for browser callers.
 
-The WebSocket connects unauthenticated. The client's first frame must
-be a `Hello { token, protocol_version, … }` message (see
-[[external-protocol]]). The server processes no other message types
-until the `Hello` is validated. If no valid `Hello` arrives within
-~5 seconds the server closes the connection with WS close code
-`1008` (policy violation). Comparison uses `subtle::ConstantTimeEq`;
-on failure the daemon emits a single rate-limited log line and
-closes — no error message body, so probing learns nothing.
+The WebTransport session opens unauthenticated. The client's first
+wRPC invocation on that session must be `meta.authenticate(token)`
+(see [[external-protocol]]). The server rejects every other interface
+call until that invocation succeeds. If no `meta.authenticate`
+arrives within ~5 seconds the server closes the QUIC connection.
+Comparison uses `subtle::ConstantTimeEq`; on failure the daemon
+emits a single rate-limited log line and closes the connection — no
+detailed error body, so probing learns nothing.
 
-The same code path serves both clients:
+The same code path serves remote CLI and browser:
 
-- **CLI**: reads `$XDG_RUNTIME_DIR/cairn/token` at startup, opens the
-  WS, sends `Hello { token, … }` as the first frame. If the file is
-  missing or unreadable the CLI refuses to attempt connection — no
-  auto-prompting.
+- **Remote CLI**: reads `$XDG_RUNTIME_DIR/cairn/token` at startup,
+  opens a WebTransport session to the daemon, invokes
+  `meta.authenticate(token)` first. If the file is missing or
+  unreadable the CLI refuses to attempt connection — no auto-prompting.
 - **Browser (ghostty-web)**: the daemon serves a launcher HTML page
-  at `http://127.0.0.1:PORT/` over the same listener; the page reads
-  the token from `sessionStorage` (populated by an earlier one-shot
-  paste or by a `#token=…` URL fragment on first load — fragments are
-  client-only and never transmitted to the server). The page then
-  opens the WS and sends `Hello { token, … }` as the first frame.
+  over a small HTTP/3 listener bound alongside the WT endpoint; the
+  page reads the token from `sessionStorage` (populated by an earlier
+  one-shot paste or by a `#token=…` URL fragment on first load —
+  fragments are client-only and never transmitted to the server). The
+  page then opens a WebTransport session and invokes
+  `meta.authenticate(token)` first.
+
+Local CLI clients connect over UDS and never see the token — they
+authenticate via filesystem DAC + `SO_PEERCRED`, as described above.
 
 ### Why not the URL?
 
-This is the question the browser's missing-headers limitation pushes
-on every WebSocket designer. Rejected alternatives, with rationale:
+The WebTransport constructor's lack of header support means tokens
+must travel somewhere. URL embedding has been rejected before for
+WebSocket and the same reasoning applies to WebTransport:
 
-- **`?token=` query parameter or `/attach/<token>` path segment**: the
-  token rides in the request URL, which leaks to access logs, browser
+- **`?token=` query parameter or `/<token>/` path segment**: the
+  token rides in the connect URL, which leaks to access logs, browser
   history, browser address-bar autocomplete, `Referer` headers on any
   navigation away from the page, screenshots, screen-share sessions,
   intermediate proxy logs, load-balancer logs, and network appliances
-  (IDS/IPS/WAFs) that inspect URLs. Even loopback HTTPS terminates at
-  the daemon's listener; logs and client-side leaks happen outside that
-  protection. Strip-on-log mitigates the daemon's own logs but nothing
-  else. **Rejected.**
-- **HTTP Basic Auth in the URL (`wss://user:pass@host`)**: deprecated
-  in modern browsers; Chromium ignores it for subresource and
-  WebSocket loads. **Rejected.**
-- **Cookies**: browsers send same-origin cookies on the WS upgrade
-  request automatically. Works cleanly when the page is served by the
-  same origin as the WS endpoint, and we already plan that for the
-  launcher HTML. Costs: ties browser auth to a specific deployment
-  topology (cross-origin embedders of ghostty-web don't get cookies);
-  exposes the token to all JS on the page unless `HttpOnly` (and
-  `HttpOnly` cookies aren't readable from JS for the WS handshake on
-  some configurations); CSRF surface grows. **Viable but not chosen
-  as default**: first-message has the same security guarantees with
-  fewer deployment constraints.
-- **`Sec-WebSocket-Protocol` abuse**: the browser's `WebSocket`
-  constructor lets you set this header via the second argument
-  (`new WebSocket(url, [token])`). Server reads it on upgrade. Works
-  in browsers and is used by Kubernetes' `kubectl exec` and similar
-  tools. Costs: mis-uses a protocol-negotiation header for credential
-  carriage; the value lands in some HTTP access logs (curl, Apache
-  `LogFormat` `%{Sec-WebSocket-Protocol}i`); the server must echo
-  a value back. **Viable backup** if a deployment ever forbids
-  application-layer auth, but first-message wins on clarity.
+  (IDS/IPS/WAFs) that inspect URLs. Even loopback HTTPS/HTTP3
+  terminates at the daemon's listener; logs and client-side leaks
+  happen outside that protection. Strip-on-log mitigates the
+  daemon's own logs but nothing else. **Rejected.**
+- **Cookies**: browsers don't send cookies on a WebTransport
+  connection the same way they do on a fetch — there is no
+  same-origin-cookie-on-handshake guarantee equivalent to WS. Even
+  if it worked, ties browser auth to a specific deployment topology
+  and grows CSRF surface. **Rejected.**
 - **TLS client certificates (mTLS)**: cryptographically the cleanest
   answer; UX for browser provisioning is poor. Out of scope for v0
-  local-only deployment. Re-examine if remote exposure becomes a
-  requirement.
+  local-only deployment. Re-examine if remote exposure becomes
+  routine.
 
-First-message auth has costs of its own — the server must briefly
-hold an unauthenticated-but-accepted connection, which is a small DoS
-surface. Mitigations: a per-IP connection cap, the 5-second `Hello`
-deadline, and refusing all message types other than `Hello` until
-authenticated.
-
-### Origin verification (browsers)
-
-The daemon **must** validate `Origin` on every WS upgrade:
-
-- Accept: `null` (file:// or sandboxed contexts), or `http://127.0.0.1:PORT`
-  exactly matching our own listener, or an explicitly allow-listed
-  origin from config (see [[configuration]]).
-- Reject everything else with HTTP 403 *before* the WS handshake
-  completes.
-
-CORS does not protect WS. CSWSH protection is `Origin` + token. Without
-this check, a token leaked into a browser session (e.g. via a copy-paste
-into a URL bar that ended up in browser history) could be replayed
-from any tab the user is logged into; with this check, only pages
-served by the cairn daemon itself can initiate the handshake.
+First-message auth has a cost — the server holds an unauthenticated
+QUIC connection briefly, which is a small DoS surface. Mitigations:
+a per-IP connection cap, the 5-second `meta.authenticate` deadline,
+and refusing every other interface call until authentication
+succeeds.
 
 ### Constant-time comparison and rotation
 
@@ -202,11 +181,11 @@ story plus a portability fallback.
 This is the dual-transport mode hinted at in [[web-vs-cli-clients]].
 The trust model becomes:
 
-| Transport       | Auth                                                            | Equivalent to                |
-|-----------------|-----------------------------------------------------------------|------------------------------|
-| `AF_UNIX` (CLI) | Filesystem DAC                                                  | zmx today                    |
-| WS (browser)    | `Origin` + bearer token (first-message) + loopback              | net-new                      |
-| WS (CLI)        | Bearer token (first-message) + loopback                         | for non-Unix platforms       |
+| Transport         | Auth                                                          | Equivalent to                |
+|-------------------|---------------------------------------------------------------|------------------------------|
+| UDS (local CLI)   | Filesystem DAC + `SO_PEERCRED`                                | zmx today                    |
+| WT (browser)      | First-message `meta.authenticate(token)` + loopback or TLS    | net-new                      |
+| WT (remote CLI)   | First-message `meta.authenticate(token)`                      | for cross-machine attach     |
 
 ### Authorization stays flat (v0)
 
@@ -217,30 +196,34 @@ attaches, or session ACLs in v0. Two reasons:
 1. The single-user trust domain is preserved verbatim from zmx — any
    process that can read the token file already runs as the user and
    can read PTY state via `/proc/$PID/fd/` anyway.
-2. Adding scope strings to `Hello.capabilities`
-   (`docs/architecture/pty-session/external-protocol.md` message table)
-   is forward-compatible. We can introduce read-only browser links
-   later via signed per-session capability tokens (see Open Questions).
+2. Adding scope fields to the WIT `attach-init` record or a
+   future `meta.authenticate` extension is forward-compatible — wRPC
+   dispatch is by instance + function name, and field additions to
+   records preserve wire compatibility. We can introduce read-only
+   browser links later via signed per-session capability tokens (see
+   Open Questions).
 
 ## Concrete recommendation for v0
 
-1. Loopback-only bind (`127.0.0.1` + `::1`).
-2. Bearer token in `$XDG_RUNTIME_DIR/cairn/token` mode `0o600`.
-3. `Origin` allow-list with the daemon's own URL as the sole default.
-4. Unix-socket fallback at `$XDG_RUNTIME_DIR/cairn/control.sock`
-   mode `0o600`; CLI prefers it; no token required on that transport.
-5. **First-message authentication** on the WS path: server accepts the
-   upgrade unauthenticated, waits up to 5 seconds for a `Hello { token, … }`
-   frame, processes no other message types until validated, closes with
-   WS code 1008 on failure or timeout. Same code path for browser and
-   CLI clients. Token never appears in URL, request headers, or access
-   logs.
-6. Constant-time comparison; never log the token or the `Hello`
-   payload at any trace level (see [[observability]]).
+1. Loopback-only WebTransport bind (`127.0.0.1` + `::1`) by default;
+   non-loopback is operator-opt-in.
+2. Bearer token in `$XDG_RUNTIME_DIR/cairn/token` mode `0o600`,
+   regenerated on each daemon start.
+3. UDS endpoint at `$XDG_RUNTIME_DIR/cairn/cairn.sock` mode `0o600`;
+   local CLI prefers it; no token required on that transport
+   (auth = filesystem DAC + `SO_PEERCRED`).
+4. **First-message authentication** on the WT path: server accepts
+   the QUIC session unauthenticated, waits up to 5 seconds for a
+   `meta.authenticate(token)` invocation, rejects any other interface
+   call until validated, closes the connection on failure or timeout.
+   Same code path for browser and remote CLI clients. Token never
+   appears in URL, request headers, or access logs.
+5. Constant-time comparison; never log the token at any trace level
+   (see [[observability]]).
 
 This buys zmx-equivalent local-user safety, closes CSWSH, and keeps
 the door open to per-session capabilities without a wire break — new
-fields ride the msgpack maps described in [[external-protocol]].
+fields ride the WIT schema described in [[external-protocol]].
 
 ## Open Questions
 
@@ -250,17 +233,17 @@ fields ride the msgpack maps described in [[external-protocol]].
    `sessionStorage` (cleared on tab close, requires re-paste);
    `localStorage` (persists, XSS-readable); cookie set by a one-shot
    `POST /login` endpoint that takes the token and binds it to the
-   browser (no XSS read if `HttpOnly`, but the JS that opens the WS
-   can't read the cookie back to put it in the `Hello` frame — would
-   need server-side session identity). The launcher HTML can support
-   either via a small config knob. Worth pinning before the v1 wire
-   freeze in [[external-protocol]].
+   browser (no XSS read if `HttpOnly`, but the JS that opens the WT
+   session can't read the cookie back to invoke
+   `meta.authenticate(token)` — would need server-side session
+   identity). The launcher HTML can support either via a small config
+   knob. Worth pinning before the v1 wire freeze in [[external-protocol]].
 2. **Per-session capability tokens.** A read-only share-link
-   (`wss://.../session/:id?cap=<signed>`) is appealing for
+   keyed off the session id, signed by the daemon, is appealing for
    collaboration but requires a signing key, expiry semantics, and a
    revocation list. Defer past v0; reserve a `cap` field shape in
-   `Attach`.
-3. **Remote exposure.** mTLS over `wss://` is the standard answer, but
+   `attach-init` if/when the question lands on the docket.
+3. **Remote exposure.** mTLS over QUIC is the standard answer, but
    provisioning client certs has poor UX. If we ever need this,
    probably terminate TLS at a reverse proxy (Caddy, Tailscale Funnel)
    and keep the daemon loopback-only. Affects [[daemon-process-model]].

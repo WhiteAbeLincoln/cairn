@@ -94,7 +94,8 @@ Cairn's worker implements the resize **mechanism** but no **policy**:
 - **Resize is not broadcast.** The worker has no concept of "other attached
   clients." Subscribers see the child's reflowed output bytes
   (post-`SIGWINCH`), but no out-of-band size event. Fine for the trait;
-  insufficient for the WebSocket layer.
+  insufficient for the wRPC attach handler that needs to coordinate
+  size across multiple clients.
 
 The design spec
 (`docs/superpowers/specs/2026-05-22-pty-session-trait-design.md:469-471`)
@@ -105,9 +106,9 @@ policy-free; coordination lives in a higher abstraction if/when needed."
 
 The session manager (one level above `GhosttyPty`) needs to:
 
-1. **Track per-client advertised size** — each WebSocket attach carries a size
-   in its first frame, analogous to zmx's `.Init` payload. See
-   [[external-protocol]].
+1. **Track per-client advertised size** — each `sessions.attach`
+   invocation carries `attach-init { cols, rows, no-stdin }` as its
+   args, analogous to zmx's `.Init` payload. See [[external-protocol]].
 2. **Run a policy** — recommended: leader-wins to match zmx. Web followers
    letterbox by rendering only the visible subset of the emulator's grid. See
    [[client-attach-and-election]].

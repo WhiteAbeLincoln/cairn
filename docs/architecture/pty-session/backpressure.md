@@ -5,7 +5,7 @@ child produces it. Scope: the fanout from the PTY master read loop to
 subscribers, the in-process queue between the worker and each
 subscriber, and policy when a queue grows. Adjacent docs:
 [[terminal-state-and-replay]] (snapshot a kicked client receives on
-reconnect), [[external-protocol]] (WebSocket framing),
+reconnect), [[external-protocol]] (wRPC stream framing),
 [[query-response-delegation]] (leader-as-slow-client),
 [[client-attach-and-election]] (reconnect flow).
 
@@ -16,10 +16,11 @@ can render it (`yes`, `cat /dev/urandom | xxd`, a verbose build).
 Three categories of slow client matter:
 
 - **Backgrounded browser tabs.** Browsers throttle JS to ~1 Hz when a
-  tab is hidden. The WebSocket layer in the browser may keep ACKing
-  TCP frames for a while, but the JS `onmessage` callback that hands
-  bytes to xterm.js / ghostty-web won't run; the receive buffer fills,
-  the TCP window closes, and the daemon's `Sink` stops draining.
+  tab is hidden. The WebTransport layer in the browser may keep
+  ACKing QUIC packets for a while, but the JS reader pulling chunks
+  off the bidirectional stream into the ghostty-vt WASM emulator won't
+  run; the receive buffer fills, QUIC flow-control closes the
+  stream's credit window, and the daemon's wRPC sink stops draining.
 - **Network blips.** Remote clients over wifi see multi-second RTT
   spikes; frames queue server-side during the spike.
 - **Genuinely slow renderers.** First-paint xterm.js on a low-end
@@ -79,8 +80,9 @@ client.
 Four shapes for "what to do when client X can't keep up":
 
 1. **Drop the client (forcible kick).** Transport observes `Lagged`,
-   closes the WebSocket. Client reconnects and gets a fresh snapshot
-   via `subscribe()`. Predictable; relies on the snapshot path being
+   closes the wRPC stream (or for UDS, the per-attach connection).
+   Client reconnects and gets a fresh snapshot via a new `attach`
+   invocation. Predictable; relies on the snapshot path being
    cheap and correct ([[terminal-state-and-replay]]).
 2. **Drop frames silently.** Skip past lagged messages without telling
    the client. The libghostty state on the *client* diverges from the
@@ -92,19 +94,20 @@ Four shapes for "what to do when client X can't keep up":
    shared ring into a per-client mpsc with its own cap. Preserves
    state until the cap is hit, then devolves to (1) or (2). Costs
    `O(clients × capacity)` memory in the worst case.
-4. **Per-client TCP-level backpressure.** Let the WebSocket `Sink`'s
-   `poll_ready` propagate into the consumer task — the task awaits
-   `send().await`; if the socket can't take more bytes, it parks.
-   *Other* clients are unaffected because each runs its own consumer
-   over the shared broadcast. The parked task's cursor still falls
-   behind, so this reduces to (1)/(2) once the ring overflows —
-   TCP-level backpressure only helps for *briefly* slow renderers.
+4. **Per-client transport-level backpressure.** Let wRPC stream
+   credit (QUIC flow control on WT, the underlying socket on UDS)
+   propagate into the consumer task — the task awaits the next stream
+   send; if the carrier can't take more bytes, it parks. *Other*
+   clients are unaffected because each runs its own consumer over the
+   shared broadcast. The parked task's cursor still falls behind, so
+   this reduces to (1)/(2) once the ring overflows — transport-level
+   backpressure only helps for *briefly* slow renderers.
 
 Recommendation: layer (4) for the common case and (1) as the fallback.
-This maps naturally onto the existing architecture: each WebSocket
-attach task runs a tight `select!` between `receiver.recv().await` and
-`ws_sink.send(...).await`; on `Lagged`, the task closes the socket and
-the client reconnects fresh.
+This maps naturally onto the existing architecture: each attach
+invocation runs a tight `select!` between `receiver.recv().await` and
+yielding the next `server-event` onto its outbound stream; on
+`Lagged`, the task closes the stream and the client reconnects fresh.
 
 ## How zmx handles this
 
@@ -142,7 +145,7 @@ natural cairn policy is therefore:
 
 The implication for `broadcast_capacity` is that it only needs to
 absorb *transient* bursts between "PTY emits a flurry" and "a healthy
-client's WebSocket task drains it" — sub-second, not seconds.
+client's attach task drains it" — sub-second, not seconds.
 Operators with chronically slow clients should *reduce* the ring to
 fail faster, not enlarge it to paper over the problem.
 
@@ -154,39 +157,44 @@ wakeup state) but no new byte storage. Per-client storage lives
 *outside* the worker, in the transport task that holds the receiver —
 that is where the unbounded-queue DoS vector lives.
 
-The WebSocket transport layer must therefore both:
+The wRPC transport layer must therefore both:
 
-- Wait on `Sink::poll_ready` so socket-level backpressure caps
-  in-flight bytes, **and**
-- Treat `RecvError::Lagged` as irrecoverable: close the WS, let the
-  client reconnect, do not attempt to bridge the gap.
+- Await the next stream send so carrier-level backpressure (QUIC
+  flow control on WT, socket buffer fill on UDS) caps in-flight
+  bytes, **and**
+- Treat `RecvError::Lagged` as irrecoverable: close the stream, let
+  the client reconnect, do not attempt to bridge the gap.
 
 Per-session caps are enforced by the broadcast ring. Per-client caps
 must be enforced by the transport. Both layers are required.
 
-## Interaction with WebSocket framing ([[external-protocol]])
+## Interaction with wRPC streaming ([[external-protocol]])
 
-`tokio-tungstenite::WebSocketStream` implements `Sink<Message>` and
-respects `poll_ready` — writes await internal buffer drain. It also
-exposes `max_message_size` / `max_frame_size`. Recommend:
+The `attach` operation returns a `stream<server-event>` per WIT
+(`crates/cairn-protocol/wit/cairn.wit`). wRPC carries that over a
+QUIC bidirectional stream (WebTransport) or a UDS connection — both
+provide flow control under the hood. Recommend:
 
-- Per-WS-task loop reads from the broadcast receiver and `await`s the
-  sink. This naturally couples client RX speed to per-task consumer
-  speed.
+- Per-attach loop reads from the broadcast receiver and yields the
+  next `server-event::output(bytes)` onto the outbound stream. This
+  naturally couples client RX speed to per-task consumer speed.
 - A `max_buffered_bytes_per_client` ceiling well below the ring's
-  byte capacity; crossing it triggers WS close.
-- `max_message_size` sized for libghostty snapshots (tens of KiB;
-  steady-state frames are tens to hundreds of bytes).
+  byte capacity; crossing it triggers stream close.
+- Per-element size sized for libghostty snapshots (tens of KiB
+  on first attach; steady-state output frames are tens to hundreds
+  of bytes).
 
 ## The backgrounded-tab case specifically
 
-Browsers keep ACKing TCP segments for a while after a tab is hidden —
-the receive buffer fills, then the TCP window closes. The server-side
-`WebSocketStream` sees writes return `Pending`. With the "await
-`poll_ready`" pattern, the consumer task parks, its broadcast cursor
-stops advancing, the ring fills, and the next `recv()` returns
-`Lagged`. We close the WS. When the tab is foregrounded, JS reconnect
-fires and the resnapshot flow ([[terminal-state-and-replay]]) repaints.
+Browsers keep ACKing QUIC packets for a while after a tab is hidden —
+the receive buffer fills, then QUIC flow control closes the stream's
+credit window. The server-side wRPC stream sees its outbound
+operations park awaiting credit. With the "await the next send"
+pattern, the consumer task parks, its broadcast cursor stops
+advancing, the ring fills, and the next `recv()` returns `Lagged`.
+We close the stream. When the tab is foregrounded, the TS client
+opens a new `attach` invocation and the resnapshot flow
+([[terminal-state-and-replay]]) repaints.
 
 Two operator-tunable thresholds to expose ([[configuration]]):
 
@@ -218,8 +226,9 @@ liability, demote it.
   default of 1024 ambiguous. Is the right unit messages, KiB, or a
   *time-window of PTY output*? A millisecond-budget would self-tune
   to the child's throughput.
-- **Per-client byte cap location.** Belongs in the WebSocket
-  transport, but the worker can't *enforce* it — should the
+- **Per-client byte cap location.** Belongs in the wRPC transport
+  layer (the attach-handler task that yields `server-event`s), but
+  the worker can't *enforce* it — should the
   `PtySession` trait grow a `subscribe_bounded(max_bytes)` variant
   proxying the broadcast receiver through an mpsc with a byte budget?
 - **Snapshot cost on lag-kick.** `format_snapshot` serialises full
@@ -231,7 +240,8 @@ liability, demote it.
   [[query-response-delegation]], or independent?
 - **Test strategy.** Slow-client behaviour is timing-dependent.
   Belongs in [[testing]] as integration scenarios with a deliberately
-  throttled WebSocket peer.
+  throttled wRPC stream peer (the TS client or a Rust peer that
+  delays stream reads).
 - **Error taxonomy ([[error-recovery]]).** A lag-kick is *not* a
   session-level failure — keep "client kicked for lag" out of any
   session-failure metric.

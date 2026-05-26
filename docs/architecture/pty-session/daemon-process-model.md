@@ -1,8 +1,8 @@
 # Daemon Process Model
 
 How session-owning processes are launched, discovered, and torn down.
-zmx is the reference; cairn diverges deliberately because the WebSocket
-transport and embedded `libghostty-vt` make zmx's per-session-process
+zmx is the reference; cairn diverges deliberately because the WebTransport
+remote carrier and embedded `libghostty-vt` make zmx's per-session-process
 shape inappropriate. Closely related: [[pty-lifecycle]],
 [[internal-communication]], [[external-protocol]],
 [[client-attach-and-election]], [[error-recovery]].
@@ -110,8 +110,8 @@ next operation cleans it up.
 
 ## Cairn: single long-running daemon, sessions as objects
 
-Cairn cannot copy zmx's process-per-session shape. The WebSocket
-transport needs an HTTP server (port, routing, TLS keys for the web
+Cairn cannot copy zmx's process-per-session shape. The WebTransport
+remote carrier needs an HTTP/3 endpoint (port, TLS keys for the web
 client) — duplicating that per session is absurd. Add that
 `libghostty-vt` is `!Send + !Sync` (see [[internal-communication]])
 and the embedded emulator dictates one host process anyway.
@@ -125,15 +125,18 @@ dedicated OS thread running a `current_thread` tokio runtime
 
 Listener: the daemon binds two endpoints —
 
-- `127.0.0.1:PORT` (or a configured TLS port) for HTTP + WebSocket;
-  `ghostty-web` consumes this exclusively.
-- A Unix socket fallback under `$XDG_RUNTIME_DIR/cairn/control.sock`
-  for CLI control-plane calls.
+- A WebTransport (HTTP/3 over QUIC) endpoint on `127.0.0.1:PORT` (or
+  a configured non-loopback address); browser and remote CLI clients
+  both connect via wRPC over `wrpc-transport-web`.
+- A Unix socket at `$XDG_RUNTIME_DIR/cairn/cairn.sock` (Linux) or
+  `$TMPDIR/cairn.sock` (macOS) for local CLI clients, also speaking
+  wRPC (`wrpc-transport`'s `net` feature).
 
-Both surfaces feed the same in-process session registry. HTTP is the
-control plane (list, kill, history, exec); WS upgrades on
-`/sessions/{id}/attach` carry the byte stream
-(see [[external-protocol]]).
+Both surfaces feed the same in-process session registry through wRPC
+`Handler` impls of `cairn:daemon@0.1.0` (`crates/cairn-protocol/`).
+There is no separate HTTP control plane; every operation —
+list-all, kill, exec, attach, send, logs — is a wRPC invocation on
+one of these endpoints (see [[external-protocol]], [[transports]]).
 
 ## Session id / name model
 
@@ -196,7 +199,7 @@ Cairn buys multi-client web attach with this fate-sharing **in v0**.
 The single-daemon shape is a simplicity choice, not a load-bearing
 architectural commitment: a routing front-end + one process per
 session would recover zmx-style isolation while keeping the shared
-HTTP listener and per-session `libghostty-vt` thread-affinity intact.
+listener endpoints and per-session `libghostty-vt` thread-affinity intact.
 See [Multi-daemon migration path](#multi-daemon-migration-path) for
 the discipline that keeps this option open.
 
@@ -209,10 +212,11 @@ the discipline that keeps this option open.
 > below is what keeps all of them reachable.
 
 If we later need durability against frontend-process crashes (most
-likely in HTTP/WS/auth routing code, which is statistically larger
+likely in WT/UDS-accept/auth routing code, which is statistically larger
 than session-worker code), the path is **a routing frontend that
-holds the HTTP+WS listener and auth, plus one session-daemon process
-per session communicating with the frontend over a local socket**.
+holds the WT and UDS listeners and auth, plus one session-daemon
+process per session communicating with the frontend over a local
+socket**.
 This is zmx-with-a-C&C-node: each session keeps its own PTY and
 `libghostty-vt` in its own process, but clients still talk to one
 endpoint.
@@ -229,10 +233,11 @@ What this would buy beyond single-daemon:
 
 What this would cost:
 
-- An IPC layer between frontend and session-daemons. Most of the
-  external wire protocol ([[external-protocol]]) can be reused; the
-  trusted boundary lets us drop Hello/auth handshake on the
-  session-daemon side.
+- An IPC layer between frontend and session-daemons. wRPC over UDS
+  is the natural choice — the WIT schema in
+  `crates/cairn-protocol/` ([[external-protocol]]) already describes
+  the operations; the trusted boundary lets us drop the
+  `meta.authenticate` step on the session-daemon side.
 - Session-daemon lifecycle: when does the process exit? Same triggers
   as today (child exit + post-exit-normalisation drain, explicit kill,
   idle timeout) but enforced from within the session process.
@@ -268,8 +273,8 @@ them true.
    `{ snapshot: Bytes, stream: broadcast::Receiver<Bytes> }`
    (`pty/subscription.rs`). The snapshot serialises trivially; the
    stream becomes "frontend bridges PTY-output frames from the
-   session-daemon socket to WS clients" — same shape, different
-   transport.
+   session-daemon socket to attached wRPC clients" — same shape,
+   different transport.
 5. **Daemon-level mutable state is not session-state.** Leader
    election (see [[client-attach-and-election]]) belongs in the
    frontend, which sees client identities. Auth tokens (see
@@ -301,7 +306,7 @@ preserved by API discipline rather than by speculative abstractions.
 | Phase     | zmx                                      | cairn                                                  |
 | --------- | ---------------------------------------- | ------------------------------------------------------ |
 | Startup   | First `attach` / `run` forks            | `systemd --user` / `launchctl` / manual `cairn serve` |
-| Discovery | `readdir(socket_dir)` + IPC probe       | HTTP `GET /sessions` (or unix-socket equivalent)       |
+| Discovery | `readdir(socket_dir)` + IPC probe       | `sessions.list-all` wRPC call over UDS or WT           |
 | Process   | One per session                          | One per user, all sessions in-process                  |
 | Shutdown  | Shell EOF, `Kill` IPC, signal           | Signal, `cairn shutdown`, never on last-session-exit   |
 | Crash blast radius | One session                     | All sessions for that user                             |
@@ -319,9 +324,10 @@ preserved by API discipline rather than by speculative abstractions.
 - **Idle shutdown?** Exit when holding zero sessions for N minutes,
   or stay up forever? Affects [[configuration]] and the systemd unit
   type.
-- **Control-plane unix socket: needed?** If every CLI command can use
-  the loopback HTTP listener, the unix socket is dead weight. Keep it
-  only if measured latency or auth ([[authentication]]) justify it.
+- **Local UDS vs loopback WT for CLI?** Loopback WebTransport works
+  for the CLI in principle (`wtransport` has a Rust client), but UDS
+  avoids the TLS handshake and gives `SO_PEERCRED` auth for free.
+  Keep the UDS path unless it proves to be dead weight.
 - **Cross-user attach?** Per-user daemons today; pairing-style
   cross-user attach is out of scope for v1 but worth flagging before
   the per-user assumption ossifies.

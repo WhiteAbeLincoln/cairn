@@ -119,15 +119,20 @@ this posture (`zmx/README.md:464-466`): "Every configuration option
 is a burden for us maintainers."
 
 For cairn the daemon-level surface is necessarily larger because the
-transport is WebSocket, not a per-session Unix socket. Minimum the
-daemon must know:
+process serves two listeners (UDS for local CLI, WebTransport for
+remote and browser). Minimum the daemon must know:
 
-- **Listen address** — `host:port` for the WebSocket listener
-  ([[daemon-process-model]]).
-- **Token store location** — for client auth ([[authentication]]).
-  Plausible default: `$XDG_RUNTIME_DIR/cairn/tokens`.
-- **TLS material** — cert + key paths if the listener terminates
-  TLS; defer to a reverse proxy otherwise.
+- **WT listen address** — `host:port` for the WebTransport (HTTP/3)
+  listener; defaults to loopback ([[daemon-process-model]],
+  [[transports]]).
+- **UDS path** — defaults to `$XDG_RUNTIME_DIR/cairn/cairn.sock` on
+  Linux, `$TMPDIR/cairn.sock` on macOS ([[transports]]).
+- **Token store location** — for client auth on the WT path
+  ([[authentication]]). Plausible default: `$XDG_RUNTIME_DIR/cairn/token`.
+- **TLS material** — cert + key paths for the WT endpoint (QUIC
+  requires TLS). For loopback, generate a self-signed cert at
+  daemon start and pin via `serverCertificateHashes` in the
+  browser. For non-loopback, defer to a real cert + reverse proxy.
 - **Max concurrent sessions** — registry cap. Default `unlimited`,
   but the knob lets operators bound a misbehaving caller.
 - **Per-session memory ceiling** — scrollback × broadcast ring; an
@@ -172,10 +177,11 @@ Concrete recommendations:
   `SpawnOptions` to `GhosttyPty::spawn`, those values are final —
   no daemon-level layer reaches in to "correct" them. Preserves
   library use.
-- **Per-session inline override at attach time.** A WebSocket attach
-  frame creating a new session can carry size, command, or
-  scrollback override fields ([[external-protocol]]); these layer on
-  top of daemon defaults the same way CLI flags do for the daemon.
+- **Per-session inline override at create time.** The
+  `sessions.create(spec)` invocation's `session-spec` record carries
+  command, env, workdir, scrollback, timeout, etc. — these layer on
+  top of daemon defaults the same way CLI flags do for the daemon
+  ([[external-protocol]]).
 
 ## What cairn already gets right vs. what's missing
 

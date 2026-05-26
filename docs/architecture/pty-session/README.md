@@ -2,7 +2,7 @@
 
 This directory holds the design documents for cairn's PTY session manager — the subsystem that runs terminal processes inside persistent sessions, lets multiple clients attach/detach, and survives client disconnects without losing the running process or its state.
 
-The design is closely modelled on [zmx](https://github.com/neurosnap/zmx), a single-binary Zig tool that solves the same problem for local CLI use. Cairn keeps the architecture but adapts it for two material differences: WebSocket transport (so browser clients like ghostty-web can attach) and a single-daemon process model (so all sessions are reachable from one HTTP endpoint).
+The design is closely modelled on [zmx](https://github.com/neurosnap/zmx), a single-binary Zig tool that solves the same problem for local CLI use. Cairn keeps the architecture but adapts it for two material differences: an additional WebTransport carrier (so browser clients like ghostty-web can attach) alongside the local UDS transport, and a single-daemon process model (so all sessions are reachable from one endpoint).
 
 Each topic below has its own document. This file is the entry point — read it to get the picture; consult the per-topic docs when you need to make or review a decision in that area.
 
@@ -38,11 +38,11 @@ Concrete shape — verified via source citations across the topic docs:
 
 Where cairn intentionally moves away from zmx:
 
-### 1. Transport: WebSocket instead of Unix sockets
+### 1. Transport: wRPC over UDS + WebTransport, not zmx's Unix-socket-only
 
-Browser clients can't open Unix sockets. Cairn binds an HTTP server (loopback only by default) and serves both an HTTP control plane (for `list`, `info`, `kill`, `history` — non-streaming ops) and WebSocket endpoints for attach. CLI clients use the same transport, optionally with a Unix-socket fast path for local users ([[external-protocol]], [[transports]], [[web-vs-cli-clients]]).
+Browser clients can't open Unix sockets, so cairn carries the same wRPC + WIT protocol over two transports: UDS (`$XDG_RUNTIME_DIR/cairn/cairn.sock`) for local CLI, and WebTransport (HTTP/3 over QUIC, loopback by default) for browser and remote CLI. The full schema is `cairn:daemon@0.1.0` in `crates/cairn-protocol/wit/cairn.wit`; there is no separate HTTP control plane — list, kill, exec, attach, send, logs, wait, kick all flow through wRPC ([[external-protocol]], [[transports]], [[web-vs-cli-clients]]).
 
-WebSocket is the v0 carrier for browser and remote CLI. WebTransport (HTTP/3 over QUIC) is considered for a future revision when Safari ships stable support and the connection-migration UX win on mobile is measurably worth the deployment cost — see [[transports]] for the comparison, including why the "multi-stream + datagrams" pitch around WebTransport doesn't apply to our terminal-session traffic.
+WebSocket was considered but rejected: wRPC has no upstream WS transport, and building one would be a significant upstream contribution. Safari 26.4 ships stable WebTransport, removing the browser-coverage blocker. Connection migration on network handoff (mobile wifi→cellular without reconnect) is a free UX win from QUIC.
 
 ### 2. Single daemon process (v0)
 
@@ -50,10 +50,10 @@ All cairn sessions live in one daemon process, not one process per session.
 
 Why this is the v0 shape:
 - `libghostty-vt` instances are `!Send + !Sync` (per `lib.rs:19-23`), so each session needs its own OS thread regardless of process model. One daemon with N threads is simpler than N processes for v0.
-- Browser clients need a single addressable HTTP+WS endpoint. With one daemon, the listener and the session workers share an address space — no IPC layer needed.
+- Browser clients need a single addressable WebTransport endpoint. With one daemon, the listener and the session workers share an address space — no IPC layer needed.
 - Less code to ship, simpler tests, simpler observability.
 
-Cairn's model: dedicated OS thread per session running a tokio `current_thread` runtime + `LocalSet` (the existing `crates/cairn-pty/src/pty/ghostty/worker.rs` implementation). The daemon-level executor on a separate runtime owns the HTTP/WS listeners and routes attached clients to per-session command channels ([[internal-communication]], [[daemon-process-model]]).
+Cairn's model: dedicated OS thread per session running a tokio `current_thread` runtime + `LocalSet` (the existing `crates/cairn-pty/src/pty/ghostty/worker.rs` implementation). The daemon-level executor on a separate runtime owns the UDS and WebTransport listeners and routes wRPC invocations to per-session command channels ([[internal-communication]], [[daemon-process-model]]).
 
 **v0 cost, not a load-bearing commitment**: a daemon crash takes down all sessions today, where zmx's per-session model isolates failures. [[worker-backends]] documents the migration path — four backends (in-process, local-subprocess, local-VM, remote) sharing the same `Command`-channel abstraction. The discipline that keeps the migration mechanical is: the `Command` enum is the only API to a session worker, and daemon-level code never touches the emulator or PTY directly. Until then: keep the daemon supervisor-managed (systemd / launchd) so it restarts; sessions reconnect via `cairn attach` to a freshly-spawned daemon would *not* recover their PTYs ([[error-recovery]]).
 
@@ -61,7 +61,7 @@ Cairn's model: dedicated OS thread per session running a tokio `current_thread` 
 
 Loopback-only bind + per-daemon bearer token in `$XDG_RUNTIME_DIR/cairn/token` (mode `0o600`), plus strict `Origin` allow-list for browser CSWSH defense.
 
-The browser `WebSocket` constructor cannot set arbitrary headers, but the token also must not appear in the URL — query/path tokens leak to access logs, browser history, Referer headers, screenshots, and any network appliance along the path. Cairn uses **first-message authentication**: the WS opens unauthenticated, the client sends a `Hello { token, … }` frame as its first message, and the server closes the connection (policy violation, code 1008) if no valid `Hello` arrives within a short deadline (~5s). The same code path works for browser and CLI; the token never appears in URL, HTTP headers, or access logs. Origin allow-list still applies for browser CSWSH defense.
+The browser `WebTransport` constructor cannot set arbitrary headers (same constraint as `new WebSocket`), but the token also must not appear in the URL — query/path tokens leak to access logs, browser history, Referer headers, screenshots, and any network appliance along the path. Cairn uses **first-message authentication**: the WT session opens unauthenticated, the client's first wRPC invocation must be `meta.authenticate(token)`, and the server closes the connection if no valid call arrives within a short deadline (~5s). The same code path works for browser and remote CLI; the token never appears in URLs, HTTP headers, or access logs. Local CLI uses UDS with filesystem DAC + `SO_PEERCRED` — no token in play.
 
 Optional Unix-socket fallback for CLI inherits zmx's filesystem-DAC model — no token check on that transport ([[authentication]]).
 
@@ -110,8 +110,8 @@ In approximate dependency order:
 1. ~~**Complete the libghostty callback set** — wire `on_device_attributes`, `on_xtversion`, `on_color_scheme`, `on_size`. Gate all of them (including `on_pty_write`) on a primary-attached flag ([[query-response-delegation]]).~~ **Done.** See spec `docs/superpowers/specs/2026-05-22-libghostty-callbacks-design.md`.
 2. ~~**Multi-client semantics** — extend `Subscribe` with a client identity, track leader by most-recent input, gate resize to leader-only ([[client-attach-and-election]]).~~ **Done.** See spec `docs/superpowers/specs/2026-05-22-pty-multi-client-semantics-design.md`.
 3. **Snapshot completeness** — port zmx's two-phase serialization with full `FormatterTerminalExtra` ([[terminal-state-and-replay]]).
-4. **Daemon binary** — HTTP+WebSocket listener, session registry, routing layer between client connections and per-session workers ([[daemon-process-model]], [[internal-communication]]).
-5. **Wire protocol** — binary WebSocket frames with msgpack body and a one-byte version prefix; message types Hello/Welcome/Attach/Snapshot/Output/Input/Resize/Ping/Pong/Error/Bye/Detach ([[external-protocol]]).
+4. **Daemon binary** — bind the UDS and WebTransport listeners, run the wRPC `Handler` impls against the session registry, route inbound `sessions.attach` streams to per-session command channels ([[daemon-process-model]], [[internal-communication]]).
+5. ~~**Wire protocol** — wRPC over a `cairn:daemon@0.1.0` WIT schema; transports are Unix Domain Socket (local) and WebTransport (remote, browser and CLI).~~ **Done.** See spec `docs/superpowers/specs/2026-05-26-daemon-protocol-design.md` and crate `crates/cairn-protocol/`. (Daemon binary and per-transport listener wiring remain — items 4, 6, 9 below.)
 6. **Authentication** — bearer-token + Origin checks; Unix socket fallback ([[authentication]]).
 7. **CLI client binary** — termios raw mode, Ctrl+\ detach detection, SIGWINCH propagation, signal forwarding ([[web-vs-cli-clients]]).
 8. **Backpressure policy** — per-client transport backpressure via `Sink::poll_ready`, lag → close → reconnect-with-snapshot ([[backpressure]]).
@@ -126,12 +126,12 @@ In approximate dependency order:
 | [[terminal-state-and-replay]] | libghostty state, snapshot serialization, alt-screen, scrollback | cairn uses default `FormatterTerminalExtra` — loses modes/pwd/keyboard on roundtrip |
 | [[query-response-delegation]] | DA1/DA2/DSR/XTVERSION reply gating between backend and clients | cairn currently installs only `on_pty_write`; Tier-2 queries silently dropped |
 | [[internal-communication]] | Channels, worker threads, concurrency invariants | Single-writer-to-PTY is structural; `Rc<RefCell<>>` is sound because of `LocalSet` |
-| [[external-protocol]] | WebSocket wire protocol, message types, framing, versioning | Binary frames + msgpack + version prefix; HTTP control plane for non-streaming ops |
+| [[external-protocol]] | wRPC + WIT wire protocol, operations, codegen | `cairn:daemon@0.1.0` schema in `crates/cairn-protocol/`; same wire over both UDS and WebTransport |
 | [[transports]] | WS vs WebTransport vs others; mobile UX; rejected alternatives | WS primary for v0; WT's multi-stream / datagrams pitch doesn't apply to terminal sessions |
 | [[client-attach-and-election]] | Attach handshake, leader selection by most-recent-input | zmx's `has_terminal_client` is sticky and never reset — known limitation to fix |
 | [[resize-semantics]] | Multi-client size negotiation, leader-wins, initial size, pixel-size | zmx is unambiguously leader-wins; cairn already has the mechanism, needs the policy |
 | [[backpressure]] | Slow clients, broadcast lag, browser-tab throttling | cairn's bounded broadcast is better than zmx's unbounded per-client `ArrayList` |
-| [[authentication]] | Bearer tokens, Origin checks, loopback binding | Biggest divergence: filesystem DAC doesn't work over WebSocket |
+| [[authentication]] | Bearer tokens (first-message), loopback binding, SO_PEERCRED for UDS | Filesystem DAC works for local UDS; remote (WT) needs explicit token auth in the first wRPC call |
 | [[daemon-process-model]] | Single daemon, listener placement, session enumeration | cairn fate-shares all sessions on daemon crash — accepted v0 cost |
 | [[worker-backends]] | In-process / subprocess / VM / remote backends; the spawner pattern | Same `Command`-channel everywhere; transport and connection direction are the only axes |
 | [[error-recovery]] | Failure modes and policies | `PtyError` taxonomy is narrow on purpose; EOF and EIO collapse into one path |
@@ -154,7 +154,7 @@ Issues that surfaced in multiple docs and likely need a holistic decision:
 
 5. **Privacy at trace level.** Byte-level tracing leaks passwords. zmx logs raw input bytes at debug. Cairn should gate this behind a build-time feature or runtime confirmation. Touches [[observability]], [[authentication]].
 
-6. **Reconnect semantics for half-open WebSockets.** Browser network blips can produce zombie attached connections that the server hasn't reaped yet. How do we detect-and-replace, and how does this interact with leader election? Touches [[client-attach-and-election]], [[error-recovery]], [[backpressure]].
+6. **Reconnect semantics for half-open attaches.** Browser network blips can produce zombie attached connections (QUIC idle-timeout-bound for WT, TCP-keepalive-bound for UDS attaches) that the server hasn't reaped yet. How do we detect-and-replace, and how does this interact with leader election? Touches [[client-attach-and-election]], [[error-recovery]], [[backpressure]].
 
 7. **Session ID model.** Name-based like zmx (`cairn attach dev`)? UUID + optional name (`cairn attach --name dev`)? Path-style with hierarchy? Affects URL design for browser clients. Touches [[daemon-process-model]], [[external-protocol]].
 

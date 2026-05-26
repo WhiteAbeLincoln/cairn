@@ -1,6 +1,6 @@
 # Client transports
 
-How clients reach the cairn daemon. This doc is about the carrier — TCP, UDP, WebSocket, etc. — not the wire format. The wire format (msgpack-tagged binary frames with a version prefix) is documented in [[external-protocol]] and is transport-agnostic by design.
+How clients reach the cairn daemon. This doc is about the carrier — UDS, QUIC/WebTransport — not the wire format. The wire format (wRPC over WIT-defined interfaces) is transport-agnostic by design and is documented in [[external-protocol]].
 
 Scope: client ↔ daemon. The worker ↔ daemon transport and the host ↔ spawner transport are separate concerns covered in [[worker-backends]].
 
@@ -15,102 +15,78 @@ Scope: client ↔ daemon. The worker ↔ daemon transport and the host ↔ spawn
 
 The important observation: **mobile and desktop browsers face the same correctness problem, just at different frequencies.** Both require reconnect-as-first-class. We're already designing for that ([[client-attach-and-election]]). Mobile just exercises the reconnect path harder.
 
-The properties mobile *additionally* wants are connection migration (network handoff without reconnect), aggressive disconnect detection, and graceful handling of input typed during offline windows. None of these are inherently transport features — they're design properties that any transport can or can't support.
+The properties mobile *additionally* wants are connection migration (network handoff without reconnect), aggressive disconnect detection, and graceful handling of input typed during offline windows. Some of these are transport properties (QUIC connection migration), and some are design properties any transport must support (heartbeats, buffered-input UX).
 
-## Recommendation: WebSocket as the v0 primary, Unix-socket fast path for local CLI
+## v0 transports: UDS (local) and WebTransport (remote)
 
-For all clients, **WebSocket over HTTPS** carries the [[external-protocol]] framing:
+### Unix Domain Socket — local CLI
 
-- **Local CLI**: prefers Unix socket at `$XDG_RUNTIME_DIR/cairn/control.sock` (filesystem-DAC auth from [[authentication]]). WebSocket fallback for portability or when running CLI from outside a Unix environment. Identical wire format on both — the framing doesn't change.
-- **Remote CLI**: WebSocket over TLS. Token auth via first-message ([[authentication]]). Same client code as the browser, less the browser-specific UI plumbing.
-- **Browser (desktop or mobile)**: WebSocket over HTTPS. Token auth via first-message.
+The local CLI opens a fresh UDS connection per invocation against `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux or `$TMPDIR/cairn.sock` on macOS. Socket mode `0o600`, parent directory mode `0o700`.
 
-Reasoning, in priority order:
+- **Carrier**: wRPC's UDS transport (`wrpc_transport::unix`). The framed-stream spec applies — one connection per invocation — but on a loopback socket this is microseconds.
+- **Auth**: filesystem DAC (user only sees their own socket) plus `SO_PEERCRED` (Linux) / `getpeereid` (macOS) to record the invoking uid for audit. No bearer token.
+- **Connection lifecycle**: fresh connection per CLI invocation; long-running operations (`attach`) hold the connection until the operation ends.
 
-1. **Universal browser support.** Every browser version we care about supports WS. No "graceful degradation" path needed.
-2. **Mature ecosystem.** `tokio-tungstenite` on the daemon side, native `WebSocket` in browsers, `tungstenite` for the CLI.
-3. **Reaches everywhere.** WS rides on HTTPS; every corporate proxy, mobile carrier, and CDN handles it. UDP-based transports do not.
-4. **Single ordered stream matches our PTY model.** The byte stream from daemon to client is inherently one ordered sequence; multi-stream transports buy us nothing for that (see "Multi-stream and datagrams" below).
-5. **Mobile-friendliness is mostly a design problem, not a transport problem.** Properly designed reconnect handling closes ~95% of the gap to "fancier" transports.
+### WebTransport over HTTP/3 — browser and remote CLI
+
+All remote clients — browsers and off-machine CLI invocations — share a single HTTP/3 endpoint.
+
+- **Listener**: `127.0.0.1:<port>` by default; configurable to a non-loopback address for remote and LAN access.
+- **Carrier**: wRPC's `transport-web` crate (`wrpc_transport_web`), which wraps `wtransport` (QUIC via quinn underneath). The `Client` type wraps a `wtransport::Connection`; each wRPC invocation opens a bidirectional stream via `Connection::open_bi()` (`crates/transport-web/src/lib.rs:97-103`). Stream open is a single QUIC SETTINGS frame — no per-invocation handshake cost.
+- **Auth**: bearer token via the first invocation on each connection — a `meta.authenticate(token)` call that the daemon requires before serving any other interface. This is not a preference; it is forced by the browser API. The `WebTransport` constructor in JS only accepts `allowPooling`, `congestionControl`, `requireUnreliable`, and `serverCertificateHashes` — there is no `Authorization` header path from the browser. URL-embedded tokens leak to access logs; cookies require same-origin setup we do not want for v0. First-message auth is the only mechanism that works for the browser, and the remote CLI uses the same path for uniformity.
+- **Connection lifecycle**: browser holds one `Connection` per page-session; remote CLI opens one `Connection` per process invocation. Multiple wRPC operations interleave on QUIC streams within the same connection.
+
+**Why WebTransport, not WebSocket:**
+
+1. wRPC has `crates/transport-web` as a first-class WebTransport carrier. There is no upstream wRPC WebSocket transport; building one would be a significant upstream contribution rather than a one-line `Cargo.toml` dependency.
+2. QUIC stream multiplexing lets multiple concurrent invocations share one connection without head-of-line blocking or per-call handshake overhead.
+3. QUIC connection migration preserves the session across IP changes (wifi → cellular), eliminating a common mobile interruption without any application-layer reconnect.
+4. Safari 26.4 ships stable WebTransport — the last browser holdout. Universal browser coverage is no longer a concern.
 
 ## Mobile-friendliness, regardless of transport
 
 These are non-negotiable for the browser client:
 
-1. **Reconnect-as-fresh-attach is the only mode.** Every reconnect re-runs `Hello` + `Attach { session_id }` and gets a fresh snapshot. No "resume from offset" complexity; no sequence-number replay. The session state on the daemon survives the disconnect ([[pty-lifecycle]]).
+1. **Reconnect-as-fresh-attach is the only mode.** Every reconnect re-runs authentication then `sessions.attach` and receives a fresh `server-event::snapshot`. No "resume from offset" complexity; no sequence-number replay. The session state on the daemon survives the disconnect ([[pty-lifecycle]]).
 2. **Heartbeats with quick failure detection.** Ping every 30s while a session is in the foreground, every 5min when idle. Declare dead in ≤60s; immediately reconnect.
-3. **Page Visibility API integration.** When the tab is foregrounded, immediately ping; if no pong within 2s, reconnect. Don't wait for the heartbeat timer.
+3. **Page Visibility API integration.** When the tab is foregrounded, immediately probe; if no response within 2s, reconnect. Do not wait for the heartbeat timer.
 4. **Reconnect backoff with a low cap.** Immediate, 1s, 2s, 5s, 30s. Never longer — users will give up.
 5. **Buffered input is not auto-replayed.** Keystrokes typed during an offline window are shown to the user with an option to send or drop, never auto-sent. The inferior's prompt state may have changed in the interim.
 6. **Server-side session lifetime is decoupled from client lifetime.** Already the design — the session keeps running with no client attached ([[client-attach-and-election]]).
 
-These work identically over WebSocket and WebTransport. They're properties of the application, not the transport.
+These properties sit at the application layer, not the transport layer. They apply identically over WebTransport.
 
 ## Transport options, compared
 
-| Transport | Browser | CLI | Mobile-friendly | Maturity | Verdict |
+| Transport | Browser | CLI | Connection migration | Maturity | Verdict |
 |---|---|---|---|---|---|
-| **Unix socket** | ❌ | ✅ local only | n/a | mature | **Local-CLI fast path** |
-| **WebSocket (TCP/TLS)** | ✅ | ✅ | needs design | mature | **Primary v0** |
-| **WebTransport (HTTP/3 over QUIC)** | ⚠️ | ⚠️ | better (migration) | nascent | Future, optional |
-| **WebRTC data channels** | ✅ | painful | yes (ICE restart) | mature for video | Wrong abstraction |
-| **SSE + POST** | ✅ | ❌ | better auto-reconnect | mature | Awkward split |
-| **Raw TCP** | ❌ | ✅ remote | poor | mature | No reuse with browser |
-| **mosh-style UDP** | ❌ | possible | excellent | tool-specific | Inspiration only |
+| **Unix socket** | ❌ | ✅ local only | n/a | mature | **Primary v0 — local CLI** |
+| **WebTransport (HTTP/3 / QUIC)** | ✅ | ✅ | ✅ QUIC-native | stable (Safari 26.4) | **Primary v0 — remote** |
+| **WebSocket (TCP/TLS)** | ✅ | ✅ | ❌ | mature | Considered; rejected — no wRPC transport |
+| **TCP/TLS (standalone)** | ❌ | ✅ | ❌ | mature | Future, additive if WT unworkable |
+| **WebRTC data channels** | ✅ | painful | ✅ ICE restart | mature for video | Wrong abstraction |
+| **SSE + POST** | ✅ | ❌ | ❌ | mature | Awkward split, half-duplex |
+| **mosh-style UDP** | ❌ | possible | ✅ | tool-specific | Inspiration only |
 
-### WebRTC, SSE, raw TCP, mosh — rejected briefly
+### WebRTC, SSE, raw TCP, mosh — rejected
 
-- **WebRTC data channels** are designed for peer-to-peer with NAT traversal (STUN/TURN/ICE signaling). For client-server, the abstraction is wrong-shaped and the complexity is enormous. Skip.
-- **SSE + POST** would split server-to-client (SSE) from client-to-server (POST), giving up ordering between the two directions. Half-duplex shape; awkward for interactive use. Skip.
-- **Raw TCP** for the CLI would save a small amount of WS framing overhead but lose code reuse with the browser path. Marginal gain, real cost. Skip.
+- **WebRTC data channels** are designed for peer-to-peer with NAT traversal (STUN/TURN/ICE signaling). For client-server, the abstraction is wrong-shaped and the complexity is enormous.
+- **SSE + POST** splits server-to-client (SSE) from client-to-server (POST), giving up ordering between the two directions. Half-duplex shape; awkward for interactive use.
+- **Raw TCP** for the CLI would save a small amount of framing overhead but loses code reuse with the browser path and has no browser support. Kept in the table as a future additive fallback if WebTransport proves unworkable in UDP-blocked deployments.
 - **mosh** is a brilliant transport for high-latency interactive use (predictive local echo, UDP roaming). Not browser-compatible and tightly coupled to mosh's own terminal model. Inspiration for predictive-echo design if we ever go there; not adoptable as a library.
 
-## WebTransport: consider for later, not v0
+### WebSocket — considered and rejected
 
-WebTransport (HTTP/3 over QUIC over UDP) is the only "modern" alternative worth taking seriously.
+WebSocket would work functionally. The blocker is wRPC: there is no `wrpc_transport_ws` crate. The existing `crates/transport-web` is WebTransport-native. Building a WebSocket transport for wRPC would be a meaningful upstream contribution, not a configuration choice, so it is not the right path for v0.
 
-### What it would buy
+## Not in v0
 
-One thing of substance: **connection migration on network handoff.** QUIC Connection IDs survive an IP change, so when a phone walks from wifi to cellular the session stays connected. With WS, the TCP connection drops and the client reconnects (fast, but visible as a ~1-second hang).
-
-That's a real mobile UX improvement. It is *not* a correctness improvement — we still need full reconnect logic for backgrounding, sleep, and dead links — but it removes one common interruption.
-
-### What it would *not* buy
-
-The "multiple streams plus datagrams" pitch sometimes attached to WebTransport doesn't apply to our architecture. Working through it explicitly because it will come up again:
-
-**PTY data stream + separate control stream** (claim: priority, ordering isolation, backpressure isolation). For our traffic profile:
-
-- *Priority during bulk output*: we send PTY output in chunks of one kernel read (~65KB max). Between chunks, control messages slot in immediately. Worst-case stall of a resize message: ~5ms on LTE, hundreds of ms only on pathological 3G. If this ever matters, the targeted fix is to cap chunk size to ~16KB (drops worst case by 4×) or add app-layer priority queues — both cheaper than introducing two-stream coordination code.
-- *Ordering between control and data*: sometimes you want them ordered (apply resize before continuing to render), sometimes not (re-auth shouldn't wait for output). Single-stream with independent message dispatch handles both correctly. Multi-stream gives you the "independent" case for free but doesn't help the "ordered" case.
-- *Backpressure isolation*: if a client is too slow to drain data, the right response is to kick them and reconnect them with a fresh snapshot ([[backpressure]]). Once that policy is in place, the "control still flows while data is queued" argument is moot — we don't let the queue grow that big.
-
-**Datagrams for heartbeats**: wrong. Heartbeats need reliability. The whole point of a heartbeat is "I'm still here"; if a heartbeat is lost without retransmit, it looks identical to a real disconnect. You'd have to widen the dead-detection threshold to absorb routine UDP loss, which makes failure detection *slower*. Reliable heartbeats on the control channel are what every robust protocol does.
-
-**Datagrams for telemetry / focus events**: tolerable either way. Loss is OK because the next event supersedes. At our event rates (a few per second tops, ~50 bytes each), the savings from skipping retransmit are unmeasurable. Reliable messages are fine.
-
-**Datagrams for mosh-style predictive echo acks**: wrong. Mosh's acks aren't "did this datagram arrive" — they're authoritative state-sync messages that the client reconciles its speculative state against. Losing an ack causes permanent state divergence between client and server. Reliable delivery is *required* if we ever build this. (And predictive echo is app-layer complexity we're not doing in v0 anyway; the right place for it is the client-side emulator, not the transport.)
-
-### Transport-pluggability lever
-
-Same shape as worker backends ([[worker-backends]]). The [[external-protocol]] wire format is transport-agnostic: msgpack-tagged frames, version prefix, opaque PTY bytes. Adding WebTransport later is additive — daemon binds an HTTP/3 listener alongside the existing WS endpoint; client capability-negotiates ("I support WT") in `Hello`; same frames flow over whichever carrier won.
-
-This means we don't have to design for WT now to keep the option open. The carrier-pluggability falls out of the existing message-shape design.
-
-### When to revisit
-
-Conservatively:
-
-- **Safari ships stable WebTransport.** Without this we exclude iOS browser users from any WT-specific UX benefit. Verify current state when revisiting.
-- **Measured production evidence** that mobile-handoff session drops are a real complaint. If users don't notice or don't care, the work isn't worth it.
-- **Hosting/CDN story matures.** Many corporate networks and some mobile carriers block or throttle UDP. The deployment shapes we care about need to support HTTP/3 end-to-end.
-
-Until then, single-stream WS with proper reconnect handling is the right design.
+- **Standalone TCP/TLS transport.** Additive later if WebTransport proves unworkable in some deployment (UDP blocked, HTTP/3 disabled by policy). No schema change required; the wRPC wire format is transport-agnostic.
+- **Connection-pooling agent (`cairn-agent`).** Could amortize the QUIC+TLS handshake on remote CLI by multiplexing process invocations over one long-lived connection. Out of scope for v0.
+- **mTLS / client-certificate auth.** Relevant if the daemon ever listens on a public interface; tracked in [[authentication]].
 
 ## Open questions
 
-1. **Service workers for keeping the WS alive in backgrounded tabs.** Browsers throttle JS in hidden tabs, which can stall WS handling and cause spurious heartbeat timeouts. A service worker can keep the connection alive across tab states. Worth a prototype before committing — service workers have their own lifecycle complexity.
-2. **Reconnect input buffering UX.** When the connection drops mid-typing, the user has a queue of unsent keystrokes. Show them, let them confirm? Auto-drop? Show as a translucent overlay that fades? This is a UX decision, not architectural, but it shapes the protocol (do we need a `BufferedInput` message type?).
-3. **Capability negotiation in `Hello`.** When we add a second transport, the protocol-version byte in [[external-protocol]] needs to be reconciled with transport-specific capabilities. Likely a `capabilities: [...]` array in `Hello` rather than fattening the version byte.
-4. **mTLS for non-loopback remote CLI.** Once the daemon listens on a non-loopback address, bearer token alone isn't enough — we need transport-layer auth too. Affects [[authentication]] and any "expose cairn to my LAN" deployment.
-5. **Predictive local echo.** A v2+ design. Doesn't require transport changes — works over single-stream WS via app-layer sequence numbers and reconciliation against authoritative bytes. Worth a focused doc if/when we go there.
+1. **Rate-limiting unauthenticated connections.** First-message auth means the daemon accepts a WT connection and allocates session state before knowing whether the peer has a valid token. Need a connection-establishment rate limiter and a deadline (~5s) for the first frame, after which the connection is closed.
+2. **Reconnect input buffering UX.** When the connection drops mid-typing, the user has a queue of unsent keystrokes. Show them, let them confirm? Auto-drop? Show as a translucent overlay? This is a UX decision, not architectural, but it shapes the protocol (see [[external-protocol]] for the `client-event` message shape).
+3. **Service workers for backgrounded-tab keepalive.** Browsers throttle JS in hidden tabs. A service worker can maintain the WebTransport connection across tab states; worth a prototype before committing — service workers have their own lifecycle complexity.
