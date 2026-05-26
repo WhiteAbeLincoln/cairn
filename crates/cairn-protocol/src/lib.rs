@@ -16,8 +16,9 @@ wit_bindgen_wrpc::generate!({
 });
 
 // Client-side invocation functions, generated from the `daemon-client` world.
-// Free functions under `client::cairn::daemon::{sessions,meta}::*` mirror
-// the WIT surface for use in tests and the CLI integration layer.
+// External callers reach them at `cairn_protocol::client::cairn::daemon::{sessions,meta}::*`
+// — the `client::` segment scopes the second generate! invocation so it doesn't
+// clash with the server-side bindings above.
 pub mod client {
     wit_bindgen_wrpc::generate!({
         world: "daemon-client",

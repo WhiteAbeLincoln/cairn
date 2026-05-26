@@ -186,6 +186,14 @@ world daemon {
     export sessions;
     export meta;
 }
+
+// `wit-bindgen-wrpc` only generates client-invocation free functions for
+// `import`ed interfaces, so a separate world is needed to produce the
+// client-side API used by the CLI and tests.
+world daemon-client {
+    import sessions;
+    import meta;
+}
 ```
 
 Notes:

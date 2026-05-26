@@ -130,27 +130,11 @@ async fn meta_version_round_trips_record_fields() {
     }
 
     impl bindings::exports::cairn::daemon::sessions::Handler<tokio::net::unix::SocketAddr> for Stub {
-        // The sessions interface has 11 methods. They must all be
-        // present to satisfy the trait bound on `spawn_server`, but
-        // only `version` is exercised by this test — every sessions
-        // method below panics if invoked.
-        //
-        // Method list (from wit/cairn.wit):
-        //   list-all, inspect, create, rename, restart, kill, kick,
-        //   wait, logs, attach, send
-        //
-        // Iterative-discovery workflow: write the empty impl block,
-        // run `cargo check --tests -p cairn-protocol`, copy each
-        // missing-method signature from the compiler output into
-        // the block with `unimplemented!("not exercised by this test")`
-        // as the body. Repeat until cargo check passes.
-        //
-        // For the streaming methods (`wait` returns `future<T>`;
-        // `logs`, `attach`, `send` involve `stream<T>` in params
-        // and/or returns) the generated signatures wrap values in
-        // `Pin<Box<dyn Stream<Item = ...> + Send>>` and similar.
-        // The pattern is documented in
-        // /Users/abe/Projects/wrpc/examples/rust/streams-quic-server/src/main.rs:43-50.
+        // All sessions methods must be implemented to satisfy the trait bound on
+        // `spawn_server`, but only the operation under test (here: `version`,
+        // which lives in `meta` — sessions methods are entirely unused) sees
+        // real bodies. The rest panic via `unimplemented!()` so any accidental
+        // invocation is loud rather than silent.
         async fn list_all(
             &self,
             _ctx: tokio::net::unix::SocketAddr,

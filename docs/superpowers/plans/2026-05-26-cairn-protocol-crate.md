@@ -544,7 +544,7 @@ async fn meta_version_round_trips_record_fields() {
 
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
-    let info = bindings::cairn::daemon::meta::version(&harness.unix_client(), ())
+    let info = bindings::client::cairn::daemon::meta::version(&harness.unix_client(), ())
         .await
         .expect("version invocation");
 
@@ -569,7 +569,7 @@ The client-side invocation pattern from `wrpc/examples/rust/hello-unix-client/sr
 bindings::wrpc_examples::hello::handler::hello(&wrpc, ()).await
 ```
 
-So for us it's `bindings::cairn::daemon::meta::version(&client, ())`. Note: client-side path uses `cairn::daemon::meta`, server-side path uses `exports::cairn::daemon::meta`.
+So for us it's `bindings::client::cairn::daemon::meta::version(&client, ())`. Note: client-side path is `client::cairn::daemon::meta` (a second `generate!` invocation in `src/lib.rs` against a `daemon-client` world that *imports* the interfaces — needed because the macro only emits client-invocation functions for imports); server-side path is `exports::cairn::daemon::meta` (from the original `daemon` world that *exports*).
 
 - [ ] **Step 2: Run the test, expect a compile error if the path/trait names are off; fix paths until it compiles AND the test panics on `unimplemented!()` from `sessions::Handler` methods the wRPC plumbing somehow exercises (it shouldn't, but worth knowing)**
 
@@ -690,7 +690,7 @@ async fn sessions_list_round_trips_two_entries_with_optional_fields() {
 
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
-    let result = bindings::cairn::daemon::sessions::list_all(&harness.unix_client(), ())
+    let result = bindings::client::cairn::daemon::sessions::list_all(&harness.unix_client(), ())
         .await
         .expect("list invocation");
 
@@ -803,7 +803,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
     // Success path.
-    let ok = bindings::cairn::daemon::meta::authenticate(
+    let ok = bindings::client::cairn::daemon::meta::authenticate(
         &harness.unix_client(),
         (),
         "valid-token",
@@ -813,7 +813,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     assert!(ok.is_ok(), "expected Ok(_), got {ok:?}");
 
     // Failure path.
-    let err = bindings::cairn::daemon::meta::authenticate(
+    let err = bindings::client::cairn::daemon::meta::authenticate(
         &harness.unix_client(),
         (),
         "wrong-token",
