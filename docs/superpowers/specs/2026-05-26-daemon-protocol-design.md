@@ -141,8 +141,8 @@ interface sessions {
         exit-status, error,
     };
 
-    list:    func() -> list<session-info>;
-    inspect: func(id: session-id) -> result<session-info, error>;
+    list-all: func() -> list<session-info>;
+    inspect:  func(id: session-id) -> result<session-info, error>;
 
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;
@@ -199,7 +199,7 @@ Notes:
 
 | CLI command                                | Operation                                   | Shape                                |
 |--------------------------------------------|---------------------------------------------|--------------------------------------|
-| `cairn list`                               | `sessions.list`                             | unary                                |
+| `cairn list`                               | `sessions.list-all`                         | unary                                |
 | `cairn inspect`                            | `sessions.inspect`                          | unary                                |
 | `cairn exec` / `run` with `--detach`       | `sessions.create`                           | unary                                |
 | `cairn exec` / `run` attached              | `sessions.create` + `sessions.attach`       | unary then bidi                      |
@@ -215,7 +215,7 @@ Notes:
 | `cairn version`                            | `meta.version`                              | unary                                |
 | `cairn completion`                         | (local-only, no daemon round-trip)          | n/a                                  |
 
-Glob and `--all` expansion (`SessionTargets` in `cli.rs`) is resolved client-side via `sessions.list` plus per-target unary calls. Keeps the WIT surface narrower at the cost of one extra round-trip per bulk command. See [Open questions](#open-questions).
+Glob and `--all` expansion (`SessionTargets` in `cli.rs`) is resolved client-side via `sessions.list-all` plus per-target unary calls. Keeps the WIT surface narrower at the cost of one extra round-trip per bulk command. See [Open questions](#open-questions).
 
 ## Plugin API
 

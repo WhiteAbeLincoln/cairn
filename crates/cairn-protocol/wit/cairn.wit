@@ -84,8 +84,8 @@ interface sessions {
         exit-status, error,
     };
 
-    list:    func() -> list<session-info>;
-    inspect: func(id: session-id) -> result<session-info, error>;
+    list-all: func() -> list<session-info>;
+    inspect:  func(id: session-id) -> result<session-info, error>;
 
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;

@@ -204,8 +204,8 @@ interface sessions {
         exit-status, error,
     };
 
-    list:    func() -> list<session-info>;
-    inspect: func(id: session-id) -> result<session-info, error>;
+    list-all: func() -> list<session-info>;
+    inspect:  func(id: session-id) -> result<session-info, error>;
 
     create:  func(spec: session-spec) -> result<session-info, error>;
     rename:  func(id: session-id, new-name: string) -> result<_, error>;
@@ -599,7 +599,7 @@ EOF
 
 ---
 
-## Task 6: Round-trip test — `sessions.list` with a non-empty result
+## Task 6: Round-trip test — `sessions.list-all` with a non-empty result
 
 This exercises a more interesting type graph: `Vec<SessionInfo>`, nested `Option<...>` and `Option<ExitStatus>`, plus a populated `SessionSpec`. Catches encoder/decoder bugs on optional and nested-record paths.
 
@@ -690,7 +690,7 @@ async fn sessions_list_round_trips_two_entries_with_optional_fields() {
 
     let harness = spawn_server(Stub).await.expect("spawn_server");
 
-    let result = bindings::cairn::daemon::sessions::list(&harness.unix_client(), ())
+    let result = bindings::cairn::daemon::sessions::list_all(&harness.unix_client(), ())
         .await
         .expect("list invocation");
 
@@ -726,7 +726,7 @@ Expected: 2 tests pass.
 ```bash
 git add crates/cairn-protocol/tests/round_trip.rs
 git commit -m "$(cat <<'EOF'
-test(cairn-protocol): assert sessions.list round-trips nested records
+test(cairn-protocol): assert sessions.list-all round-trips nested records
 
 Exercises Vec<SessionInfo>, nested SessionSpec, optional fields, and
 list-of-tuples (env). Catches codec bugs that wouldn't surface from
