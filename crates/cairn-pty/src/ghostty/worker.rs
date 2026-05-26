@@ -704,9 +704,11 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
 
 /// Construct a synthetic `std::process::ExitStatus` with the given exit code.
 ///
-/// Used when `child.wait()` itself fails (rare). We surface this as a failing
-/// exit so callers see the session as broken rather than reporting success.
-#[cfg(unix)]
+/// Test-only: the `MockChild` uses it to fabricate the std exit status that
+/// `ChildProcess::wait()` would return. Production exit publishing goes through
+/// `crate::ExitStatus::{from_std, synthetic}`, so this is never used in a
+/// non-test build.
+#[cfg(all(test, unix))]
 pub(super) fn synthetic_exit_status(code: i32) -> std::process::ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     std::process::ExitStatus::from_raw((code & 0xff) << 8)
