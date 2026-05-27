@@ -1,8 +1,9 @@
 //! Direct handler tests for the streaming session operations:
-//! wait, send (Tasks 2–3).
+//! wait, send (Tasks 2–3), logs (Task 4), attach (Task 5).
 
 use cairn_daemon::{config::DaemonConfig, daemon::Daemon};
-use cairn_protocol::cairn::daemon::types::SessionSpec;
+use cairn_protocol::cairn::daemon::types::{LogWindow, SessionSpec};
+use futures::StreamExt as _;
 
 fn test_daemon() -> Daemon {
     Daemon::new(DaemonConfig::default())
@@ -82,4 +83,134 @@ async fn send_unknown_is_not_found() {
         .await
         .expect_err("not found");
     assert_eq!(err.code, "session.not_found");
+}
+
+// ── logs ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn logs_without_follow_emits_snapshot_then_closes() {
+    let daemon = test_daemon();
+    // A session that prints something so the snapshot is non-trivial.
+    let info = create(&daemon, "l", &["sh", "-c", "printf hello; sleep 100"]).await;
+    // Give the child a moment to emit.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let mut stream = cairn_daemon::handlers::logs::logs(
+        &daemon, info.id.clone(), LogWindow::All, false,
+    ).await.expect("logs");
+
+    // Collect everything; without follow it must terminate on its own.
+    let mut bytes = Vec::new();
+    let collected = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Some(batch) = stream.next().await {
+            for chunk in batch { bytes.extend_from_slice(&chunk); }
+        }
+    }).await;
+    assert!(collected.is_ok(), "logs without follow must terminate");
+    assert!(!bytes.is_empty(), "snapshot should contain the printed output");
+}
+
+#[tokio::test]
+async fn logs_unknown_is_err() {
+    let daemon = test_daemon();
+    assert!(cairn_daemon::handlers::logs::logs(&daemon, "nope".into(), LogWindow::All, false).await.is_err());
+}
+
+// ── attach ────────────────────────────────────────────────────────────────
+
+use cairn_protocol::cairn::daemon::types::{AttachInit, ClientEvent, ServerEvent};
+
+fn attach_init() -> AttachInit { AttachInit { cols: 80, rows: 24, no_stdin: false } }
+
+// Drain the next server-event batch within a timeout, flattened.
+async fn next_events(s: &mut (impl futures::Stream<Item = Vec<ServerEvent>> + Unpin)) -> Vec<ServerEvent> {
+    tokio::time::timeout(std::time::Duration::from_secs(2), s.next())
+        .await.ok().flatten().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn attach_first_event_is_snapshot() {
+    let daemon = test_daemon();
+    let info = create(&daemon, "a", &["cat"]).await;
+    let events = futures::stream::pending::<Vec<ClientEvent>>(); // no client input
+    let mut out = cairn_daemon::handlers::attach::attach(
+        &daemon, info.id.clone(), attach_init(), Box::pin(events),
+    ).await;
+    let first = next_events(&mut out).await;
+    assert!(matches!(first.first(), Some(ServerEvent::Snapshot(_))), "first event must be Snapshot");
+}
+
+#[tokio::test]
+async fn attach_input_is_echoed_as_output() {
+    let daemon = test_daemon();
+    let info = create(&daemon, "a2", &["cat"]).await;
+    // Send one Input batch then keep the stream open (pending).
+    let events = futures::stream::once(async {
+        vec![ClientEvent::Input(bytes::Bytes::from_static(b"hey\n"))]
+    }).chain(futures::stream::pending());
+    let mut out = cairn_daemon::handlers::attach::attach(
+        &daemon, info.id.clone(), attach_init(), Box::pin(events),
+    ).await;
+    let _snapshot = next_events(&mut out).await;
+    // cat echoes "hey"; look for an Output event containing it.
+    let mut saw = false;
+    for _ in 0..10 {
+        for ev in next_events(&mut out).await {
+            if let ServerEvent::Output(b) = ev
+                && b.windows(3).any(|w| w == b"hey")
+            {
+                saw = true;
+            }
+        }
+        if saw { break; }
+    }
+    assert!(saw, "input should be echoed back as Output");
+}
+
+#[tokio::test]
+async fn attach_detach_event_ends_stream() {
+    let daemon = test_daemon();
+    let info = create(&daemon, "a3", &["cat"]).await;
+    let events = futures::stream::once(async { vec![ClientEvent::Detach] });
+    let mut out = cairn_daemon::handlers::attach::attach(
+        &daemon, info.id.clone(), attach_init(), Box::pin(events),
+    ).await;
+    let _snapshot = next_events(&mut out).await;
+    // After Detach the stream must end (next() yields None within the timeout).
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while out.next().await.is_some() {}
+    }).await;
+    assert!(ended.is_ok(), "stream should end after Detach");
+}
+
+#[tokio::test]
+async fn attach_emits_exited_when_child_dies() {
+    let daemon = test_daemon();
+    let info = create(&daemon, "a4", &["sh", "-c", "sleep 100"]).await;
+    let events = futures::stream::pending::<Vec<ClientEvent>>();
+    let mut out = cairn_daemon::handlers::attach::attach(
+        &daemon, info.id.clone(), attach_init(), Box::pin(events),
+    ).await;
+    let _snapshot = next_events(&mut out).await;
+    // Kill via the registry handle; the bridge should emit Exited then end.
+    daemon.registry.resolve(&info.id).unwrap().handle().signal(libc::SIGKILL).await.unwrap();
+    let mut saw_exit = false;
+    for _ in 0..20 {
+        for ev in next_events(&mut out).await {
+            if matches!(ev, ServerEvent::Exited(_)) { saw_exit = true; }
+        }
+        if saw_exit { break; }
+    }
+    assert!(saw_exit, "bridge should emit Exited when the child dies");
+}
+
+#[tokio::test]
+async fn attach_unknown_session_yields_error_event() {
+    let daemon = test_daemon();
+    let events = futures::stream::pending::<Vec<ClientEvent>>();
+    let mut out = cairn_daemon::handlers::attach::attach(
+        &daemon, "nope".into(), attach_init(), Box::pin(events),
+    ).await;
+    let first = next_events(&mut out).await;
+    assert!(matches!(first.first(), Some(ServerEvent::Error(_))), "unknown id -> Error event");
 }
