@@ -19,7 +19,8 @@ pub fn authenticate(_token: String) -> Result<(), WireError> {
     Ok(())
 }
 
-/// The peer uid (resolved to a username when possible), from `SO_PEERCRED`.
+/// The peer identity from `SO_PEERCRED`. v0 reports the numeric uid (see
+/// [`username_for`] for the deferred name-resolution hook).
 pub fn whoami(ctx: &ConnCtx) -> Result<String, WireError> {
     let uid = ctx.peer.map(|c| c.uid());
     Ok(match uid {

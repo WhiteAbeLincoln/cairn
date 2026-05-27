@@ -74,8 +74,10 @@ pub async fn kill(
 
     if let Some(g) = grace_ms {
         // Arm a daemon-owned escalation task: fires SIGKILL after the grace period
-        // if the session hasn't exited. Independent of client liveness.
-        let handle = entry.handle();
+        // if the session hasn't exited. Independent of client liveness. Reuse the
+        // SAME handle Arc that received the first signal so a concurrent restart
+        // cannot redirect the SIGKILL at a freshly-spawned child.
+        let handle = handle.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(g as u64)).await;
             if handle.try_exit_status().is_none() {

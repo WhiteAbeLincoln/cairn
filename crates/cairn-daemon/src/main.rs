@@ -65,10 +65,12 @@ fn main() -> anyhow::Result<()> {
         let daemon = cairn_daemon::daemon::Daemon::new(cfg);
         let shutdown = CancellationToken::new();
         let sig = shutdown.clone();
+        // Install the SIGTERM handler before spawning so an install failure
+        // propagates out of `main` rather than panicking in a detached task
+        // (which would silently leave the daemon deaf to SIGTERM).
+        let mut term =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::spawn(async move {
-            let mut term =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                    .expect("failed to install SIGTERM handler");
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {},
                 _ = term.recv() => {},
