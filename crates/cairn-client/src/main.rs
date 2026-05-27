@@ -3,6 +3,7 @@ use clap::{CommandFactory, Parser};
 mod cli;
 mod connect;
 mod detach;
+mod signals;
 mod terminal;
 
 fn main() -> anyhow::Result<()> {
