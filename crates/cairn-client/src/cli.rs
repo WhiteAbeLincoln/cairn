@@ -73,7 +73,8 @@ pub enum Command {
     /// Attach the client's terminal to a session, forwarding input
     /// and resize events.
     ///
-    /// Requires the client to have an interactive terminal.
+    /// Best used from an interactive terminal; with stdout redirected it
+    /// streams raw output (script-style capture) instead.
     Attach {
         #[command(flatten)]
         session: SessionTarget,
@@ -94,24 +95,6 @@ pub enum Command {
         /// `ctrl-q,ctrl-q`.
         #[clap(long)]
         detach_keys: Option<String>,
-        /// Forward signals received by the client to the attached
-        /// session's process group. Does not apply to SIGCHLD,
-        /// SIGSTOP, or SIGKILL.
-        ///
-        /// With `--sig-proxy=true` (the default), a Ctrl-C in the
-        /// client sends SIGINT to the session. With `--sig-proxy=false`,
-        /// only the client receives the signal — useful when you want
-        /// the session to survive a client disconnect without being
-        /// asked to clean up.
-        #[clap(
-            long,
-            action = ArgAction::Set,
-            num_args = 0..=1,
-            require_equals = true,
-            default_missing_value = "true",
-            default_value_t = true,
-        )]
-        sig_proxy: bool,
     },
     /// Stream session output to stdout. Multi-session safe.
     ///
@@ -366,8 +349,9 @@ pub struct ExecArgs {
     /// Lines of the form `KEY=VALUE`; `#` comments and blank lines
     /// are ignored. Repeatable.
     ///
-    /// Values from `--env-file` are overridden by `-e` flags and,
-    /// when inheritance is enabled, by inherited values.
+    /// Lowest precedence: values from `--env-file` are overridden by
+    /// `-e` flags, and all explicitly-set variables override the
+    /// inherited environment.
     #[clap(long)]
     pub env_file: Vec<PathBuf>,
     /// Don't inherit the environment from the client/daemon when
@@ -405,20 +389,6 @@ pub struct ExecArgs {
     /// attached (not with `--detach`).
     #[clap(long)]
     pub detach_keys: Option<String>,
-    /// Forward signals received by the client to the new session's
-    /// process group. Does not apply to SIGCHLD, SIGSTOP, or SIGKILL.
-    ///
-    /// Defaults to `true`. Ignored when `--detach` is set (there's no
-    /// attached client whose signals could be proxied).
-    #[clap(
-        long,
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        require_equals = true,
-        default_missing_value = "true",
-        default_value_t = true,
-    )]
-    pub sig_proxy: bool,
     /// The command (and arguments) to execute. If omitted, uses
     /// the daemon's default shell.
     #[arg(trailing_var_arg = true)]
@@ -432,7 +402,6 @@ pub struct ExecArgs {
 // *client* attaches now, not how the *session* is provisioned. A
 // detached session still gets a TTY/stdin per the command default so a
 // later `cairn attach` works interactively (mirroring `docker run -dit`).
-#[allow(dead_code)]
 impl ExecArgs {
     /// Resolve `--interactive`/`--no-interactive` against the
     /// command's default.
