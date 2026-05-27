@@ -90,7 +90,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn wait(
         &self,
         _ctx: ConnCtx,
-        _id: String,
+        id: String,
     ) -> anyhow::Result<
         std::pin::Pin<
             Box<
@@ -101,27 +101,27 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
             >,
         >,
     > {
-        unimplemented!("served in Plan 3")
+        crate::handlers::wait::wait(self, id).await
     }
 
     async fn logs(
         &self,
         _ctx: ConnCtx,
-        _id: String,
-        _window: cairn_protocol::cairn::daemon::types::LogWindow,
-        _follow: bool,
+        id: String,
+        window: cairn_protocol::cairn::daemon::types::LogWindow,
+        follow: bool,
     ) -> anyhow::Result<
         std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     > {
-        unimplemented!("served in Plan 3")
+        crate::handlers::logs::logs(self, id, window, follow).await
     }
 
     async fn attach(
         &self,
         _ctx: ConnCtx,
-        _id: String,
-        _init: cairn_protocol::cairn::daemon::types::AttachInit,
-        _events: std::pin::Pin<
+        id: String,
+        init: cairn_protocol::cairn::daemon::types::AttachInit,
+        events: std::pin::Pin<
             Box<
                 dyn futures::Stream<
                         Item = Vec<cairn_protocol::cairn::daemon::types::ClientEvent>,
@@ -139,18 +139,18 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
             >,
         >,
     > {
-        unimplemented!("served in Plan 3")
+        Ok(crate::handlers::attach::attach(self, id, init, events).await)
     }
 
     async fn send(
         &self,
         _ctx: ConnCtx,
-        _id: String,
-        _chunks: std::pin::Pin<
+        id: String,
+        chunks: std::pin::Pin<
             Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>,
         >,
     ) -> anyhow::Result<Result<(), WireError>> {
-        unimplemented!("served in Plan 3")
+        Ok(crate::handlers::send::send(self, id, chunks).await)
     }
 }
 
