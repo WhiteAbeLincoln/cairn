@@ -85,6 +85,58 @@ async fn send_unknown_is_not_found() {
     assert_eq!(err.code, "session.not_found");
 }
 
+// ── env precedence ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn explicit_env_overrides_inherited() {
+    // `CARGO_PKG_NAME` is set in the test process env by cargo, so with
+    // env_inherit the child would inherit it ("cairn-daemon"). The explicit
+    // spec.env value must win.
+    let daemon = test_daemon();
+    let spec = SessionSpec {
+        name: Some("envprec".to_string()),
+        command: vec![
+            "/bin/sh".to_string(),
+            "-c".to_string(),
+            "printf '%s' \"$CARGO_PKG_NAME\"".to_string(),
+        ],
+        env: vec![("CARGO_PKG_NAME".to_string(), "overridden".to_string())],
+        env_inherit: true,
+        workdir: None,
+        tty: true,
+        stdin: true,
+        idle_timeout_secs: None,
+        scrollback_lines: 100,
+    };
+    let info = daemon.registry.create(spec, &daemon.cfg.default_shell).await.unwrap();
+    let entry = daemon.registry.resolve(&info.id).unwrap();
+    let cid = daemon.registry.mint_client_id();
+    let mut sub = entry.handle().subscribe(cid).await.unwrap();
+
+    // The child's output may land in the snapshot (it runs immediately) or the
+    // live stream — check both, and confirm the inherited value never appears.
+    let mut buf = sub.snapshot.to_vec();
+    let saw = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if buf.windows(10).any(|w| w == b"overridden") {
+                return true;
+            }
+            match sub.stream.recv().await {
+                Ok(b) => buf.extend_from_slice(&b),
+                Err(_) => return buf.windows(10).any(|w| w == b"overridden"),
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(saw, "explicit spec.env must override the inherited CARGO_PKG_NAME");
+    assert!(
+        !buf.windows(12).any(|w| w == b"cairn-daemon"),
+        "inherited value must not leak through when explicitly overridden"
+    );
+}
+
 // ── logs ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
