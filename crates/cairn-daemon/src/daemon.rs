@@ -90,7 +90,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn wait(
         &self,
         _ctx: ConnCtx,
-        _id: String,
+        id: String,
     ) -> anyhow::Result<
         std::pin::Pin<
             Box<
@@ -101,7 +101,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
             >,
         >,
     > {
-        unimplemented!("served in Plan 3")
+        crate::handlers::wait::wait(self, id).await
     }
 
     async fn logs(
@@ -145,12 +145,12 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn send(
         &self,
         _ctx: ConnCtx,
-        _id: String,
-        _chunks: std::pin::Pin<
+        id: String,
+        chunks: std::pin::Pin<
             Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>,
         >,
     ) -> anyhow::Result<Result<(), WireError>> {
-        unimplemented!("served in Plan 3")
+        Ok(crate::handlers::send::send(self, id, chunks).await)
     }
 }
 
