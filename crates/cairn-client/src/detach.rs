@@ -42,6 +42,7 @@ impl DetachKeys {
         Self::parse(spec.unwrap_or("ctrl-q,ctrl-q"))
     }
 
+    #[cfg(test)]
     pub(crate) fn keys(&self) -> &[DetachKey] {
         &self.keys
     }
