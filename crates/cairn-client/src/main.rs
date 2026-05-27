@@ -1,5 +1,6 @@
 use clap::{CommandFactory, Parser};
 
+mod attach;
 mod cli;
 mod connect;
 mod detach;
