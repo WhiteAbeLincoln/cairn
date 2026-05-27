@@ -84,6 +84,81 @@ fn single_ascii(s: &str, token: &str) -> Result<char, String> {
     }
 }
 
+enum Step {
+    Full,
+    Partial,
+    NotPrefix,
+}
+
+/// Streaming matcher: feed input bytes, get back the bytes to forward to the
+/// session and whether the detach sequence completed.
+pub struct Matcher {
+    keys: Vec<DetachKey>,
+    withheld: Vec<u8>,
+}
+
+impl Matcher {
+    pub fn new(keys: DetachKeys) -> Self {
+        Self { keys: keys.keys, withheld: Vec::new() }
+    }
+
+    /// Feed `input`; append forwardable bytes to `out`. Returns true when the
+    /// detach sequence has completed (bytes after the sequence in this call are
+    /// dropped — detach ends the stream anyway).
+    pub fn feed(&mut self, input: &[u8], out: &mut Vec<u8>) -> bool {
+        for &b in input {
+            self.withheld.push(b);
+            loop {
+                match self.try_match() {
+                    Step::Full => {
+                        self.withheld.clear();
+                        return true;
+                    }
+                    Step::Partial => break,
+                    Step::NotPrefix => {
+                        // The front byte can't begin a match: release it as input.
+                        out.push(self.withheld.remove(0));
+                        if self.withheld.is_empty() {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Match the key sequence against the front of `withheld`. At each position
+    /// the next byte selects the encoding: `0x1b` => Kitty CSI-u, else raw byte.
+    fn try_match(&self) -> Step {
+        let buf = &self.withheld;
+        let mut j = 0;
+        for key in &self.keys {
+            if j >= buf.len() {
+                return Step::Partial;
+            }
+            if buf[j] == 0x1b {
+                let need = key.csiu();
+                let avail = &buf[j..];
+                let n = avail.len().min(need.len());
+                if avail[..n] != need[..n] {
+                    return Step::NotPrefix;
+                }
+                if n < need.len() {
+                    return Step::Partial;
+                }
+                j += need.len();
+            } else {
+                if buf[j] != key.raw() {
+                    return Step::NotPrefix;
+                }
+                j += 1;
+            }
+        }
+        Step::Full
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +193,62 @@ mod tests {
         assert!(DetachKeys::parse("ctrl-").is_err()); // no char after ctrl-
         assert!(DetachKeys::parse("ab").is_err()); // two-char literal
         assert!(DetachKeys::parse("").is_err()); // empty spec
+    }
+
+    fn feed_all(spec: &str, input: &[u8]) -> (Vec<u8>, bool) {
+        let mut m = Matcher::new(DetachKeys::parse(spec).unwrap());
+        let mut out = Vec::new();
+        let detached = m.feed(input, &mut out);
+        (out, detached)
+    }
+
+    #[test]
+    fn raw_sequence_detaches_and_forwards_nothing() {
+        let (out, detached) = feed_all("ctrl-q,ctrl-q", &[0x11, 0x11]);
+        assert!(detached);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn partial_then_mismatch_flushes_withheld_bytes() {
+        let mut m = Matcher::new(DetachKeys::parse("ctrl-q,ctrl-q").unwrap());
+        let mut out = Vec::new();
+        // First ctrl-q is withheld (could start the sequence).
+        assert!(!m.feed(&[0x11], &mut out));
+        assert!(out.is_empty());
+        // A non-ctrl-q breaks it: both bytes are released as input.
+        assert!(!m.feed(&[b'x'], &mut out));
+        assert_eq!(out, vec![0x11, b'x']);
+    }
+
+    #[test]
+    fn csiu_sequence_detaches() {
+        let (out, detached) = feed_all("ctrl-q,ctrl-q", b"\x1b[113;5u\x1b[113;5u");
+        assert!(detached, "Kitty CSI-u encoding of ctrl-q,ctrl-q should detach");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn mixed_csiu_then_raw_detaches() {
+        // ctrl-a as CSI-u, then literal `d` as a raw byte.
+        let (out, detached) = feed_all("ctrl-a,d", b"\x1b[97;5ud");
+        assert!(detached);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn non_matching_escape_sequence_is_forwarded() {
+        // An up-arrow (\x1b[A) shares the \x1b[ prefix with CSI-u but isn't a
+        // detach key — it must be forwarded intact.
+        let (out, detached) = feed_all("ctrl-q,ctrl-q", b"\x1b[A");
+        assert!(!detached);
+        assert_eq!(out, b"\x1b[A");
+    }
+
+    #[test]
+    fn lone_ctrl_q_inside_a_run_does_not_detach() {
+        let (out, detached) = feed_all("ctrl-q,ctrl-q", b"a\x11b");
+        assert!(!detached);
+        assert_eq!(out, b"a\x11b");
     }
 }
