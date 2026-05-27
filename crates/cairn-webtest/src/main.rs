@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(home))
         .route("/create", post(create))
         .route("/s/:id", get(session))
+        .route("/s/:id/state", get(state))
         .route("/s/:id/stream", get(stream))
         .route("/s/:id/send", post(send))
         .route("/s/:id/kill", post(kill))
@@ -188,7 +189,9 @@ async fn home(State(st): State<AppState>) -> Html<String> {
 <input name=command placeholder=\"command, e.g. bash -i  or  sh -c 'while true; do date; sleep 1; done'  (blank = default shell)\">\
 <button>create</button></form></div>\
 <h3>sessions ({n})</h3>\
-<table><tr><th>name</th><th>size</th><th>clients</th><th>state</th></tr>{rows}</table>",
+<table id=sess><tr><th>name</th><th>size</th><th>clients</th><th>state</th></tr>{rows}</table>\
+<p class=muted>auto-refreshing</p>\
+<script>setInterval(function(){{fetch('/').then(function(r){{return r.text();}}).then(function(t){{var d=new DOMParser().parseFromString(t,'text/html');var n=d.getElementById('sess');if(n)document.getElementById('sess').innerHTML=n.innerHTML;}}).catch(function(){{}});}},3000);</script>",
         n = sessions.len(),
     );
     page("cairn-webtest", &body)
@@ -227,14 +230,11 @@ async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Html<Str
         Err(e) => return err_page("inspect", e),
     };
 
-    let exit = match &info.exit {
-        Some(e) => format!("exited code={:?} sig={:?} at={}", e.code, e.signal, e.unix_ms),
-        None => "running".to_string(),
-    };
+    let exit = state_str(&info);
 
     let body = format!(
         "<p><a href=/>&larr; home</a></p>\
-<h2>{name}</h2><p class=muted>{id}<br>{cols}×{rows} · pid {pid:?} · {att} client(s) · {exit}<br>cmd: {cmd}</p>\
+<h2>{name}</h2><p class=muted>{id}<br>{cols}×{rows} · pid {pid:?} · {att} client(s) · <span id=state>{exit}</span><br>cmd: {cmd}</p>\
 <div class=row>\
 <form method=post action='/s/{id}/kill'><button>kill (TERM)</button></form>\
 <form method=post action='/s/{id}/restart'><button>restart (force)</button></form>\
@@ -255,6 +255,7 @@ const es=new EventSource('/s/{id}/stream');\
 es.onmessage=function(e){{out.textContent+=e.data;window.scrollTo(0,document.body.scrollHeight);}};\
 es.addEventListener('eof',function(){{es.close();st.textContent='stream ended';}});\
 es.onerror=function(){{st.textContent='reconnecting…';}};\
+setInterval(function(){{fetch('/s/{id}/state').then(function(r){{return r.text();}}).then(function(t){{var el=document.getElementById('state');if(el)el.textContent=t;}}).catch(function(){{}});}},2000);\
 </script>",
         name = h(info.name.as_deref().unwrap_or("(unnamed)")),
         id = h(&id),
@@ -266,6 +267,23 @@ es.onerror=function(){{st.textContent='reconnecting…';}};\
         cmd = h(&info.spec.command.join(" ")),
     );
     page(&format!("session {}", info.name.as_deref().unwrap_or(&id)), &body)
+}
+
+fn state_str(i: &t::SessionInfo) -> String {
+    match &i.exit {
+        Some(e) => format!("exited code={:?} sig={:?} at={}", e.code, e.signal, e.unix_ms),
+        None => "running".to_string(),
+    }
+}
+
+/// Current state line for a session (`running` / `exited …`). Polled by the
+/// detail page so the header reflects exit without a reload.
+async fn state(State(st): State<AppState>, Path(id): Path<String>) -> String {
+    match api::sessions::inspect(&wc(&st), (), &id).await {
+        Ok(Ok(i)) => state_str(&i),
+        Ok(Err(e)) => format!("err {}", e.code),
+        Err(e) => format!("error: {e}"),
+    }
 }
 
 /// SSE endpoint: drive `logs(follow=true)` and forward each chunk as an event.
