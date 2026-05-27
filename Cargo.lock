@@ -170,6 +170,7 @@ dependencies = [
  "cairn-pty",
  "clap",
  "futures",
+ "humantime",
  "libc",
  "tempfile",
  "tokio",
