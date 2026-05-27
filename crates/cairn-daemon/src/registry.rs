@@ -130,26 +130,31 @@ impl SessionRegistry {
         self.sessions.read().expect("sessions lock").values().cloned().collect()
     }
 
-    /// Spawn a new session. Rejects a name already used by a live session.
+    /// Spawn a new session. Rejects an explicit name already used by a live
+    /// session; infers `{basename}-{hex-tail}` when no name is given.
     pub async fn create(
         &self,
         spec: SessionSpec,
         default_shell: &str,
     ) -> Result<SessionInfo, DaemonError> {
-        if let Some(name) = &spec.name
-            && self.resolve(name).is_some()
-        {
-            return Err(DaemonError::NameInUse);
-        }
+        let id = uuid::Uuid::now_v7().to_string();
+        let name = match &spec.name {
+            Some(n) => {
+                if self.resolve(n).is_some() {
+                    return Err(DaemonError::NameInUse);
+                }
+                Some(n.clone())
+            }
+            None => Some(self.inferred_unique_name(&spec, default_shell, &id)),
+        };
         let opts = options_from(spec.clone(), default_shell);
         let handle = GhosttyPty::spawn(opts).map_err(|_| DaemonError::SpawnFailed)?;
         let pid = None; // pid surfaced via inspect later if cairn-pty exposes it; None for v0
-        let id = uuid::Uuid::now_v7().to_string();
         let entry = Arc::new(SessionEntry {
             id: id.clone(),
             created_at_unix_ms: now_unix_ms(),
             spec: spec.clone(),
-            name: Mutex::new(spec.name.clone()),
+            name: Mutex::new(name),
             running: RwLock::new(Running { handle: Arc::new(handle), pid }),
             attached: Mutex::new(HashMap::new()),
         });
@@ -157,6 +162,28 @@ impl SessionRegistry {
         let info = session_info(&entry).await;
         self.sessions.write().expect("sessions lock").insert(id, entry);
         Ok(info)
+    }
+
+    /// `{basename}-{hex-tail}`. `basename` is the command's file stem (or the
+    /// default shell's); the suffix is the last 6 hex digits of `id` (UUIDv7's
+    /// random tail — the leading digits are a shared millisecond timestamp).
+    /// Always appended; extends the tail on the rare collision with a live name.
+    fn inferred_unique_name(&self, spec: &SessionSpec, default_shell: &str, id: &str) -> String {
+        let prog = spec.command.first().map(String::as_str).unwrap_or(default_shell);
+        let base = std::path::Path::new(prog)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("session");
+        let hex: String = id.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        for len in 6..=hex.len() {
+            let candidate = format!("{base}-{}", &hex[hex.len() - len..]);
+            if self.resolve(&candidate).is_none() {
+                return candidate;
+            }
+        }
+        // Exhausted the whole hex tail (impossible in practice): fall back to the id.
+        format!("{base}-{id}")
     }
 
     pub fn rename(&self, key: &str, new_name: String) -> Result<(), DaemonError> {
@@ -315,6 +342,22 @@ mod tests {
         reg.create(spec(Some("b")), "/bin/sh").await.expect("b");
         let entries = reg.list();
         assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn create_without_name_infers_basename_and_hex_suffix() {
+        let reg = SessionRegistry::new();
+        // spec(None) uses command ["sleep", "100"], so the basename is "sleep".
+        let info = reg.create(spec(None), "/bin/sh").await.expect("create");
+        let name = info.name.expect("a name should be inferred");
+        let suffix = name
+            .strip_prefix("sleep-")
+            .unwrap_or_else(|| panic!("expected 'sleep-' prefix, got {name}"));
+        assert_eq!(suffix.len(), 6, "suffix should be 6 hex chars: {name}");
+        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "suffix not hex: {name}");
+        // The suffix is the tail of the session id's hex digits.
+        let hex: String = info.id.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        assert_eq!(suffix, &hex[hex.len() - 6..], "suffix must be the id's hex tail");
     }
 
     #[tokio::test]
