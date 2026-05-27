@@ -92,21 +92,29 @@ async fn logs_without_follow_emits_snapshot_then_closes() {
     let daemon = test_daemon();
     // A session that prints something so the snapshot is non-trivial.
     let info = create(&daemon, "l", &["sh", "-c", "printf hello; sleep 100"]).await;
-    // Give the child a moment to emit.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let mut stream = cairn_daemon::handlers::logs::logs(
-        &daemon, info.id.clone(), LogWindow::All, false,
-    ).await.expect("logs");
-
-    // Collect everything; without follow it must terminate on its own.
+    // The child's `printf` may not have been read into the VT buffer yet. Each
+    // `logs` call (no follow) takes a fresh snapshot and must terminate on its
+    // own; poll until the snapshot is non-empty (bounded) rather than guessing
+    // with a fixed sleep.
     let mut bytes = Vec::new();
-    let collected = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Some(batch) = stream.next().await {
-            for chunk in batch { bytes.extend_from_slice(&chunk); }
+    for _ in 0..40 {
+        let mut stream = cairn_daemon::handlers::logs::logs(
+            &daemon, info.id.clone(), LogWindow::All, false,
+        ).await.expect("logs");
+        let mut buf = Vec::new();
+        let collected = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(batch) = stream.next().await {
+                for chunk in batch { buf.extend_from_slice(&chunk); }
+            }
+        }).await;
+        assert!(collected.is_ok(), "logs without follow must terminate");
+        if !buf.is_empty() {
+            bytes = buf;
+            break;
         }
-    }).await;
-    assert!(collected.is_ok(), "logs without follow must terminate");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert!(!bytes.is_empty(), "snapshot should contain the printed output");
 }
 
@@ -213,4 +221,27 @@ async fn attach_unknown_session_yields_error_event() {
     ).await;
     let first = next_events(&mut out).await;
     assert!(matches!(first.first(), Some(ServerEvent::Error(_))), "unknown id -> Error event");
+}
+
+#[tokio::test]
+async fn kick_ends_attached_stream() {
+    let daemon = test_daemon();
+    let info = create(&daemon, "a6", &["cat"]).await;
+    let events = futures::stream::pending::<Vec<ClientEvent>>();
+    let mut out = cairn_daemon::handlers::attach::attach(
+        &daemon, info.id.clone(), attach_init(), Box::pin(events),
+    ).await;
+    let _snapshot = next_events(&mut out).await;
+
+    // attach() registers the client in the attached-set synchronously before
+    // returning, so the kick handler can find and evict it.
+    cairn_daemon::handlers::sessions::kick(&daemon, info.id.clone(), None)
+        .await
+        .expect("kick");
+
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while out.next().await.is_some() {}
+    })
+    .await;
+    assert!(ended.is_ok(), "kick should end the attached stream");
 }

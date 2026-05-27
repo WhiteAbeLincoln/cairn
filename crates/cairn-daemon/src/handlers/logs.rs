@@ -67,24 +67,39 @@ fn apply_window(snapshot: Bytes, window: &LogWindow) -> Bytes {
     }
 }
 
+/// Last `n` lines of `bytes`, preserving line terminators. Correct whether or
+/// not the final line ends in `\n` (`split_inclusive` keeps each `\n` with its
+/// line and does not emit a trailing empty segment).
 fn tail_lines(bytes: &[u8], n: usize) -> Bytes {
     if n == 0 {
         return Bytes::new();
     }
-    // Index of the start of the last `n` lines.
-    let mut newlines = 0usize;
-    let mut start = bytes.len();
-    for i in (0..bytes.len()).rev() {
-        if bytes[i] == b'\n' {
-            newlines += 1;
-            if newlines > n {
-                start = i + 1;
-                break;
-            }
-            start = i;
-        } else {
-            start = i;
-        }
+    let lines: Vec<&[u8]> = bytes.split_inclusive(|&b| b == b'\n').collect();
+    let start = lines.len().saturating_sub(n);
+    Bytes::copy_from_slice(&lines[start..].concat())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tail_lines;
+
+    #[test]
+    fn tail_handles_unterminated_final_line() {
+        assert_eq!(&tail_lines(b"a\nb\nc", 1)[..], b"c");
+        assert_eq!(&tail_lines(b"a\nb\nc", 2)[..], b"b\nc");
+        assert_eq!(&tail_lines(b"a\nb\nc", 9)[..], b"a\nb\nc");
     }
-    Bytes::copy_from_slice(&bytes[start..])
+
+    #[test]
+    fn tail_handles_terminated_final_line() {
+        assert_eq!(&tail_lines(b"a\nb\nc\n", 1)[..], b"c\n");
+        assert_eq!(&tail_lines(b"a\nb\nc\n", 2)[..], b"b\nc\n");
+    }
+
+    #[test]
+    fn tail_edge_cases() {
+        assert_eq!(&tail_lines(b"a\nb\nc", 0)[..], b"");
+        assert_eq!(&tail_lines(b"", 5)[..], b"");
+        assert_eq!(&tail_lines(b"single", 1)[..], b"single");
+    }
 }
