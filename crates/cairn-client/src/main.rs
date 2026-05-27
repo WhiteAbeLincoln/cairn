@@ -2,6 +2,7 @@ use clap::{CommandFactory, Parser};
 
 mod cli;
 mod connect;
+mod detach;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
