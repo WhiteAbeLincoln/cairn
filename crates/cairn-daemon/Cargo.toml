@@ -27,6 +27,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v7"] }
 bytes.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }

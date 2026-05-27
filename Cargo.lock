@@ -170,6 +170,7 @@ dependencies = [
  "cairn-pty",
  "clap",
  "futures",
+ "libc",
  "tempfile",
  "tokio",
  "tokio-util",
