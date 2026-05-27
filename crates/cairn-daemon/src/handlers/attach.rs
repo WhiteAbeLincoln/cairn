@@ -1,1 +1,95 @@
-// Implemented in Task 5.
+use std::pin::Pin;
+
+use cairn_pty::TermSize;
+use futures::{Stream, StreamExt as _};
+use tokio::sync::broadcast::error::RecvError;
+use tokio_stream::wrappers::ReceiverStream;
+
+use cairn_protocol::cairn::daemon::types::{AttachInit, ClientEvent, Error as WireError, ServerEvent};
+
+use crate::daemon::Daemon;
+use crate::handlers::wire_exit;
+
+type ServerEvents = Pin<Box<dyn Stream<Item = Vec<ServerEvent>> + Send + 'static>>;
+type ClientEvents = Pin<Box<dyn Stream<Item = Vec<ClientEvent>> + Send + 'static>>;
+
+/// `sessions.attach`: the bidirectional bridge. Resolve, subscribe, emit a
+/// `snapshot`, then bridge client-events × broadcast × kick onto the outbound
+/// `server-event` stream. Errors are in-band (`server-event::error`).
+pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEvents) -> ServerEvents {
+    let Some(entry) = d.registry.resolve(&id) else {
+        return once_error("session.not_found", &format!("no such session: {id}"));
+    };
+    let client_id = d.registry.mint_client_id();
+    let handle = entry.handle();
+
+    // Leader-wins: the first interactive attacher claims the empty seat + sets
+    // size; followers get NotLeader (ignored). Read-only attaches don't claim.
+    if !init.no_stdin {
+        let _ = handle.resize(client_id, TermSize { cols: init.cols, rows: init.rows }).await;
+    }
+
+    let sub = match handle.subscribe(client_id).await {
+        Ok(s) => s,
+        Err(e) => return once_error("pty.backend", &format!("subscribe failed: {e}")),
+    };
+    let (mut kick_rx, guard) = entry.attach(client_id);
+
+    let no_stdin = init.no_stdin;
+    let (tx, out) = tokio::sync::mpsc::channel::<Vec<ServerEvent>>(32);
+
+    tokio::spawn(async move {
+        // Hold the attach guard (deregisters on drop) and the Subscription
+        // (clears leadership + primary-count on drop) for the task's lifetime.
+        let _guard = guard;
+        let mut sub = sub;
+        let mut events = events;
+
+        if tx.send(vec![ServerEvent::Snapshot(sub.snapshot.clone())]).await.is_err() {
+            return; // client already gone
+        }
+
+        loop {
+            tokio::select! {
+                ev = events.next() => match ev {
+                    Some(batch) => {
+                        for e in batch {
+                            match e {
+                                ClientEvent::Input(b) if !no_stdin => {
+                                    if handle.write(client_id, b).await.is_err() { return; }
+                                }
+                                ClientEvent::Resize((c, r)) => {
+                                    let _ = handle.resize(client_id, TermSize { cols: c, rows: r }).await;
+                                }
+                                ClientEvent::Detach => return,
+                                _ => {} // Input while no_stdin: ignore
+                            }
+                        }
+                    }
+                    None => return, // client closed the inbound stream
+                },
+                out_chunk = sub.stream.recv() => match out_chunk {
+                    Ok(bytes) => {
+                        if tx.send(vec![ServerEvent::Output(bytes)]).await.is_err() { return; }
+                    }
+                    Err(RecvError::Lagged(_)) => return, // lag-kick: close -> client reattaches fresh
+                    Err(RecvError::Closed) => {
+                        // Child exited. wait() resolves immediately now.
+                        let exit = wire_exit(handle.wait().await);
+                        let _ = tx.send(vec![ServerEvent::Exited(exit)]).await;
+                        return;
+                    }
+                },
+                _ = &mut kick_rx => return, // evicted by the `kick` op
+            }
+        }
+    });
+
+    Box::pin(ReceiverStream::new(out))
+}
+
+/// A one-element stream carrying a single `server-event::error`, then close.
+fn once_error(code: &str, message: &str) -> ServerEvents {
+    let err = ServerEvent::Error(WireError { code: code.to_string(), message: message.to_string() });
+    Box::pin(futures::stream::once(async move { vec![err] }))
+}
