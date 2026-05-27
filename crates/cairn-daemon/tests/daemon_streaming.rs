@@ -46,7 +46,6 @@ async fn wait_unknown_is_err() {
 
 #[tokio::test]
 async fn send_injects_into_session() {
-    use futures::StreamExt as _;
     let daemon = test_daemon();
     let info = create(&daemon, "s", &["cat"]).await;
 
