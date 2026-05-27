@@ -38,7 +38,11 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         eprintln!("cairn: stdout is not a terminal; output will include raw escape sequences");
     }
-    let _ = guard.is_raw(); // held for the whole attach; restored on drop
+    // `raw` means stdin is a real TTY. The detach-key matcher only runs in raw
+    // mode; with piped/non-TTY stdin we forward bytes verbatim (the spec's
+    // non-TTY behavior) so a literal detach sequence in piped data can't trigger
+    // a detach. `guard` is held for the whole attach and restores the TTY on drop.
+    let raw_mode = guard.is_raw();
 
     let mut stdin_rx = if opts.no_stdin { None } else { Some(spawn_stdin_reader()?) };
     let mut matcher = Matcher::new(opts.detach_keys.clone());
@@ -103,8 +107,14 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
 
                         chunk = recv_stdin(&mut stdin_rx) => match chunk {
                             Some(bytes) => {
-                                let mut forward = Vec::new();
-                                let detached = matcher.feed(&bytes, &mut forward);
+                                let (forward, detached) = if raw_mode {
+                                    let mut f = Vec::new();
+                                    let d = matcher.feed(&bytes, &mut f);
+                                    (f, d)
+                                } else {
+                                    // Non-TTY stdin: forward verbatim, no detach-key scan.
+                                    (bytes.to_vec(), false)
+                                };
                                 if !forward.is_empty()
                                     && events_tx
                                         .send(vec![ClientEvent::Input(Bytes::from(forward))])
