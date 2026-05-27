@@ -248,8 +248,11 @@ name = "cairn-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "bytes",
  "futures",
+ "serde",
+ "shlex",
  "tempfile",
  "tokio",
  "wit-bindgen-wrpc",
@@ -274,21 +277,6 @@ dependencies = [
  "tracing",
  "tracing-test",
  "vte",
-]
-
-[[package]]
-name = "cairn-webtest"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "bytes",
- "cairn-protocol",
- "futures",
- "serde",
- "shlex",
- "tokio",
- "wrpc-transport",
 ]
 
 [[package]]

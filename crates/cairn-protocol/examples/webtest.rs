@@ -8,10 +8,10 @@
 //! views deliberately show escaped bytes rather than rendering a terminal,
 //! which keeps the example small.
 //!
-//! Run `cargo run -p cairn-daemon`, then `cargo run -p cairn-webtest`, and open
-//! the printed URL. Binds `0.0.0.0:8088` with no auth (override with
-//! `WEBTEST_ADDR`; point at a non-default daemon socket with `CAIRN_SOCKET`) —
-//! intended for local/LAN testing only.
+//! Run `cargo run -p cairn-daemon`, then `cargo run -p cairn-protocol --example
+//! webtest`, and open the printed URL. Binds `0.0.0.0:8088` with no auth
+//! (override with `WEBTEST_ADDR`; point at a non-default daemon socket with
+//! `CAIRN_SOCKET`) — intended for local/LAN testing only.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

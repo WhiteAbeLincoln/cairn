@@ -16,4 +16,8 @@ wrpc-transport.workspace = true
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }
-tokio = { workspace = true, features = ["fs", "macros", "net", "rt"] }
+tokio = { workspace = true, features = ["fs", "macros", "net", "rt", "rt-multi-thread"] }
+# Only the `webtest` example needs these (a web front-end over the generated client).
+axum = "0.7"
+serde = { workspace = true }
+shlex = "1"
