@@ -4,6 +4,7 @@ mod attach;
 mod cli;
 mod connect;
 mod detach;
+mod exec;
 mod signals;
 mod terminal;
 
