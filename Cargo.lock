@@ -286,6 +286,7 @@ dependencies = [
  "cairn-protocol",
  "futures",
  "serde",
+ "shlex",
  "tokio",
  "wrpc-transport",
 ]

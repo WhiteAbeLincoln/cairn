@@ -19,3 +19,4 @@ serde = { workspace = true }
 futures.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
+shlex = "1"

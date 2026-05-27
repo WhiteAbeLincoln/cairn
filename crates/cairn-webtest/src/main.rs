@@ -51,6 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(home))
         .route("/create", post(create))
         .route("/s/:id", get(session))
+        .route("/s/:id/stream", get(stream))
         .route("/s/:id/send", post(send))
         .route("/s/:id/kill", post(kill))
         .route("/s/:id/rename", post(rename))
@@ -79,15 +80,21 @@ fn h(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Render arbitrary bytes as escaped, HTML-safe text (`\x1b`, `\n`, etc.).
-fn esc_bytes(b: &[u8]) -> String {
+/// escape_default form (`\x1b`, `\n`, …). Single-line printable ASCII, so it is
+/// safe to drop straight into an SSE `data:` field (no raw newlines).
+fn esc_raw(b: &[u8]) -> String {
     let mut s = String::new();
     for &c in b {
         for e in std::ascii::escape_default(c) {
             s.push(e as char);
         }
     }
-    h(&s)
+    s
+}
+
+/// As [`esc_raw`] but HTML-escaped for embedding directly in a page.
+fn esc_bytes(b: &[u8]) -> String {
+    h(&esc_raw(b))
 }
 
 fn page(title: &str, body: &str) -> Html<String> {
@@ -178,7 +185,7 @@ async fn home(State(st): State<AppState>) -> Html<String> {
 <div class=card><h3>create session</h3>\
 <form method=post action=/create>\
 <input name=name placeholder='name (optional)'>\
-<input name=command placeholder='command, e.g. bash -i  (blank = default shell)'>\
+<input name=command placeholder=\"command, e.g. bash -i  or  sh -c 'while true; do date; sleep 1; done'  (blank = default shell)\">\
 <button>create</button></form></div>\
 <h3>sessions ({n})</h3>\
 <table><tr><th>name</th><th>size</th><th>clients</th><th>state</th></tr>{rows}</table>",
@@ -193,7 +200,11 @@ async fn create(State(st): State<AppState>, Form(f): Form<CreateForm>) -> impl I
             let n = f.name.trim();
             if n.is_empty() { None } else { Some(n.to_string()) }
         },
-        command: f.command.split_whitespace().map(str::to_string).collect(),
+        // Shell-tokenize so `sh -c 'while …; done'` keeps its quoted arg;
+        // fall back to whitespace split on unbalanced quotes. Empty -> the
+        // daemon uses its default shell.
+        command: shlex::split(&f.command)
+            .unwrap_or_else(|| f.command.split_whitespace().map(str::to_string).collect()),
         env: vec![],
         env_inherit: true,
         workdir: None,
@@ -216,12 +227,6 @@ async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Html<Str
         Err(e) => return err_page("inspect", e),
     };
 
-    // Output: collect the logs snapshot (no follow) and show escaped bytes.
-    let logs = match collect_logs(&st, &id).await {
-        Ok(bytes) => esc_bytes(&bytes),
-        Err(e) => format!("(logs error: {})", h(&format!("{e}"))),
-    };
-
     let exit = match &info.exit {
         Some(e) => format!("exited code={:?} sig={:?} at={}", e.code, e.signal, e.unix_ms),
         None => "running".to_string(),
@@ -242,8 +247,15 @@ async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Html<Str
 <textarea name=input rows=3 placeholder='bytes to inject (a newline is sent literally)'></textarea>\
 <button>send</button></form>\
 <p class=muted>tip: end with a newline to submit a shell command.</p></div>\
-<h3>output (escaped snapshot)</h3><pre>{logs}</pre>\
-<p><a href='/s/{id}'>refresh</a></p>",
+<h3>output (live · escaped bytes)</h3><pre id=out>(connecting…)</pre>\
+<p class=muted><span id=st>streaming</span> — <a href='/s/{id}'>reload page</a></p>\
+<script>\
+const out=document.getElementById('out'),st=document.getElementById('st');out.textContent='';\
+const es=new EventSource('/s/{id}/stream');\
+es.onmessage=function(e){{out.textContent+=e.data;window.scrollTo(0,document.body.scrollHeight);}};\
+es.addEventListener('eof',function(){{es.close();st.textContent='stream ended';}});\
+es.onerror=function(){{st.textContent='reconnecting…';}};\
+</script>",
         name = h(info.name.as_deref().unwrap_or("(unnamed)")),
         id = h(&id),
         cols = info.cols,
@@ -256,24 +268,44 @@ async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Html<Str
     page(&format!("session {}", info.name.as_deref().unwrap_or(&id)), &body)
 }
 
-/// Drive the `logs` server-stream (no follow) to completion and concatenate.
+/// SSE endpoint: drive `logs(follow=true)` and forward each chunk as an event.
+/// `logs` emits the snapshot first, then live output until the session closes;
+/// we send an `eof` event at the end so the browser stops reconnecting.
 ///
 /// wRPC returns `(stream, Option<io_future>)`; the io future pumps the
-/// transport and must be driven concurrently with draining the stream.
-async fn collect_logs(st: &AppState, id: &str) -> anyhow::Result<Vec<u8>> {
-    let (mut stream, io) = api::sessions::logs(&wc(st), (), id, &t::LogWindow::All, false).await?;
-    if let Some(io) = io {
-        tokio::spawn(async move {
-            let _ = io.await;
-        });
-    }
-    let mut buf = Vec::new();
-    while let Some(batch) = stream.next().await {
-        for chunk in batch {
-            buf.extend_from_slice(&chunk);
+/// transport and is driven concurrently for the connection's lifetime.
+async fn stream(State(st): State<AppState>, Path(id): Path<String>) -> axum::response::Response {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use std::convert::Infallible;
+
+    match api::sessions::logs(&wc(&st), (), &id, &t::LogWindow::All, true).await {
+        Ok((stream, io)) => {
+            if let Some(io) = io {
+                tokio::spawn(async move {
+                    let _ = io.await;
+                });
+            }
+            let body = stream
+                .map(|batch| {
+                    let mut s = String::new();
+                    for chunk in &batch {
+                        s.push_str(&esc_raw(chunk));
+                    }
+                    Ok::<Event, Infallible>(Event::default().data(s))
+                })
+                .chain(futures::stream::once(async {
+                    Ok::<Event, Infallible>(Event::default().event("eof").data("end"))
+                }));
+            Sse::new(body).keep_alive(KeepAlive::default()).into_response()
+        }
+        Err(e) => {
+            let body = futures::stream::iter(vec![
+                Ok::<Event, Infallible>(Event::default().data(esc_raw(format!("(logs error: {e})").as_bytes()))),
+                Ok(Event::default().event("eof").data("end")),
+            ]);
+            Sse::new(body).into_response()
         }
     }
-    Ok(buf)
 }
 
 async fn send(
