@@ -4,6 +4,13 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use cairn_protocol::cairn::daemon::types::SessionSpec;
+use cairn_protocol::client::cairn::daemon::sessions;
+
+use crate::attach::{self, AttachOptions};
+use crate::cli::{Cli, ExecArgs};
+use crate::connect::Endpoint;
+use crate::detach::DetachKeys;
 
 /// Merge `--env-file` files (lowest precedence, applied in order) with `-e`
 /// args (highest; `KEY=VALUE` sets, bare `KEY` copies from the client env).
@@ -39,6 +46,58 @@ pub fn merge_env(env_files: &[PathBuf], env_args: &[String]) -> Result<Vec<(Stri
         }
     }
     Ok(map.into_iter().collect())
+}
+
+/// Shared body for `exec` (default `-it` off) and `run` (default `-it` on).
+pub async fn run_exec(
+    cli: &Cli,
+    args: &ExecArgs,
+    default_tty: bool,
+    default_interactive: bool,
+) -> Result<i32> {
+    let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+    let client = endpoint.client();
+
+    let tty = args.tty_with_default(default_tty);
+    let stdin = args.interactive_with_default(default_interactive);
+    let workdir = match &args.workdir {
+        Some(w) => Some(w.to_string_lossy().into_owned()),
+        None => std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+    };
+
+    let spec = SessionSpec {
+        name: args.name.clone(),
+        command: args.command.clone(),
+        env: merge_env(&args.env_file, &args.env)?,
+        env_inherit: !args.no_inherit_env,
+        workdir,
+        tty,
+        stdin,
+        idle_timeout_secs: args.timeout.map(|d| d.as_secs()),
+        scrollback_lines: 1000,
+    };
+
+    let info = match sessions::create(&client, (), &spec).await.context("create session")? {
+        Ok(info) => info,
+        Err(e) => {
+            eprintln!("cairn: create failed: {}: {}", e.code, e.message);
+            return Ok(1);
+        }
+    };
+
+    let label = info.name.clone().unwrap_or_else(|| info.id.clone());
+    if args.detach {
+        println!("{label}");
+        eprintln!("cairn: session created detached; attach with `cairn attach {label}`");
+        return Ok(0);
+    }
+
+    let opts = AttachOptions {
+        no_stdin: !stdin,
+        detach_keys: DetachKeys::parse_or_default(args.detach_keys.as_deref())
+            .map_err(|e| anyhow::anyhow!(e))?,
+    };
+    attach::run(&endpoint, &info.id, opts).await
 }
 
 #[cfg(test)]
