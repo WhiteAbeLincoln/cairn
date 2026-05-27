@@ -55,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/s/:id/stream", get(stream))
         .route("/s/:id/send", post(send))
         .route("/s/:id/kill", post(kill))
+        .route("/s/:id/killnow", post(killnow))
         .route("/s/:id/rename", post(rename))
         .route("/s/:id/restart", post(restart))
         .route("/s/:id/kick", post(kick))
@@ -236,7 +237,8 @@ async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Html<Str
         "<p><a href=/>&larr; home</a></p>\
 <h2>{name}</h2><p class=muted>{id}<br>{cols}×{rows} · pid {pid:?} · {att} client(s) · <span id=state>{exit}</span><br>cmd: {cmd}</p>\
 <div class=row>\
-<form method=post action='/s/{id}/kill'><button>kill (TERM)</button></form>\
+<form method=post action='/s/{id}/kill'><button>kill (TERM→KILL 1.5s)</button></form>\
+<form method=post action='/s/{id}/killnow'><button>force kill (SIGKILL)</button></form>\
 <form method=post action='/s/{id}/restart'><button>restart (force)</button></form>\
 <form method=post action='/s/{id}/kick'><button>kick all</button></form>\
 </div>\
@@ -339,7 +341,16 @@ async fn send(
 }
 
 async fn kill(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    // TERM, then escalate to SIGKILL after 1.5s if still alive. Interactive
+    // shells (a blank command → default shell on a PTY) ignore SIGTERM, so a
+    // bare TERM would leave the session running — the grace makes "kill" stick.
     let sig = t::Signal::Named(t::SignalName::Term);
+    let _ = api::sessions::kill(&wc(&st), (), &id, &sig, Some(1500)).await;
+    Redirect::to(&format!("/s/{id}"))
+}
+
+async fn killnow(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+    let sig = t::Signal::Named(t::SignalName::Kill);
     let _ = api::sessions::kill(&wc(&st), (), &id, &sig, None).await;
     Redirect::to(&format!("/s/{id}"))
 }
