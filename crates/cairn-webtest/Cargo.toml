@@ -1,0 +1,21 @@
+# Throwaway test client: a tiny web UI over the daemon's UDS wRPC surface.
+# Not part of the product — delete when done poking at the daemon from a phone.
+[package]
+name = "cairn-webtest"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "cairn-webtest"
+path = "src/main.rs"
+
+[dependencies]
+cairn-protocol = { path = "../cairn-protocol" }
+wrpc-transport.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+axum = "0.7"
+serde = { workspace = true }
+futures.workspace = true
+bytes.workspace = true
+anyhow.workspace = true
