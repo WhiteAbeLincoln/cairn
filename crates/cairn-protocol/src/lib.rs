@@ -29,3 +29,17 @@ pub mod client {
         },
     });
 }
+
+/// Machine-stable `types::error.code` values that carry protocol meaning beyond
+/// a human message. Both the daemon (producer) and clients (consumers) reference
+/// these instead of hard-coding the strings.
+pub mod error_codes {
+    /// Emitted on the `attach` stream when an operator `kick` evicts the client.
+    /// Terminal: the client must NOT auto-reconnect.
+    pub const CLIENT_KICKED: &str = "client.kicked";
+
+    /// Emitted on the `attach` stream when the client is dropped for lagging
+    /// behind the output broadcast. Recoverable: the client SHOULD reconnect and
+    /// repaint from a fresh snapshot.
+    pub const CLIENT_LAGGED: &str = "client.lagged";
+}
