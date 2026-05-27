@@ -34,7 +34,44 @@ pub struct SessionEntry {
     pub attached: Mutex<HashMap<ClientId, AttachHandle>>,
 }
 
+/// RAII guard: removes the client from the entry's attached-set on drop.
+pub struct AttachGuard {
+    entry: Arc<SessionEntry>,
+    client_id: ClientId,
+}
+
+impl Drop for AttachGuard {
+    fn drop(&mut self) {
+        self.entry
+            .attached
+            .lock()
+            .expect("attached lock")
+            .remove(&self.client_id);
+    }
+}
+
 impl SessionEntry {
+    /// Register an attached client. Returns the kick receiver (fired by the
+    /// `kick` op) and an RAII guard that deregisters on drop.
+    pub fn attach(self: &Arc<Self>, client_id: ClientId) -> (oneshot::Receiver<()>, AttachGuard) {
+        let (kick_tx, kick_rx) = oneshot::channel();
+        self.attached
+            .lock()
+            .expect("attached lock")
+            .insert(client_id, AttachHandle { kick: kick_tx });
+        (kick_rx, AttachGuard { entry: Arc::clone(self), client_id })
+    }
+
+    /// Rendered ids of currently-attached clients (for list/inspect).
+    pub fn attached_ids(&self) -> Vec<String> {
+        self.attached
+            .lock()
+            .expect("attached lock")
+            .keys()
+            .map(|c| c.to_string())
+            .collect()
+    }
+
     /// Clone the current session handle out of the lock (held only for the clone).
     pub fn handle(&self) -> Arc<dyn PtySession> {
         self.running.read().expect("running lock").handle.clone()
@@ -172,13 +209,7 @@ pub async fn session_info(entry: &SessionEntry) -> SessionInfo {
         signal: st.signal().map(|s| s as u8),
         unix_ms: st.unix_ms(),
     });
-    let attached_clients = entry
-        .attached
-        .lock()
-        .expect("attached lock")
-        .keys()
-        .map(|c| c.to_string())
-        .collect();
+    let attached_clients = entry.attached_ids();
     SessionInfo {
         id: entry.id.clone(),
         name: entry.name(),
@@ -284,5 +315,18 @@ mod tests {
         reg.create(spec(Some("b")), "/bin/sh").await.expect("b");
         let entries = reg.list();
         assert_eq!(entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn attach_registers_then_guard_drop_removes() {
+        let reg = SessionRegistry::new();
+        let info = reg.create(spec(Some("dev")), "/bin/sh").await.expect("create");
+        let entry = reg.resolve(&info.id).expect("resolve");
+        let cid = reg.mint_client_id();
+
+        let (_kick_rx, guard) = entry.attach(cid);
+        assert_eq!(entry.attached_ids(), vec![cid.to_string()]);
+        drop(guard);
+        assert!(entry.attached_ids().is_empty());
     }
 }
