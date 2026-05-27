@@ -1,9 +1,11 @@
-# Throwaway test client: a tiny web UI over the daemon's UDS wRPC surface.
-# Not part of the product — delete when done poking at the daemon from a phone.
+# Example client: a small web UI over the daemon's UDS wRPC surface. A handy
+# reference for driving the generated cairn_protocol client from an HTTP
+# front-end (and a quick way to poke at a running daemon from a browser/phone).
 [package]
 name = "cairn-webtest"
 version.workspace = true
 edition.workspace = true
+description = "Example web UI over the cairn daemon's Unix-socket wRPC API"
 publish = false
 
 [[bin]]

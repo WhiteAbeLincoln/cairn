@@ -1,9 +1,17 @@
-//! Throwaway web UI for poking at the cairn daemon over its Unix socket.
+//! Example: a small web UI over the cairn daemon's Unix-socket wRPC surface.
 //!
-//! Run the daemon (`cargo run -p cairn-daemon`), then this
-//! (`cargo run -p cairn-webtest`) and open the printed URL from your phone on
-//! the same network. Not a product — a disposable test harness. The pty I/O
-//! views deliberately show escaped bytes rather than rendering a terminal.
+//! A reference for driving the daemon from a plain HTTP front-end — it opens a
+//! fresh `wrpc_transport::unix` client per request and calls the generated
+//! `cairn_protocol::client` functions: the unary ops (version/whoami/list/
+//! inspect/create/rename/restart/kill/kick), `send` (client-streaming input),
+//! and `logs` (server-streaming output, surfaced live over SSE). The PTY I/O
+//! views deliberately show escaped bytes rather than rendering a terminal,
+//! which keeps the example small.
+//!
+//! Run `cargo run -p cairn-daemon`, then `cargo run -p cairn-webtest`, and open
+//! the printed URL. Binds `0.0.0.0:8088` with no auth (override with
+//! `WEBTEST_ADDR`; point at a non-default daemon socket with `CAIRN_SOCKET`) —
+//! intended for local/LAN testing only.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
