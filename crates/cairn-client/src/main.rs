@@ -3,6 +3,7 @@ use clap::{CommandFactory, Parser};
 mod cli;
 mod connect;
 mod detach;
+mod terminal;
 
 fn main() -> anyhow::Result<()> {
     let args = cli::Cli::parse();
