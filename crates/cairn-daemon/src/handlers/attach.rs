@@ -72,7 +72,14 @@ pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEven
                     Ok(bytes) => {
                         if tx.send(vec![ServerEvent::Output(bytes)]).await.is_err() { return; }
                     }
-                    Err(RecvError::Lagged(_)) => return, // lag-kick: close -> client reattaches fresh
+                    Err(RecvError::Lagged(_)) => {
+                        // lag-kick: tell the client this is recoverable so it reattaches fresh.
+                        let _ = tx.send(vec![ServerEvent::Error(WireError {
+                            code: cairn_protocol::error_codes::CLIENT_LAGGED.to_string(),
+                            message: "client fell behind output; reattach for a fresh snapshot".to_string(),
+                        })]).await;
+                        return;
+                    }
                     Err(RecvError::Closed) => {
                         // Child exited. wait() resolves immediately now.
                         let exit = wire_exit(handle.wait().await);
@@ -80,7 +87,14 @@ pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEven
                         return;
                     }
                 },
-                _ = &mut kick_rx => return, // evicted by the `kick` op
+                _ = &mut kick_rx => {
+                    // evicted by the `kick` op: terminal, client must not reconnect.
+                    let _ = tx.send(vec![ServerEvent::Error(WireError {
+                        code: cairn_protocol::error_codes::CLIENT_KICKED.to_string(),
+                        message: "detached by operator".to_string(),
+                    })]).await;
+                    return;
+                }
             }
         }
     });

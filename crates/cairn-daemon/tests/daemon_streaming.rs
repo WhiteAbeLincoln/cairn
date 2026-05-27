@@ -224,7 +224,7 @@ async fn attach_unknown_session_yields_error_event() {
 }
 
 #[tokio::test]
-async fn kick_ends_attached_stream() {
+async fn kick_emits_kicked_event_then_ends() {
     let daemon = test_daemon();
     let info = create(&daemon, "a6", &["cat"]).await;
     let events = futures::stream::pending::<Vec<ClientEvent>>();
@@ -233,15 +233,30 @@ async fn kick_ends_attached_stream() {
     ).await;
     let _snapshot = next_events(&mut out).await;
 
-    // attach() registers the client in the attached-set synchronously before
-    // returning, so the kick handler can find and evict it.
+    // attach() registers the client synchronously before returning, so kick finds it.
     cairn_daemon::handlers::sessions::kick(&daemon, info.id.clone(), None)
         .await
         .expect("kick");
 
+    // The bridge must emit Error{client.kicked} and then end the stream.
+    let mut saw_kicked = false;
     let ended = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while out.next().await.is_some() {}
+        loop {
+            match out.next().await {
+                Some(batch) => {
+                    for ev in batch {
+                        if let ServerEvent::Error(e) = ev
+                            && e.code == cairn_protocol::error_codes::CLIENT_KICKED
+                        {
+                            saw_kicked = true;
+                        }
+                    }
+                }
+                None => break,
+            }
+        }
     })
     .await;
     assert!(ended.is_ok(), "kick should end the attached stream");
+    assert!(saw_kicked, "kick should emit a client.kicked error event before ending");
 }
