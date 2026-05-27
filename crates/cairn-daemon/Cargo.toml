@@ -33,7 +33,7 @@ humantime = "2"
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "time", "fs"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "time", "fs", "process"] }
 libc = "0.2"
 wrpc-transport.workspace = true
 cairn-protocol = { path = "../cairn-protocol" }
