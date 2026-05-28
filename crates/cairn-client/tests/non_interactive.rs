@@ -211,3 +211,21 @@ async fn restart_force_replaces_the_child_process() -> anyhow::Result<()> {
     assert!(after.exit.is_none(), "restarted session must have no exit status; got {:?}", after.exit);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kick_all_on_empty_resolution_exits_two() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let out = h.run(&["kick", "--all"], b"")?;
+    assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr_str(&out));
+    assert!(stderr_str(&out).contains("no sessions matched"), "stderr: {}", stderr_str(&out));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kick_named_session_returns_zero() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let _ = h.create(Harness::spec(&["cat"], Some("kk"))).await?;
+    let out = h.run(&["kick", "kk"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    Ok(())
+}

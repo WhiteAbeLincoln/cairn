@@ -6,6 +6,7 @@ mod connect;
 mod detach;
 mod exec;
 mod inspect;
+mod kick;
 mod list;
 mod meta;
 mod rename;
@@ -94,6 +95,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Send { session, raw, input } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             send::run(&endpoint, session, *raw, input).await
+        }
+        Command::Kick { sessions, client } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            kick::run(&endpoint, sessions, client.as_deref()).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
