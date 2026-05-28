@@ -30,8 +30,7 @@ impl Harness {
     pub async fn start() -> anyhow::Result<Self> {
         let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("cairn.sock");
-        let mut cfg = DaemonConfig::default();
-        cfg.socket_path = socket.clone();
+        let cfg = DaemonConfig { socket_path: socket.clone(), ..Default::default() };
         let daemon = Daemon::new(cfg);
         let shutdown = CancellationToken::new();
         let serve = {

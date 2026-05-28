@@ -43,7 +43,6 @@ pub async fn run(
         let client = client.clone();
         let id = t.id.clone();
         let token = t.name.clone().unwrap_or_else(|| t.id.clone());
-        let wire_sig = wire_sig.clone();
         tasks.push(async move {
             let sig_result = sessions::kill(&client, (), &id, &wire_sig, grace_ms).await;
             let wait_result = if no_wait {

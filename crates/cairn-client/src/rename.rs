@@ -16,14 +16,14 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget, new_name: &str) ->
         }
     };
     let client = endpoint.client();
-    match sessions::rename(&client, (), &resolved.id, &new_name.to_string()).await {
+    match sessions::rename(&client, (), &resolved.id, new_name).await {
         Ok(Ok(())) => Ok(0),
         Ok(Err(e)) => {
             eprintln!("error: {}: {}", e.code, e.message);
             Ok(1)
         }
         Err(e) => {
-            eprintln!("cannot reach cairn-daemon at {}: {e}", endpoint.label());
+            eprintln!("error: cannot reach cairn-daemon at {}: {e}", endpoint.label());
             Ok(1)
         }
     }

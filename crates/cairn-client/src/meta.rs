@@ -17,7 +17,7 @@ pub async fn whoami(endpoint: &Endpoint) -> Result<i32> {
             Ok(1)
         }
         Err(e) => {
-            eprintln!("cannot reach cairn-daemon at {}: {e}", endpoint.label());
+            eprintln!("error: cannot reach cairn-daemon at {}: {e}", endpoint.label());
             Ok(1)
         }
     }

@@ -47,15 +47,12 @@ pub async fn run(
         let label = display_label(&t.name, &t.id);
         let out_tx = out_tx.clone();
         let client = client.clone();
-        let window = window.clone();
-
         stream_tasks.push(tokio::spawn(async move {
             let result = sessions::logs(&client, (), &id, &window, follow).await;
             let (mut stream, io) = match result {
                 Ok(pair) => pair,
                 Err(e) => {
-                    let line = format!("error: {label}: {e}\n");
-                    let _ = out_tx.send(line.into_bytes()).await;
+                    eprintln!("error: {label}: {e}");
                     return 1i32;
                 }
             };

@@ -14,6 +14,10 @@ use crate::connect::Endpoint;
 pub struct ResolvedTarget {
     pub id: String,
     pub name: Option<String>,
+    /// Full snapshot from `list_all`. Currently unused by callers — kept on
+    /// the struct so future commands can skip a follow-up `inspect` round-trip
+    /// when staleness is acceptable.
+    #[allow(dead_code)]
     pub info: SessionInfo,
 }
 

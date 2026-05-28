@@ -32,8 +32,7 @@ async fn attach_echoes_input_then_detach_keeps_session_alive() -> anyhow::Result
     // ---- in-process daemon on a tempdir socket ----
     let tmp = tempfile::tempdir()?;
     let sock = tmp.path().join("cairn.sock");
-    let mut cfg = DaemonConfig::default();
-    cfg.socket_path = sock.clone();
+    let cfg = DaemonConfig { socket_path: sock.clone(), ..Default::default() };
     let daemon = Daemon::new(cfg);
     let shutdown = CancellationToken::new();
     let serve = {

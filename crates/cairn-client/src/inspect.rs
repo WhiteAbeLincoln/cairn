@@ -25,7 +25,7 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget) -> Result<i32> {
             return Ok(1);
         }
         Err(e) => {
-            eprintln!("cannot reach cairn-daemon at {}: {e}", endpoint.label());
+            eprintln!("error: cannot reach cairn-daemon at {}: {e}", endpoint.label());
             return Ok(1);
         }
     };
