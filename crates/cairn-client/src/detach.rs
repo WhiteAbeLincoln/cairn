@@ -103,6 +103,19 @@ impl Matcher {
         Self { keys: keys.keys, withheld: Vec::new() }
     }
 
+    /// True when the matcher is holding back bytes that could still be a
+    /// detach-sequence prefix. The caller should arm a short timeout and
+    /// call [`flush_pending`] if no further input arrives.
+    pub fn has_pending(&self) -> bool {
+        !self.withheld.is_empty()
+    }
+
+    /// Release all withheld bytes as normal input, abandoning any
+    /// in-progress detach-sequence match.
+    pub fn flush_pending(&mut self, out: &mut Vec<u8>) {
+        out.append(&mut self.withheld);
+    }
+
     /// Feed `input`; append forwardable bytes to `out`. Returns true when the
     /// detach sequence has completed (bytes after the sequence in this call are
     /// dropped — detach ends the stream anyway).
@@ -251,5 +264,28 @@ mod tests {
         let (out, detached) = feed_all("ctrl-q,ctrl-q", b"a\x11b");
         assert!(!detached);
         assert_eq!(out, b"a\x11b");
+    }
+
+    #[test]
+    fn bare_escape_is_pending_until_flushed() {
+        let mut m = Matcher::new(DetachKeys::parse("ctrl-q,ctrl-q").unwrap());
+        let mut out = Vec::new();
+        // Bare 0x1b matches the CSI-u prefix — withheld as pending.
+        assert!(!m.feed(&[0x1b], &mut out));
+        assert!(out.is_empty());
+        assert!(m.has_pending());
+        // Timeout fires: flush releases the byte as normal input.
+        m.flush_pending(&mut out);
+        assert_eq!(out, vec![0x1b]);
+        assert!(!m.has_pending());
+    }
+
+    #[test]
+    fn flush_pending_is_noop_when_empty() {
+        let mut m = Matcher::new(DetachKeys::parse("ctrl-q,ctrl-q").unwrap());
+        let mut out = Vec::new();
+        assert!(!m.has_pending());
+        m.flush_pending(&mut out);
+        assert!(out.is_empty());
     }
 }

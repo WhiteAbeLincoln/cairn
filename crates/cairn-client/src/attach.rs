@@ -81,7 +81,16 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
                 };
                 tokio::pin!(io_fut);
 
+                let mut flush_at: Option<tokio::time::Instant> = None;
+
                 loop {
+                    let flush_fut = async {
+                        match flush_at {
+                            Some(at) => tokio::time::sleep_until(at).await,
+                            None => pending::<()>().await,
+                        }
+                    };
+
                     tokio::select! {
                         _ = &mut io_fut => break Outcome::Reconnect,
 
@@ -102,6 +111,20 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
                         _ = winch.recv() => {
                             if let Some((c, r)) = terminal::window_size() {
                                 let _ = events_tx.try_send(vec![ClientEvent::Resize((c, r))]);
+                            }
+                        }
+
+                        _ = flush_fut, if flush_at.is_some() => {
+                            flush_at = None;
+                            let mut forward = Vec::new();
+                            matcher.flush_pending(&mut forward);
+                            if !forward.is_empty()
+                                && events_tx
+                                    .send(vec![ClientEvent::Input(Bytes::from(forward))])
+                                    .await
+                                    .is_err()
+                            {
+                                break Outcome::Reconnect;
                             }
                         }
 
@@ -127,6 +150,11 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
                                     let _ = events_tx.send(vec![ClientEvent::Detach]).await;
                                     break Outcome::Detached;
                                 }
+                                flush_at = if matcher.has_pending() {
+                                    Some(tokio::time::Instant::now() + Duration::from_millis(50))
+                                } else {
+                                    None
+                                };
                             }
                             None => {
                                 // stdin EOF: stop forwarding, keep streaming output.
