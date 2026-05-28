@@ -8,8 +8,7 @@ async fn signal_term_kills_child() {
     cmd.arg("-c").arg("sleep 100");
     let pty = GhosttyPty::spawn(SpawnOptions::new(cmd)).expect("spawn");
 
-    // SIGTERM == 15 on Linux and macOS.
-    pty.signal(15).await.expect("signal");
+    pty.signal(nix::sys::signal::Signal::SIGTERM).await.expect("signal");
 
     let status = tokio::time::timeout(Duration::from_secs(5), pty.wait())
         .await

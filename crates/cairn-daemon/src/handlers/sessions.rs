@@ -11,7 +11,7 @@ use cairn_protocol::cairn::daemon::types::{Error as WireError, SessionInfo, Sess
 use crate::daemon::Daemon;
 use crate::error::{to_wire, DaemonError};
 use crate::registry::session_info;
-use crate::signal::to_libc;
+use crate::signal::to_nix;
 
 pub async fn list_all(d: &Daemon) -> Vec<SessionInfo> {
     let entries = d.registry.list();
@@ -67,10 +67,10 @@ pub async fn kill(
     grace_ms: Option<u32>,
 ) -> Result<(), WireError> {
     let entry = d.registry.resolve(&id).ok_or_else(|| DaemonError::NotFound.to_wire())?;
-    let signum = to_libc(&sig).map_err(DaemonError::to_wire)?;
+    let sig = to_nix(&sig).map_err(DaemonError::to_wire)?;
     // Clone handle out before any .await — lock is released immediately.
     let handle = entry.handle();
-    handle.signal(signum).await.map_err(to_wire)?;
+    handle.signal(sig).await.map_err(to_wire)?;
 
     if let Some(g) = grace_ms {
         // Arm a daemon-owned escalation task: fires SIGKILL after the grace period
@@ -81,7 +81,7 @@ pub async fn kill(
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(g as u64)).await;
             if handle.try_exit_status().is_none() {
-                let _ = handle.signal(libc::SIGKILL).await;
+                let _ = handle.signal(nix::sys::signal::Signal::SIGKILL).await;
             }
         });
     }

@@ -35,6 +35,9 @@ async fn binary_starts_and_serves_version() {
 
     // Graceful shutdown via SIGTERM.
     let pid = child.id().expect("pid");
-    unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(pid as i32),
+        nix::sys::signal::Signal::SIGTERM,
+    ).expect("SIGTERM");
     let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;
 }

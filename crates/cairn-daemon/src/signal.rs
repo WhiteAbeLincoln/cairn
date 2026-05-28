@@ -1,50 +1,54 @@
-//! Translate the protocol `signal` to a local libc signal number. Named
+//! Translate the protocol `signal` to a `nix::sys::signal::Signal`. Named
 //! signals resolve against THIS host's libc (so SIGUSR1 etc. are correct on
 //! both Linux and BSD); the numbered variant is an as-is escape hatch.
+
+use nix::sys::signal::Signal as NixSignal;
 
 use cairn_protocol::cairn::daemon::types::{Signal, SignalName};
 
 use crate::error::DaemonError;
 
-pub fn to_libc(sig: &Signal) -> Result<i32, DaemonError> {
+pub fn to_nix(sig: &Signal) -> Result<NixSignal, DaemonError> {
     match sig {
         Signal::Numbered(0) => Err(DaemonError::InvalidSignal),
-        Signal::Numbered(n) => Ok(i32::from(*n)),
-        Signal::Named(name) => Ok(named_to_libc(*name)),
+        Signal::Numbered(n) => {
+            NixSignal::try_from(i32::from(*n)).map_err(|_| DaemonError::InvalidSignal)
+        }
+        Signal::Named(name) => Ok(named_to_nix(*name)),
     }
 }
 
-fn named_to_libc(name: SignalName) -> i32 {
+fn named_to_nix(name: SignalName) -> NixSignal {
     match name {
-        SignalName::Hup => libc::SIGHUP,
-        SignalName::Int => libc::SIGINT,
-        SignalName::Quit => libc::SIGQUIT,
-        SignalName::Ill => libc::SIGILL,
-        SignalName::Trap => libc::SIGTRAP,
-        SignalName::Abrt => libc::SIGABRT,
-        SignalName::Bus => libc::SIGBUS,
-        SignalName::Fpe => libc::SIGFPE,
-        SignalName::Kill => libc::SIGKILL,
-        SignalName::Usr1 => libc::SIGUSR1,
-        SignalName::Segv => libc::SIGSEGV,
-        SignalName::Usr2 => libc::SIGUSR2,
-        SignalName::Pipe => libc::SIGPIPE,
-        SignalName::Alrm => libc::SIGALRM,
-        SignalName::Term => libc::SIGTERM,
-        SignalName::Chld => libc::SIGCHLD,
-        SignalName::Cont => libc::SIGCONT,
-        SignalName::Stop => libc::SIGSTOP,
-        SignalName::Tstp => libc::SIGTSTP,
-        SignalName::Ttin => libc::SIGTTIN,
-        SignalName::Ttou => libc::SIGTTOU,
-        SignalName::Urg => libc::SIGURG,
-        SignalName::Xcpu => libc::SIGXCPU,
-        SignalName::Xfsz => libc::SIGXFSZ,
-        SignalName::Vtalrm => libc::SIGVTALRM,
-        SignalName::Prof => libc::SIGPROF,
-        SignalName::Winch => libc::SIGWINCH,
-        SignalName::Io => libc::SIGIO,
-        SignalName::Sys => libc::SIGSYS,
+        SignalName::Hup => NixSignal::SIGHUP,
+        SignalName::Int => NixSignal::SIGINT,
+        SignalName::Quit => NixSignal::SIGQUIT,
+        SignalName::Ill => NixSignal::SIGILL,
+        SignalName::Trap => NixSignal::SIGTRAP,
+        SignalName::Abrt => NixSignal::SIGABRT,
+        SignalName::Bus => NixSignal::SIGBUS,
+        SignalName::Fpe => NixSignal::SIGFPE,
+        SignalName::Kill => NixSignal::SIGKILL,
+        SignalName::Usr1 => NixSignal::SIGUSR1,
+        SignalName::Segv => NixSignal::SIGSEGV,
+        SignalName::Usr2 => NixSignal::SIGUSR2,
+        SignalName::Pipe => NixSignal::SIGPIPE,
+        SignalName::Alrm => NixSignal::SIGALRM,
+        SignalName::Term => NixSignal::SIGTERM,
+        SignalName::Chld => NixSignal::SIGCHLD,
+        SignalName::Cont => NixSignal::SIGCONT,
+        SignalName::Stop => NixSignal::SIGSTOP,
+        SignalName::Tstp => NixSignal::SIGTSTP,
+        SignalName::Ttin => NixSignal::SIGTTIN,
+        SignalName::Ttou => NixSignal::SIGTTOU,
+        SignalName::Urg => NixSignal::SIGURG,
+        SignalName::Xcpu => NixSignal::SIGXCPU,
+        SignalName::Xfsz => NixSignal::SIGXFSZ,
+        SignalName::Vtalrm => NixSignal::SIGVTALRM,
+        SignalName::Prof => NixSignal::SIGPROF,
+        SignalName::Winch => NixSignal::SIGWINCH,
+        SignalName::Io => NixSignal::SIGIO,
+        SignalName::Sys => NixSignal::SIGSYS,
     }
 }
 
@@ -55,18 +59,23 @@ mod tests {
 
     #[test]
     fn named_term_resolves_to_libc_sigterm() {
-        assert_eq!(to_libc(&Signal::Named(SignalName::Term)).unwrap(), libc::SIGTERM);
-        assert_eq!(to_libc(&Signal::Named(SignalName::Kill)).unwrap(), libc::SIGKILL);
-        assert_eq!(to_libc(&Signal::Named(SignalName::Int)).unwrap(), libc::SIGINT);
+        assert_eq!(to_nix(&Signal::Named(SignalName::Term)).unwrap(), NixSignal::SIGTERM);
+        assert_eq!(to_nix(&Signal::Named(SignalName::Kill)).unwrap(), NixSignal::SIGKILL);
+        assert_eq!(to_nix(&Signal::Named(SignalName::Int)).unwrap(), NixSignal::SIGINT);
     }
 
     #[test]
     fn numbered_passes_through() {
-        assert_eq!(to_libc(&Signal::Numbered(9)).unwrap(), 9);
+        assert_eq!(to_nix(&Signal::Numbered(9)).unwrap(), NixSignal::SIGKILL);
     }
 
     #[test]
     fn numbered_zero_is_invalid() {
-        assert!(to_libc(&Signal::Numbered(0)).is_err());
+        assert!(to_nix(&Signal::Numbered(0)).is_err());
+    }
+
+    #[test]
+    fn numbered_out_of_range_is_invalid() {
+        assert!(to_nix(&Signal::Numbered(255)).is_err());
     }
 }

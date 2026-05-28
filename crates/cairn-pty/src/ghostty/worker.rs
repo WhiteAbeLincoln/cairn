@@ -601,21 +601,16 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let res = match s.child.id() {
                             Some(pid) => {
                                 // child is its own process-group leader (setsid).
-                                let rc = unsafe { libc::killpg(pid as libc::pid_t, sig) };
-                                if rc == 0 {
-                                    Ok(())
-                                } else {
-                                    let err = std::io::Error::last_os_error();
+                                let pid = nix::unistd::Pid::from_raw(pid as i32);
+                                match nix::sys::signal::killpg(pid, sig) {
+                                    Ok(()) => Ok(()),
                                     // ESRCH: the group is already gone (child
                                     // exited in the window between id() and
                                     // killpg). The requested terminal state is
                                     // reached, so report success — keeps signal
                                     // delivery idempotent against the exit race.
-                                    if err.raw_os_error() == Some(libc::ESRCH) {
-                                        Ok(())
-                                    } else {
-                                        Err(PtyError::from(err))
-                                    }
+                                    Err(nix::errno::Errno::ESRCH) => Ok(()),
+                                    Err(e) => Err(PtyError::from(std::io::Error::from(e))),
                                 }
                             }
                             None => Ok(()), // already reaped — desired state reached

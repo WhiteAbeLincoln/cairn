@@ -253,7 +253,7 @@ async fn attach_emits_exited_when_child_dies() {
     ).await;
     let _snapshot = next_events(&mut out).await;
     // Kill via the registry handle; the bridge should emit Exited then end.
-    daemon.registry.resolve(&info.id).unwrap().handle().signal(libc::SIGKILL).await.unwrap();
+    daemon.registry.resolve(&info.id).unwrap().handle().signal(nix::sys::signal::Signal::SIGKILL).await.unwrap();
     let mut saw_exit = false;
     for _ in 0..20 {
         for ev in next_events(&mut out).await {

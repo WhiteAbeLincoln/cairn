@@ -42,7 +42,7 @@ pub(crate) enum Command {
     },
     /// Deliver `sig` to the child's process group. Not leader-gated.
     Signal {
-        sig: i32,
+        sig: nix::sys::signal::Signal,
         reply: oneshot::Sender<Result<(), PtyError>>,
     },
     /// Write to the PTY with no client identity and no leader promotion.
@@ -118,8 +118,8 @@ impl GhosttyPty {
         *self.exit_rx.borrow()
     }
 
-    /// Deliver a signal (libc number) to the child's process group.
-    pub async fn signal(&self, sig: i32) -> Result<(), PtyError> {
+    /// Deliver a signal to the child's process group.
+    pub async fn signal(&self, sig: nix::sys::signal::Signal) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send_async(Command::Signal { sig, reply: tx })
@@ -188,7 +188,7 @@ impl super::PtySession for GhosttyPty {
         rx.await.map_err(|_| PtyError::Closed)?
     }
 
-    async fn signal(&self, sig: i32) -> Result<(), PtyError> {
+    async fn signal(&self, sig: nix::sys::signal::Signal) -> Result<(), PtyError> {
         GhosttyPty::signal(self, sig).await
     }
 

@@ -3,7 +3,7 @@
 //! and the session survives the detach.
 
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -60,21 +60,19 @@ async fn attach_echoes_input_then_detach_keeps_session_alive() -> anyhow::Result
 
     // ---- spawn `cairn attach <id>` wired to a pty ----
     let pty = nix::pty::openpty(None, None)?;
-    let master_fd = pty.master.as_raw_fd();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_cairn"));
     cmd.arg("--daemon")
         .arg(format!("unix://{}", sock.display()))
         .arg("attach")
         .arg(&id)
-        // SAFETY: dup the slave for each of stdin/stdout/stderr.
-        .stdin(unsafe { Stdio::from_raw_fd(libc::dup(pty.slave.as_raw_fd())) })
-        .stdout(unsafe { Stdio::from_raw_fd(libc::dup(pty.slave.as_raw_fd())) })
-        .stderr(unsafe { Stdio::from_raw_fd(libc::dup(pty.slave.as_raw_fd())) });
+        .stdin(Stdio::from(pty.slave.try_clone()?))
+        .stdout(Stdio::from(pty.slave.try_clone()?))
+        .stderr(Stdio::from(pty.slave.try_clone()?));
     let mut child = cmd.spawn()?;
     drop(pty.slave); // the parent keeps only the master
 
     // ---- reader thread for the master fd ----
-    let mut master = unsafe { std::fs::File::from_raw_fd(libc::dup(master_fd)) };
+    let mut master = std::fs::File::from(pty.master.try_clone()?);
     let (out_tx, out_rx) = mpsc::channel::<Vec<u8>>();
     {
         let mut rd = master.try_clone()?;
