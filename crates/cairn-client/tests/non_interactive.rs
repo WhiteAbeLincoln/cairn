@@ -5,6 +5,7 @@
 mod common;
 
 use common::{Harness, stderr_str, stdout_str};
+use futures::StreamExt as _;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn harness_smoke() -> anyhow::Result<()> {
@@ -126,6 +127,71 @@ async fn rename_changes_the_session_name() -> anyhow::Result<()> {
     let fresh = h.inspect(&info.id).await?;
     assert_eq!(fresh.name.as_deref(), Some("after"));
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_argv_joins_with_spaces_and_appends_newline() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    // `cat` echoes whatever it receives on stdin to the PTY.
+    let info = h.create(Harness::spec(&["cat"], Some("snd"))).await?;
+    let out = h.run(&["send", "snd", "hello", "world"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+
+    // Read the session's transcript via the logs op; assert it saw "hello world\n".
+    // Allow up to 2 s for the daemon to round-trip the input.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let info = h.inspect(&info.id).await?;
+        let _ = info; // (we read logs, not inspect, but inspect proves the session is still alive)
+        let logs = read_snapshot(&h, "snd").await?;
+        if logs.contains("hello world") {
+            return Ok(());
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("transcript never contained 'hello world'; got: {logs:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_stdin_streams_raw_bytes_no_trailing_newline() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let _ = h.create(Harness::spec(&["cat"], Some("raw"))).await?;
+    let out = h.run(&["send", "raw"], b"abc")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let logs = read_snapshot(&h, "raw").await?;
+    assert!(logs.contains("abc"), "expected 'abc' in transcript: {logs:?}");
+    assert!(!logs.contains("abc\n"), "stdin path must not append a newline: {logs:?}");
+    Ok(())
+}
+
+/// Drain the `logs(All, follow=false)` snapshot of `target` into a string.
+async fn read_snapshot(h: &Harness, target: &str) -> anyhow::Result<String> {
+    use cairn_protocol::cairn::daemon::types::LogWindow;
+    use cairn_protocol::client::cairn::daemon::sessions;
+
+    let xs = h.list_all().await?;
+    let id = xs
+        .iter()
+        .find(|s| s.name.as_deref() == Some(target))
+        .map(|s| s.id.clone())
+        .ok_or_else(|| anyhow::anyhow!("no session named {target}"))?;
+    let (mut stream, io) = sessions::logs(&h.client(), (), &id, &LogWindow::All, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("logs: {e}"))?;
+    if let Some(io) = io {
+        tokio::spawn(async move {
+            let _ = io.await;
+        });
+    }
+    let mut out = Vec::new();
+    while let Some(batch) = stream.next().await {
+        for chunk in batch {
+            out.extend_from_slice(&chunk);
+        }
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

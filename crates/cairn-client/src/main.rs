@@ -10,6 +10,7 @@ mod list;
 mod meta;
 mod rename;
 mod restart;
+mod send;
 mod signals;
 mod targets;
 mod terminal;
@@ -89,6 +90,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Restart { session, force } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             restart::run(&endpoint, session, *force).await
+        }
+        Command::Send { session, raw, input } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            send::run(&endpoint, session, *raw, input).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
