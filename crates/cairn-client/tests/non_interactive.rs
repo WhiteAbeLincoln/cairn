@@ -14,3 +14,56 @@ async fn harness_smoke() -> anyhow::Result<()> {
     assert!(xs.is_empty(), "fresh daemon has no sessions; got {xs:?}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn whoami_prints_identity_and_exits_zero() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let out = h.run(&["whoami"], b"")?;
+    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
+    assert!(!stdout_str(&out).trim().is_empty(), "whoami stdout should be non-empty");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn version_prints_client_and_daemon_rows_exit_zero() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let out = h.run(&["version"], b"")?;
+    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains("cairn"), "missing client row: {stdout}");
+    assert!(stdout.contains("daemon"), "missing daemon row: {stdout}");
+    assert!(stdout.contains("cairn:daemon@0.1.0"), "missing protocol id: {stdout}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn version_with_unreachable_daemon_still_exits_zero() -> anyhow::Result<()> {
+    // Don't start a daemon; point the client at a non-existent socket.
+    let tmp = tempfile::tempdir()?;
+    let bad = tmp.path().join("does-not-exist.sock");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cairn"))
+        .arg("--daemon")
+        .arg(format!("unix://{}", bad.display()))
+        .arg("version")
+        .output()?;
+    assert!(out.status.success(), "version must exit 0 even when daemon is down");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("cairn"), "client row missing: {stdout}");
+    assert!(stdout.contains("unreachable"), "daemon row missing 'unreachable': {stdout}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn whoami_with_unreachable_daemon_exits_nonzero() -> anyhow::Result<()> {
+    let tmp = tempfile::tempdir()?;
+    let bad = tmp.path().join("does-not-exist.sock");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_cairn"))
+        .arg("--daemon")
+        .arg(format!("unix://{}", bad.display()))
+        .arg("whoami")
+        .output()?;
+    assert!(!out.status.success(), "whoami is a connectivity probe; must exit non-zero on unreachable");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot reach") || stderr.contains("error"), "stderr should describe the failure: {stderr}");
+    Ok(())
+}

@@ -5,6 +5,7 @@ mod cli;
 mod connect;
 mod detach;
 mod exec;
+mod meta;
 mod signals;
 mod targets;
 mod terminal;
@@ -61,6 +62,14 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         }
         Command::Exec(args) => exec::run_exec(&cli, args, false, false).await,
         Command::Run(args) => exec::run_exec(&cli, args, true, true).await,
+        Command::Whoami => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            meta::whoami(&endpoint).await
+        }
+        Command::Version => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            meta::version(&endpoint).await
+        }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
             "this command is not implemented yet; the interactive-attach milestone covers attach/exec/run"
