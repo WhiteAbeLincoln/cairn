@@ -1,17 +1,30 @@
 //! Daemon endpoint resolution. v0 supports only the unix-socket transport.
+//!
+//! Only this file may name `wrpc_transport::*` types. Every other module in
+//! `cairn-client` touches the wRPC backend through `Endpoint::client()`'s
+//! return value generically — the value is passed straight into the generated
+//! `cairn_protocol::client::*` functions, which are themselves
+//! `<C: wrpc_transport::Invoke>`. When a second transport (e.g. WebTransport)
+//! lands, the only edits are inside this file: add an `Endpoint` variant, add
+//! a `Client` enum variant, write the forwarding `Invoke` impl.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 
 /// The wRPC client type for the local unix-socket transport. Cheap to clone
 /// (holds only the socket path); each invocation opens a fresh connection.
+///
+/// Today's `Client` is just the UDS client. When WebTransport lands, this
+/// alias becomes an enum wrapper with a forwarding `wrpc_transport::Invoke`
+/// impl — the public `Endpoint::client()` API stays unchanged.
 pub type Client = wrpc_transport::unix::Client<PathBuf>;
 
-/// A resolved daemon endpoint.
+/// A resolved daemon endpoint. v0 has only the `Unix` variant; future
+/// transports add variants alongside it.
 #[derive(Debug)]
-pub struct Endpoint {
-    path: PathBuf,
+pub enum Endpoint {
+    Unix(PathBuf),
 }
 
 impl Endpoint {
@@ -19,7 +32,7 @@ impl Endpoint {
     /// platform default socket.
     pub fn resolve(daemon: Option<&str>) -> Result<Self> {
         match daemon {
-            None => Ok(Self { path: default_socket() }),
+            None => Ok(Self::Unix(default_socket())),
             Some(s) => Self::from_uri(s),
         }
     }
@@ -29,10 +42,10 @@ impl Endpoint {
             if rest.is_empty() {
                 bail!("`--daemon unix://` has no socket path");
             }
-            return Ok(Self { path: PathBuf::from(rest) });
+            return Ok(Self::Unix(PathBuf::from(rest)));
         }
         if s.starts_with('/') {
-            return Ok(Self { path: PathBuf::from(s) });
+            return Ok(Self::Unix(PathBuf::from(s)));
         }
         if s.starts_with("ws://") || s.starts_with("wss://") {
             bail!("remote transports (WebTransport) are not yet supported; v0 is unix-socket only");
@@ -40,12 +53,18 @@ impl Endpoint {
         bail!("unrecognized --daemon endpoint {s:?} (expected `unix:///path/to/cairn.sock`)");
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// Human-readable label used in error messages. Avoids leaking
+    /// transport-specific accessors (a future `Wt` variant has no `Path`).
+    pub fn label(&self) -> String {
+        match self {
+            Self::Unix(p) => format!("unix://{}", p.display()),
+        }
     }
 
     pub fn client(&self) -> Client {
-        wrpc_transport::unix::Client::from(self.path.clone())
+        match self {
+            Self::Unix(p) => wrpc_transport::unix::Client::from(p.clone()),
+        }
     }
 }
 
@@ -62,23 +81,27 @@ fn default_socket() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
-    fn default_socket_ends_with_cairn_sock() {
-        let ep = Endpoint::resolve(None).unwrap();
-        assert!(ep.path().ends_with("cairn/cairn.sock"), "got {:?}", ep.path());
+    fn default_resolves_to_unix_with_cairn_sock_suffix() {
+        match Endpoint::resolve(None).unwrap() {
+            Endpoint::Unix(p) => assert!(p.ends_with("cairn/cairn.sock"), "got {p:?}"),
+        }
     }
 
     #[test]
     fn unix_uri_yields_its_path() {
-        let ep = Endpoint::resolve(Some("unix:///run/cairn/x.sock")).unwrap();
-        assert_eq!(ep.path(), Path::new("/run/cairn/x.sock"));
+        match Endpoint::resolve(Some("unix:///run/cairn/x.sock")).unwrap() {
+            Endpoint::Unix(p) => assert_eq!(p, Path::new("/run/cairn/x.sock")),
+        }
     }
 
     #[test]
     fn bare_absolute_path_is_accepted() {
-        let ep = Endpoint::resolve(Some("/tmp/y.sock")).unwrap();
-        assert_eq!(ep.path(), Path::new("/tmp/y.sock"));
+        match Endpoint::resolve(Some("/tmp/y.sock")).unwrap() {
+            Endpoint::Unix(p) => assert_eq!(p, Path::new("/tmp/y.sock")),
+        }
     }
 
     #[test]
@@ -90,5 +113,11 @@ mod tests {
     #[test]
     fn unknown_scheme_is_rejected() {
         assert!(Endpoint::resolve(Some("http://host")).is_err());
+    }
+
+    #[test]
+    fn label_renders_unix_uri() {
+        let ep = Endpoint::resolve(Some("/tmp/y.sock")).unwrap();
+        assert_eq!(ep.label(), "unix:///tmp/y.sock");
     }
 }

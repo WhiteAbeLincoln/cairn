@@ -75,7 +75,7 @@ async fn resolve_target(endpoint: &Endpoint, target: &SessionTarget) -> anyhow::
         let client = endpoint.client();
         let mut all = sessions::list_all(&client, ())
             .await
-            .map_err(|e| anyhow::anyhow!("cannot reach cairn-daemon at {}: {e}", endpoint.path().display()))?;
+            .map_err(|e| anyhow::anyhow!("cannot reach cairn-daemon at {}: {e}", endpoint.label()))?;
         all.sort_by_key(|s| s.created_at_unix_ms);
         let latest = all.last().ok_or_else(|| anyhow::anyhow!("no sessions to attach to"))?;
         Ok(latest.id.clone())
