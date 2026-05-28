@@ -28,6 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v7"] }
 bytes.workspace = true
 libc = "0.2"
+nix = { version = "0.29", features = ["signal", "user"] }
 tokio-stream = "0.1"
 humantime = "2"
 
@@ -35,5 +36,6 @@ humantime = "2"
 tempfile = { version = "3", default-features = false }
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "time", "fs", "process"] }
 libc = "0.2"
+nix = { version = "0.29", features = ["signal", "user"] }
 wrpc-transport.workspace = true
 cairn-protocol = { path = "../cairn-protocol" }

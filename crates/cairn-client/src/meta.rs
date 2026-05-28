@@ -27,7 +27,7 @@ pub async fn version(endpoint: &Endpoint) -> Result<i32> {
     println!("cairn {}", env!("CARGO_PKG_VERSION"));
     let client = endpoint.client();
     match meta::version(&client, ()).await {
-        Ok(v) => println!("daemon: {} · {}", v.daemon, v.protocol),
+        Ok(v) => println!("daemon: {} (protocol {})", v.daemon, v.protocol),
         Err(e) => println!("daemon: unreachable: {e}"),
     }
     Ok(0)

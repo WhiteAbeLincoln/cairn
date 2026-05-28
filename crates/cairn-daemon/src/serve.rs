@@ -44,6 +44,7 @@ pub async fn serve(
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let listener = bind_with_cleanup(&daemon.cfg)?;
+    tracing::info!(socket = %daemon.cfg.socket_path.display(), "listening");
     let srv = Arc::new(wrpc_transport::Server::default());
     let pl = Arc::new(PeerCredListener(listener));
 
@@ -139,7 +140,7 @@ async fn drain_sessions(daemon: &crate::daemon::Daemon, grace: std::time::Durati
     let entries = daemon.registry.list();
     // Send SIGTERM to all sessions (ignore errors — session may already be gone).
     for e in &entries {
-        let _ = e.handle().signal(libc::SIGTERM).await;
+        let _ = e.handle().signal(nix::sys::signal::Signal::SIGTERM).await;
     }
     // Wait for each with a shared timeout budget.
     let waits = entries.iter().map(|e| {
@@ -176,7 +177,6 @@ mod tests {
     }
 
     fn nix_geteuid() -> u32 {
-        // SAFETY: geteuid is always safe.
-        unsafe { libc::geteuid() }
+        nix::unistd::geteuid().as_raw()
     }
 }

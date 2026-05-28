@@ -26,9 +26,13 @@ async fn whoami_returns_caller_uid() {
         .await
         .expect("whoami invocation")
         .expect("whoami result");
-    // v0 reports the numeric uid (username_for returns None).
-    let uid = unsafe { libc::geteuid() }.to_string();
-    assert_eq!(who, uid, "whoami should report the caller's effective uid");
+    let uid = nix::unistd::geteuid();
+    let expected = nix::unistd::User::from_uid(uid)
+        .ok()
+        .flatten()
+        .map(|u| u.name)
+        .unwrap_or_else(|| uid.to_string());
+    assert_eq!(who, expected, "whoami should report the caller's username");
 }
 
 #[tokio::test]

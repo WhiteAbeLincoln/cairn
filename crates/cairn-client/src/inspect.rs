@@ -100,6 +100,8 @@ fn attached_str(ids: &[String]) -> String {
     if ids.is_empty() {
         "0".into()
     } else {
-        format!("{} ({})", ids.len(), ids.join(", "))
+        let mut sorted = ids.to_vec();
+        sorted.sort();
+        format!("{} ({})", sorted.len(), sorted.join(", "))
     }
 }

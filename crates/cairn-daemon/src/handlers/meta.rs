@@ -29,11 +29,9 @@ pub fn whoami(ctx: &ConnCtx) -> Result<String, WireError> {
     })
 }
 
-/// Attempt to resolve a uid to a login name via the local passwd database.
-/// Returns `None` on any failure — callers fall back to the numeric uid string.
-///
-/// v0: not implemented; richer lookup (getpwuid_r) can be added later without
-/// changing the interface.
-fn username_for(_uid: u32) -> Option<String> {
-    None
+fn username_for(uid: u32) -> Option<String> {
+    nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.name)
 }

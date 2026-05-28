@@ -142,6 +142,7 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
             Outcome::Detached => return Ok(0),
             Outcome::Exited { code, signal } => return Ok(exit_code(code, signal)),
             Outcome::Fatal(msg) => {
+                drop(guard);
                 eprintln!("cairn: {msg}");
                 return Ok(1);
             }
