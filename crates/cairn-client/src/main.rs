@@ -116,9 +116,6 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             logs::run(&endpoint, sessions, *strip, *prefix, *follow, *tail).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
-        _ => anyhow::bail!(
-            "this command is not implemented yet; the interactive-attach milestone covers attach/exec/run"
-        ),
     }
 }
 
