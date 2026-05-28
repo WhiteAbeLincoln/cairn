@@ -229,3 +229,51 @@ async fn kick_named_session_returns_zero() -> anyhow::Result<()> {
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kill_blocks_until_session_exits() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let info = h.create(Harness::spec(&["sleep", "30"], Some("zzz"))).await?;
+    let start = std::time::Instant::now();
+    let out = h.run(&["kill", "zzz"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    assert!(start.elapsed() < std::time::Duration::from_secs(5), "kill took too long: {:?}", start.elapsed());
+
+    let after = h.inspect(&info.id).await?;
+    assert!(after.exit.is_some(), "session should be exited; got {:?}", after.exit);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kill_no_wait_with_timeout_returns_immediately_then_daemon_escalates() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    // bash -c 'trap "" TERM; sleep 30' ignores TERM, so SIGKILL escalation is the only way out.
+    let info = h.create(Harness::spec(&["bash", "-c", "trap '' TERM; sleep 30"], Some("nope"))).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let start = std::time::Instant::now();
+    let out = h.run(&["kill", "--no-wait", "--timeout", "1s", "nope"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    assert!(start.elapsed() < std::time::Duration::from_millis(700), "should return ~immediately, took {:?}", start.elapsed());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let info = h.inspect(&info.id).await?;
+        if info.exit.is_some() {
+            return Ok(());
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("session never exited after daemon escalation; info={info:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kill_all_on_empty_registry_exits_two() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let out = h.run(&["kill", "--all"], b"")?;
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr_str(&out).contains("no sessions matched"));
+    Ok(())
+}

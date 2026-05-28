@@ -6,6 +6,7 @@ mod connect;
 mod detach;
 mod exec;
 mod inspect;
+mod kill;
 mod kick;
 mod list;
 mod meta;
@@ -99,6 +100,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Kick { sessions, client } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             kick::run(&endpoint, sessions, client.as_deref()).await
+        }
+        Command::Kill { signal, no_wait, timeout, sessions } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            kill::run(&endpoint, sessions, *signal, *no_wait, *timeout).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
