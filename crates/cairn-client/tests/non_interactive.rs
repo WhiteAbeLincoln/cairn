@@ -155,6 +155,39 @@ async fn send_argv_joins_with_spaces_and_appends_newline() -> anyhow::Result<()>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn send_latest_with_argv_input_routes_to_most_recent_session() -> anyhow::Result<()> {
+    // Regression: `cairn send --latest <input>` used to fail with
+    // "the argument '--latest' cannot be used with '[SESSION]'" because
+    // clap bound the first positional to the SessionTarget's `session`
+    // slot even when `--latest` was given.
+    let h = Harness::start().await?;
+    // Older session — should NOT receive the input.
+    let _older = h.create(Harness::spec(&["cat"], Some("older"))).await?;
+    // Give creation timestamps a millisecond of separation so `--latest`
+    // is deterministic.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let _newer = h.create(Harness::spec(&["cat"], Some("newer"))).await?;
+
+    let out = h.run(&["send", "--latest", "hello", "world"], b"")?;
+    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let logs = read_snapshot(&h, "newer").await?;
+        if logs.contains("hello world") {
+            // And the older session must not have received it.
+            let other = read_snapshot(&h, "older").await?;
+            assert!(!other.contains("hello"), "older session should not have received input: {other:?}");
+            return Ok(());
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("newer session's transcript never contained 'hello world'; got: {logs:?}");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn send_stdin_streams_raw_bytes_no_trailing_newline() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let _ = h.create(Harness::spec(&["cat"], Some("raw"))).await?;

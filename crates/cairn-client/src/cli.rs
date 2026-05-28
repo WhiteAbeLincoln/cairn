@@ -138,18 +138,28 @@ pub enum Command {
     List,
     /// Send characters to a session. Input is read from stdin if no
     /// argument is given.
+    ///
+    /// Positional form is `cairn send <SESSION> [INPUT]...`: the first
+    /// positional names the target session and any remaining positionals
+    /// are joined with spaces and sent as input. With `--latest`, the
+    /// session-selection positional is elided and every positional is
+    /// treated as input — this avoids the clap-level conflict that would
+    /// arise from flattening a `SessionTarget` (which carries its own
+    /// positional) alongside this command's trailing input.
     Send {
-        #[command(flatten)]
-        session: SessionTarget,
+        /// Operate on the most recently created session.
+        #[clap(long, short = 'l')]
+        latest: bool,
         /// If set and input is given as an argument, sends the input
         /// string as-is rather than appending a newline. Piped input
         /// from stdin is always sent raw, regardless of this flag.
         #[arg(long, short, default_value_t = false)]
         raw: bool,
-        /// The string to send as input to the session.
-        /// If not given, reads from stdin until EOF.
-        #[arg(trailing_var_arg = true)]
-        input: Vec<String>,
+        /// Session name/uuid followed by input tokens. With `--latest`,
+        /// every positional is input. If only a session is given (no
+        /// input tokens), the client reads input from stdin until EOF.
+        #[arg(trailing_var_arg = true, required_unless_present = "latest")]
+        args: Vec<String>,
         // TODO: do we ever want to send raw bytes that aren't valid UTF-8?
     },
     /// Kill one or more sessions.

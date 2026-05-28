@@ -20,7 +20,7 @@ mod terminal;
 mod wait;
 
 use attach::AttachOptions;
-use cli::{Cli, Command};
+use cli::{Cli, Command, SessionTarget};
 use connect::Endpoint;
 use detach::DetachKeys;
 
@@ -95,9 +95,20 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             restart::run(&endpoint, session, *force).await
         }
-        Command::Send { session, raw, input } => {
+        Command::Send { latest, raw, args } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
-            send::run(&endpoint, session, *raw, input).await
+            // Split the positional vector into (session-selector, input).
+            // `required_unless_present = "latest"` on `args` guarantees
+            // the non-`--latest` branch sees at least one element.
+            let (target, input) = if *latest {
+                (SessionTarget { session: None, latest: true }, args.as_slice())
+            } else {
+                let (s, rest) = args
+                    .split_first()
+                    .expect("clap `required_unless_present(latest)` guarantees args is non-empty");
+                (SessionTarget { session: Some(s.clone()), latest: false }, rest)
+            };
+            send::run(&endpoint, &target, *raw, input).await
         }
         Command::Kick { sessions, client } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
