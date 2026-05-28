@@ -1,5 +1,8 @@
 //! `cairn send <target> [-r/--raw] [input...]`: inject bytes into a session.
-//! Argv form joins with single spaces and appends `\n` unless `--raw`.
+//! Argv form joins with single spaces and appends `\r` (Enter) unless `--raw`.
+//! `\r` matches what a real terminal writes to the pty master on Enter — the
+//! line discipline's `ICRNL` translates it to `\n` for cooked-mode readers
+//! (shells, REPLs), while raw-mode TUIs receive `\r` directly as they expect.
 //! Stdin form streams 8 KiB chunks raw.
 
 use anyhow::Result;
@@ -61,7 +64,7 @@ pub async fn run(
 fn argv_to_chunk(words: &[String], raw: bool) -> Bytes {
     let mut s = words.join(" ");
     if !raw {
-        s.push('\n');
+        s.push('\r');
     }
     Bytes::from(s.into_bytes())
 }
@@ -85,9 +88,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn argv_joined_with_space_and_newline() {
+    fn argv_joined_with_space_and_enter() {
         let got = argv_to_chunk(&["hello".into(), "world".into()], false);
-        assert_eq!(&got[..], b"hello world\n");
+        assert_eq!(&got[..], b"hello world\r");
     }
 
     #[test]
