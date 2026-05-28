@@ -277,3 +277,24 @@ async fn kill_all_on_empty_registry_exits_two() -> anyhow::Result<()> {
     assert!(stderr_str(&out).contains("no sessions matched"));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_returns_child_exit_code() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    // `sh -c 'exit 7'` will exit with code 7 immediately.
+    let _ = h.create(Harness::spec(&["sh", "-c", "exit 7"], Some("seven"))).await?;
+    let out = h.run(&["wait", "seven"], b"")?;
+    assert_eq!(out.status.code(), Some(7), "stderr: {}", stderr_str(&out));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wait_timeout_elapsed_exits_124_session_alive() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let info = h.create(Harness::spec(&["sleep", "30"], Some("slow"))).await?;
+    let out = h.run(&["wait", "--timeout", "300ms", "slow"], b"")?;
+    assert_eq!(out.status.code(), Some(124), "stderr: {}", stderr_str(&out));
+    let after = h.inspect(&info.id).await?;
+    assert!(after.exit.is_none(), "session must still be alive after a wait timeout; got {:?}", after.exit);
+    Ok(())
+}

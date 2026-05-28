@@ -16,6 +16,7 @@ mod send;
 mod signals;
 mod targets;
 mod terminal;
+mod wait;
 
 use attach::AttachOptions;
 use cli::{Cli, Command};
@@ -104,6 +105,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Kill { signal, no_wait, timeout, sessions } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             kill::run(&endpoint, sessions, *signal, *no_wait, *timeout).await
+        }
+        Command::Wait { session, timeout } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            wait::run(&endpoint, session, *timeout).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
