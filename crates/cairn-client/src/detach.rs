@@ -218,7 +218,7 @@ mod tests {
         assert!(!m.feed(&[0x11], &mut out));
         assert!(out.is_empty());
         // A non-ctrl-q breaks it: both bytes are released as input.
-        assert!(!m.feed(&[b'x'], &mut out));
+        assert!(!m.feed(b"x", &mut out));
         assert_eq!(out, vec![0x11, b'x']);
     }
 

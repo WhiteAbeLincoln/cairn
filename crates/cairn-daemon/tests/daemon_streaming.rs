@@ -293,18 +293,13 @@ async fn kick_emits_kicked_event_then_ends() {
     // The bridge must emit Error{client.kicked} and then end the stream.
     let mut saw_kicked = false;
     let ended = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            match out.next().await {
-                Some(batch) => {
-                    for ev in batch {
-                        if let ServerEvent::Error(e) = ev
-                            && e.code == cairn_protocol::error_codes::CLIENT_KICKED
-                        {
-                            saw_kicked = true;
-                        }
-                    }
+        while let Some(batch) = out.next().await {
+            for ev in batch {
+                if let ServerEvent::Error(e) = ev
+                    && e.code == cairn_protocol::error_codes::CLIENT_KICKED
+                {
+                    saw_kicked = true;
                 }
-                None => break,
             }
         }
     })

@@ -5,11 +5,22 @@ mod cli;
 mod connect;
 mod detach;
 mod exec;
+mod inspect;
+mod kill;
+mod kick;
+mod list;
+mod logs;
+mod meta;
+mod rename;
+mod restart;
+mod send;
 mod signals;
+mod targets;
 mod terminal;
+mod wait;
 
 use attach::AttachOptions;
-use cli::{Cli, Command, SessionTarget};
+use cli::{Cli, Command};
 use connect::Endpoint;
 use detach::DetachKeys;
 
@@ -50,38 +61,61 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match &cli.command {
         Command::Attach { session, no_stdin, detach_keys } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
-            let id = resolve_target(&endpoint, session).await?;
+            let target = targets::resolve_one(&endpoint, session).await?;
             let opts = AttachOptions {
                 no_stdin: *no_stdin,
                 detach_keys: DetachKeys::parse_or_default(detach_keys.as_deref())
                     .map_err(|e| anyhow::anyhow!(e))?,
             };
-            attach::run(&endpoint, &id, opts).await
+            attach::run(&endpoint, &target.id, opts).await
         }
         Command::Exec(args) => exec::run_exec(&cli, args, false, false).await,
         Command::Run(args) => exec::run_exec(&cli, args, true, true).await,
+        Command::Whoami => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            meta::whoami(&endpoint).await
+        }
+        Command::Version => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            meta::version(&endpoint).await
+        }
+        Command::List => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            list::run(&endpoint).await
+        }
+        Command::Inspect { session } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            inspect::run(&endpoint, session).await
+        }
+        Command::Rename { session, new_name } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            rename::run(&endpoint, session, new_name).await
+        }
+        Command::Restart { session, force } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            restart::run(&endpoint, session, *force).await
+        }
+        Command::Send { session, raw, input } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            send::run(&endpoint, session, *raw, input).await
+        }
+        Command::Kick { sessions, client } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            kick::run(&endpoint, sessions, client.as_deref()).await
+        }
+        Command::Kill { signal, no_wait, timeout, sessions } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            kill::run(&endpoint, sessions, *signal, *no_wait, *timeout).await
+        }
+        Command::Wait { session, timeout } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            wait::run(&endpoint, session, *timeout).await
+        }
+        Command::Logs { sessions, strip, prefix, follow, tail } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            logs::run(&endpoint, sessions, *strip, *prefix, *follow, *tail).await
+        }
         Command::Completion { .. } => Ok(0), // handled before the runtime
-        _ => anyhow::bail!(
-            "this command is not implemented yet; the interactive-attach milestone covers attach/exec/run"
-        ),
     }
 }
 
-/// Resolve a single-session target to a concrete session id. `--latest` is
-/// resolved client-side via `list_all` (it has no wire representation).
-async fn resolve_target(endpoint: &Endpoint, target: &SessionTarget) -> anyhow::Result<String> {
-    use cairn_protocol::client::cairn::daemon::sessions;
-    if target.latest {
-        let client = endpoint.client();
-        let mut all = sessions::list_all(&client, ())
-            .await
-            .map_err(|e| anyhow::anyhow!("cannot reach cairn-daemon at {}: {e}", endpoint.path().display()))?;
-        all.sort_by_key(|s| s.created_at_unix_ms);
-        let latest = all.last().ok_or_else(|| anyhow::anyhow!("no sessions to attach to"))?;
-        Ok(latest.id.clone())
-    } else if let Some(s) = &target.session {
-        Ok(s.clone())
-    } else {
-        anyhow::bail!("no session specified")
-    }
-}
