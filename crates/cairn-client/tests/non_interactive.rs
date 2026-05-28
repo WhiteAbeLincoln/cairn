@@ -298,3 +298,49 @@ async fn wait_timeout_elapsed_exits_124_session_alive() -> anyhow::Result<()> {
     assert!(after.exit.is_none(), "session must still be alive after a wait timeout; got {:?}", after.exit);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logs_single_session_prints_snapshot() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let _ = h.create(Harness::spec(&["sh", "-c", "echo hello-from-the-pty"], Some("lg"))).await?;
+    // Give the child time to print.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let out = h.run(&["logs", "lg"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains("hello-from-the-pty"), "missing line: {stdout}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logs_strip_removes_ansi_escapes() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let _ = h
+        .create(Harness::spec(&["sh", "-c", "printf '\\x1b[31mX\\x1b[0m\\n'"], Some("ansi")))
+        .await?;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let out = h.run(&["logs", "--strip", "ansi"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains('X'), "missing X: {stdout:?}");
+    assert!(!stdout.contains('\u{1b}'), "ANSI escape still present: {stdout:?}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn logs_prefix_prepends_name_per_line() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let _ = h
+        .create(Harness::spec(&["sh", "-c", "echo a-line && echo b-line"], Some("p")))
+        .await?;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let out = h.run(&["logs", "--prefix", "--strip", "p"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains("p: a-line"), "expected prefixed 'a-line': {stdout:?}");
+    assert!(stdout.contains("p: b-line"), "expected prefixed 'b-line': {stdout:?}");
+    Ok(())
+}

@@ -9,6 +9,7 @@ mod inspect;
 mod kill;
 mod kick;
 mod list;
+mod logs;
 mod meta;
 mod rename;
 mod restart;
@@ -109,6 +110,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Wait { session, timeout } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             wait::run(&endpoint, session, *timeout).await
+        }
+        Command::Logs { sessions, strip, prefix, follow, tail } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            logs::run(&endpoint, sessions, *strip, *prefix, *follow, *tail).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
