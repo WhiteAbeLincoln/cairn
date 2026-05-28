@@ -114,3 +114,16 @@ async fn inspect_unknown_target_errors_and_exits_one() -> anyhow::Result<()> {
     assert!(stderr.contains("no-such"), "stderr missing token: {stderr}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rename_changes_the_session_name() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let info = h.create(Harness::spec(&["cat"], Some("before"))).await?;
+
+    let out = h.run(&["rename", "before", "--to", "after"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+
+    let fresh = h.inspect(&info.id).await?;
+    assert_eq!(fresh.name.as_deref(), Some("after"));
+    Ok(())
+}

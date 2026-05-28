@@ -8,6 +8,7 @@ mod exec;
 mod inspect;
 mod list;
 mod meta;
+mod rename;
 mod signals;
 mod targets;
 mod terminal;
@@ -79,6 +80,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Inspect { session } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             inspect::run(&endpoint, session).await
+        }
+        Command::Rename { session, new_name } => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            rename::run(&endpoint, session, new_name).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
