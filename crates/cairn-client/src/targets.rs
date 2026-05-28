@@ -93,7 +93,10 @@ fn resolve_many_in(sessions: &[SessionInfo], t: &SessionTargets) -> ResolvedMany
                         }
                         hit
                     }
-                    Err(_) => false,
+                    Err(e) => {
+                        eprintln!("warning: {tok}: invalid glob pattern: {e}");
+                        false
+                    }
                 };
                 if !any {
                     unresolved.push(tok.clone());
@@ -247,5 +250,26 @@ mod tests {
         let r = resolve_many_in(&xs, &many(&[], true, false));
         let ids: Vec<&str> = r.matched.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["b"]);
+    }
+
+    #[test]
+    fn one_latest_on_empty_list_errors() {
+        let xs: Vec<SessionInfo> = vec![];
+        let t = SessionTarget { session: None, latest: true };
+        let err = resolve_one_in(&xs, &t).unwrap_err().to_string();
+        assert!(err.contains("no sessions to operate on"), "got {err}");
+    }
+
+    #[test]
+    fn literal_name_takes_precedence_over_id_collision() {
+        let xs = vec![
+            // Session A: id "other-id", name "target-id" (name happens to look like another session's id).
+            s("other-id", Some("target-id"), 1, false),
+            // Session B: id "target-id", name "different".
+            s("target-id", Some("different"), 2, false),
+        ];
+        let t = SessionTarget { session: Some("target-id".into()), latest: false };
+        // Should match A by name, not B by id.
+        assert_eq!(resolve_one_in(&xs, &t).unwrap().id, "other-id");
     }
 }
