@@ -148,10 +148,7 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
             Outcome::Reconnect => {} // fall through to backoff
         }
 
-        let socket_gone = match endpoint {
-            Endpoint::Unix(p) => !p.exists(),
-        };
-        if socket_gone {
+        if endpoint.is_gone() {
             eprintln!(
                 "cairn: connection lost (daemon socket {} is gone)",
                 endpoint.label()

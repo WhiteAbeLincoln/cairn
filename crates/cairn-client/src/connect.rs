@@ -61,6 +61,18 @@ impl Endpoint {
         }
     }
 
+    /// True if the endpoint's underlying resource is known-gone without even
+    /// attempting a connection. For the Unix transport this is "the socket
+    /// path no longer exists" — used by the reconnect loop to give up
+    /// immediately when the daemon has been torn down. A future remote
+    /// transport may always return `false` here (you only learn it's gone
+    /// by failing to connect).
+    pub fn is_gone(&self) -> bool {
+        match self {
+            Self::Unix(p) => !p.exists(),
+        }
+    }
+
     pub fn client(&self) -> Client {
         match self {
             Self::Unix(p) => wrpc_transport::unix::Client::from(p.clone()),
