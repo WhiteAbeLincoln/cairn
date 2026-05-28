@@ -127,3 +127,21 @@ async fn rename_changes_the_session_name() -> anyhow::Result<()> {
     assert_eq!(fresh.name.as_deref(), Some("after"));
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restart_force_replaces_the_child_process() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    // sh -c 'while true; do sleep 1; done' — a stable, restartable child.
+    let info = h.create(Harness::spec(&["sh", "-c", "while true; do sleep 1; done"], Some("loopy"))).await?;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let out = h.run(&["restart", "loopy", "--force"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // Session must still be alive (no exit) and resolve under its original id.
+    let after = h.inspect(&info.id).await?;
+    assert_eq!(after.id, info.id, "session id must be stable across restart");
+    assert!(after.exit.is_none(), "restarted session must have no exit status; got {:?}", after.exit);
+    Ok(())
+}
