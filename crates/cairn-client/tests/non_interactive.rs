@@ -90,3 +90,27 @@ async fn list_shows_each_session_name() -> anyhow::Result<()> {
     assert!(stdout.contains("bravo"), "bravo row missing: {stdout}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspect_renders_command_and_workdir() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let info = h.create(Harness::spec(&["cat"], Some("ins"))).await?;
+
+    let out = h.run(&["inspect", "ins"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains(&info.id), "id missing: {stdout}");
+    assert!(stdout.contains("cat"), "command missing: {stdout}");
+    assert!(stdout.contains("running"), "state missing: {stdout}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inspect_unknown_target_errors_and_exits_one() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let out = h.run(&["inspect", "no-such"], b"")?;
+    assert!(!out.status.success(), "should exit non-zero");
+    let stderr = stderr_str(&out);
+    assert!(stderr.contains("no-such"), "stderr missing token: {stderr}");
+    Ok(())
+}
