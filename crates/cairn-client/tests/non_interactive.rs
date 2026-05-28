@@ -67,3 +67,26 @@ async fn whoami_with_unreachable_daemon_exits_nonzero() -> anyhow::Result<()> {
     assert!(stderr.contains("cannot reach") || stderr.contains("error"), "stderr should describe the failure: {stderr}");
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_on_empty_registry_says_no_sessions() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    let out = h.run(&["list"], b"")?;
+    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
+    assert!(stdout_str(&out).contains("no sessions"), "got {}", stdout_str(&out));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_shows_each_session_name() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+    h.create(Harness::spec(&["cat"], Some("alpha"))).await?;
+    h.create(Harness::spec(&["cat"], Some("bravo"))).await?;
+
+    let out = h.run(&["list"], b"")?;
+    assert!(out.status.success(), "stderr: {}", stderr_str(&out));
+    let stdout = stdout_str(&out);
+    assert!(stdout.contains("alpha"), "alpha row missing: {stdout}");
+    assert!(stdout.contains("bravo"), "bravo row missing: {stdout}");
+    Ok(())
+}

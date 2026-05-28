@@ -5,6 +5,7 @@ mod cli;
 mod connect;
 mod detach;
 mod exec;
+mod list;
 mod meta;
 mod signals;
 mod targets;
@@ -69,6 +70,10 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Version => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             meta::version(&endpoint).await
+        }
+        Command::List => {
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            list::run(&endpoint).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
         _ => anyhow::bail!(
