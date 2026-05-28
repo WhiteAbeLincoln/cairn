@@ -170,9 +170,11 @@ pub enum Command {
         #[clap(long, short, default_value_t, value_parser = Signal::from_str)]
         signal: Signal,
         /// Don't wait for the session(s) to actually exit; return as
-        /// soon as the signal has been dispatched. Mutually exclusive
-        /// with `--timeout`.
-        #[clap(long, conflicts_with = "timeout")]
+        /// soon as the signal has been dispatched. Independent of
+        /// `--timeout`: `--no-wait --timeout 5s` dispatches the signal,
+        /// returns immediately, and lets the daemon escalate to SIGKILL
+        /// after the grace period.
+        #[clap(long)]
         no_wait: bool,
         /// Wait up to this duration for the session to exit, then
         /// escalate to SIGKILL if it's still alive. Implies the
