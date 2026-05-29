@@ -7,7 +7,7 @@ use futures::StreamExt as _;
 use cairn_protocol::cairn::daemon::types::Error as WireError;
 
 use crate::daemon::Daemon;
-use crate::error::{to_wire, DaemonError};
+use crate::error::{DaemonError, to_wire};
 
 /// `sessions.send`: inject each streamed chunk into the PTY without claiming
 /// leadership. Empty stream is a no-op. Returns once the input stream ends.
@@ -16,7 +16,10 @@ pub async fn send(
     id: String,
     mut chunks: Pin<Box<dyn Stream<Item = Vec<Bytes>> + Send + 'static>>,
 ) -> Result<(), WireError> {
-    let entry = d.registry.resolve(&id).ok_or_else(|| DaemonError::NotFound.to_wire())?;
+    let entry = d
+        .registry
+        .resolve(&id)
+        .ok_or_else(|| DaemonError::NotFound.to_wire())?;
     let handle = entry.handle();
     while let Some(batch) = chunks.next().await {
         for chunk in batch {

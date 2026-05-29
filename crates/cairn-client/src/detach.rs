@@ -81,7 +81,9 @@ fn single_ascii(s: &str, token: &str) -> Result<char, String> {
     match (chars.next(), chars.next()) {
         (Some(c), None) if c.is_ascii() => Ok(c),
         (Some(_), None) => Err(format!("detach key {token:?} must be ASCII")),
-        _ => Err(format!("detach key {token:?} must be a single char or ctrl-<char>")),
+        _ => Err(format!(
+            "detach key {token:?} must be a single char or ctrl-<char>"
+        )),
     }
 }
 
@@ -100,7 +102,10 @@ pub struct Matcher {
 
 impl Matcher {
     pub fn new(keys: DetachKeys) -> Self {
-        Self { keys: keys.keys, withheld: Vec::new() }
+        Self {
+            keys: keys.keys,
+            withheld: Vec::new(),
+        }
     }
 
     /// True when the matcher is holding back bytes that could still be a
@@ -238,7 +243,10 @@ mod tests {
     #[test]
     fn csiu_sequence_detaches() {
         let (out, detached) = feed_all("ctrl-q,ctrl-q", b"\x1b[113;5u\x1b[113;5u");
-        assert!(detached, "Kitty CSI-u encoding of ctrl-q,ctrl-q should detach");
+        assert!(
+            detached,
+            "Kitty CSI-u encoding of ctrl-q,ctrl-q should detach"
+        );
         assert!(out.is_empty());
     }
 

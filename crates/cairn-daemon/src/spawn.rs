@@ -1,7 +1,7 @@
 //! Build a `cairn_pty::SpawnOptions` from a wire `session-spec`.
 
-use cairn_pty::SpawnOptions;
 use cairn_protocol::cairn::daemon::types::SessionSpec;
+use cairn_pty::SpawnOptions;
 
 /// Translate a `session-spec` into spawn options. An empty `command` falls
 /// back to `default_shell`. `env-inherit=false` clears the inherited env.
@@ -31,8 +31,14 @@ mod tests {
 
     fn base_spec() -> SessionSpec {
         SessionSpec {
-            name: None, command: vec![], env: vec![], env_inherit: true,
-            workdir: None, tty: true, stdin: true, idle_timeout_secs: None,
+            name: None,
+            command: vec![],
+            env: vec![],
+            env_inherit: true,
+            workdir: None,
+            tty: true,
+            stdin: true,
+            idle_timeout_secs: None,
             scrollback_lines: 500,
         }
     }

@@ -44,7 +44,10 @@ async fn spawn_raw_session() -> GhosttyPty {
         "-c",
         "stty -icanon -echo -opost -icrnl 2>/dev/null; printf '__READY__'; exec cat",
     ]);
-    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: COLS, rows: ROWS });
+    let opts = SpawnOptions::new(cmd).with_size(TermSize {
+        cols: COLS,
+        rows: ROWS,
+    });
     let pty = GhosttyPty::spawn(opts).expect("spawn raw cat session");
 
     let mut sub = pty
@@ -65,11 +68,7 @@ async fn spawn_raw_session() -> GhosttyPty {
 /// accumulated bytes contain `needle` or the deadline elapses. Same shape
 /// as the helper in `tests/pty_io.rs`; duplicated rather than shared because
 /// Cargo integration tests are separate compilation units.
-async fn read_until_contains(
-    sub: &mut Subscription,
-    needle: &[u8],
-    deadline: Duration,
-) -> Vec<u8> {
+async fn read_until_contains(sub: &mut Subscription, needle: &[u8], deadline: Duration) -> Vec<u8> {
     let mut acc = sub.snapshot.to_vec();
     if windows_contain(&acc, needle) {
         return acc;
@@ -88,7 +87,9 @@ async fn read_until_contains(
             }
         }
     };
-    tokio::time::timeout(deadline, read).await.unwrap_or_default()
+    tokio::time::timeout(deadline, read)
+        .await
+        .unwrap_or_default()
 }
 
 fn windows_contain(haystack: &[u8], needle: &[u8]) -> bool {
@@ -224,12 +225,9 @@ async fn snapshot_preserves_alt_screen_when_active() {
     //   contains `\x1b[?1049h`. The receiver stays on its main screen.
 
     let pty = spawn_raw_session().await;
-    let sub = write_setup_and_resubscribe(
-        &pty,
-        b"\x1b[?1049hALT_VISIBLE_SENT_",
-        b"ALT_VISIBLE_SENT_",
-    )
-    .await;
+    let sub =
+        write_setup_and_resubscribe(&pty, b"\x1b[?1049hALT_VISIBLE_SENT_", b"ALT_VISIBLE_SENT_")
+            .await;
     let receiver = replay_into_receiver(&sub.snapshot);
 
     use libghostty_vt::ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE as ALTERNATE;
@@ -374,8 +372,7 @@ async fn snapshot_preserves_current_sgr_style() {
     assert!(
         is_bold_red,
         "current SGR style not preserved (bold={}, fg_color={:?})",
-        style.bold,
-        style.fg_color,
+        style.bold, style.fg_color,
     );
 }
 
@@ -521,7 +518,11 @@ async fn snapshot_preserves_charset_designation() {
 
     let coord = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 0u32 }.into();
     let p = libghostty_vt::terminal::Point::Viewport(coord);
-    let cell = receiver.grid_ref(p).expect("grid_ref").cell().expect("cell");
+    let cell = receiver
+        .grid_ref(p)
+        .expect("grid_ref")
+        .cell()
+        .expect("cell");
     let cp = cell.codepoint().unwrap_or(0);
     assert!(
         cp == 0x250c,

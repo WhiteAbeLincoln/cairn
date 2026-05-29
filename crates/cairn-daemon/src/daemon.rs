@@ -21,7 +21,10 @@ pub struct Daemon {
 
 impl Daemon {
     pub fn new(cfg: DaemonConfig) -> Self {
-        Self { registry: Arc::new(SessionRegistry::new()), cfg: Arc::new(cfg) }
+        Self {
+            registry: Arc::new(SessionRegistry::new()),
+            cfg: Arc::new(cfg),
+        }
     }
 }
 
@@ -94,9 +97,8 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     ) -> anyhow::Result<
         std::pin::Pin<
             Box<
-                dyn std::future::Future<
-                        Output = cairn_protocol::cairn::daemon::types::ExitStatus,
-                    > + Send
+                dyn std::future::Future<Output = cairn_protocol::cairn::daemon::types::ExitStatus>
+                    + Send
                     + 'static,
             >,
         >,
@@ -123,18 +125,16 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
         init: cairn_protocol::cairn::daemon::types::AttachInit,
         events: std::pin::Pin<
             Box<
-                dyn futures::Stream<
-                        Item = Vec<cairn_protocol::cairn::daemon::types::ClientEvent>,
-                    > + Send
+                dyn futures::Stream<Item = Vec<cairn_protocol::cairn::daemon::types::ClientEvent>>
+                    + Send
                     + 'static,
             >,
         >,
     ) -> anyhow::Result<
         std::pin::Pin<
             Box<
-                dyn futures::Stream<
-                        Item = Vec<cairn_protocol::cairn::daemon::types::ServerEvent>,
-                    > + Send
+                dyn futures::Stream<Item = Vec<cairn_protocol::cairn::daemon::types::ServerEvent>>
+                    + Send
                     + 'static,
             >,
         >,
@@ -146,9 +146,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
         &self,
         _ctx: ConnCtx,
         id: String,
-        chunks: std::pin::Pin<
-            Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>,
-        >,
+        chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     ) -> anyhow::Result<Result<(), WireError>> {
         Ok(crate::handlers::send::send(self, id, chunks).await)
     }

@@ -10,7 +10,11 @@ use crate::cli::SessionTargets;
 use crate::connect::Endpoint;
 use crate::targets;
 
-pub async fn run(endpoint: &Endpoint, sessions_arg: &SessionTargets, client_filter: Option<&str>) -> Result<i32> {
+pub async fn run(
+    endpoint: &Endpoint,
+    sessions_arg: &SessionTargets,
+    client_filter: Option<&str>,
+) -> Result<i32> {
     let resolved = match targets::resolve_many(endpoint, sessions_arg).await {
         Ok(r) => r,
         Err(e) => {

@@ -30,7 +30,10 @@ impl Harness {
     pub async fn start() -> anyhow::Result<Self> {
         let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("cairn.sock");
-        let cfg = DaemonConfig { socket_path: socket.clone(), ..Default::default() };
+        let cfg = DaemonConfig {
+            socket_path: socket.clone(),
+            ..Default::default()
+        };
         let daemon = Daemon::new(cfg);
         let shutdown = CancellationToken::new();
         let serve = {
@@ -47,7 +50,13 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         anyhow::ensure!(socket.exists(), "daemon socket was not created in time");
-        Ok(Self { daemon, socket, shutdown, serve, _tmp: tmp })
+        Ok(Self {
+            daemon,
+            socket,
+            shutdown,
+            serve,
+            _tmp: tmp,
+        })
     }
 
     /// Convenience: a spec for a session running `cmd args...`.

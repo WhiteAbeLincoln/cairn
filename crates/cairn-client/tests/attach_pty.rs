@@ -32,7 +32,10 @@ async fn attach_echoes_input_then_detach_keeps_session_alive() -> anyhow::Result
     // ---- in-process daemon on a tempdir socket ----
     let tmp = tempfile::tempdir()?;
     let sock = tmp.path().join("cairn.sock");
-    let cfg = DaemonConfig { socket_path: sock.clone(), ..Default::default() };
+    let cfg = DaemonConfig {
+        socket_path: sock.clone(),
+        ..Default::default()
+    };
     let daemon = Daemon::new(cfg);
     let shutdown = CancellationToken::new();
     let serve = {
@@ -108,10 +111,17 @@ async fn attach_echoes_input_then_detach_keeps_session_alive() -> anyhow::Result
 
     // ---- the client should exit cleanly ----
     let status = wait_child(&mut child, Duration::from_secs(5));
-    assert_eq!(status.and_then(|s| s.code()), Some(0), "client should exit 0 on detach");
+    assert_eq!(
+        status.and_then(|s| s.code()),
+        Some(0),
+        "client should exit 0 on detach"
+    );
 
     // ---- the session must still be alive ----
-    let entry = daemon.registry.resolve(&id).expect("session must survive detach");
+    let entry = daemon
+        .registry
+        .resolve(&id)
+        .expect("session must survive detach");
     assert!(
         entry.handle().try_exit_status().is_none(),
         "child must still be running after the client detaches"
@@ -142,7 +152,10 @@ fn wait_for(rx: &mpsc::Receiver<Vec<u8>>, needle: &[u8], timeout: Duration) -> b
 }
 
 /// Poll `try_wait` until the child exits or the deadline passes.
-fn wait_child(child: &mut std::process::Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+fn wait_child(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         match child.try_wait() {

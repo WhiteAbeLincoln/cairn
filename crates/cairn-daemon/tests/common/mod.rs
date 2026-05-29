@@ -23,7 +23,10 @@ impl DaemonHarness {
     pub async fn start() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let socket_path = tmp.path().join("cairn").join("cairn.sock");
-        let cfg = DaemonConfig { socket_path: socket_path.clone(), ..DaemonConfig::default() };
+        let cfg = DaemonConfig {
+            socket_path: socket_path.clone(),
+            ..DaemonConfig::default()
+        };
         let daemon = Daemon::new(cfg);
         let shutdown = CancellationToken::new();
         let task = tokio::spawn(serve(daemon, shutdown.clone()));
@@ -37,7 +40,12 @@ impl DaemonHarness {
         }
         assert!(socket_path.exists(), "daemon socket did not appear in time");
 
-        Self { socket_path, _tmp: tmp, shutdown, task }
+        Self {
+            socket_path,
+            _tmp: tmp,
+            shutdown,
+            task,
+        }
     }
 
     pub fn client(&self) -> wrpc_transport::unix::Client<PathBuf> {

@@ -26,7 +26,9 @@ impl RawGuard {
         raw.control_chars[SpecialCharacterIndices::VTIME as usize] = 0;
         termios::tcsetattr(stdin.as_fd(), SetArg::TCSANOW, &raw)
             .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
-        Ok(Self { original: Some(original) })
+        Ok(Self {
+            original: Some(original),
+        })
     }
 
     pub fn is_raw(&self) -> bool {
@@ -52,7 +54,12 @@ nix::ioctl_read_bad!(tiocgwinsz, nix::libc::TIOCGWINSZ, nix::libc::winsize);
 
 /// Current terminal size as `(cols, rows)`, or `None` when stdout isn't a TTY.
 pub fn window_size() -> Option<(u16, u16)> {
-    let mut ws = nix::libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    let mut ws = nix::libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
     let fd = io::stdout().as_raw_fd();
     // SAFETY: `ws` is a valid, writable winsize for the duration of the call.
     let rc = unsafe { tiocgwinsz(fd, &mut ws) };

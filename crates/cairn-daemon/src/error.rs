@@ -1,8 +1,8 @@
 //! Mapping from internal errors to the wire `types::error` envelope, with
 //! machine-stable `code` strings the CLI can branch on.
 
-use cairn_pty::PtyError;
 use cairn_protocol::cairn::daemon::types::Error as WireError;
+use cairn_pty::PtyError;
 
 /// Daemon-level (non-PtyError) failures.
 #[derive(Debug, Clone, Copy)]
@@ -18,12 +18,18 @@ impl DaemonError {
     pub fn to_wire(self) -> WireError {
         let (code, message) = match self {
             DaemonError::NotFound => ("session.not_found", "no such session"),
-            DaemonError::NameInUse => ("session.name_in_use", "a live session already has that name"),
+            DaemonError::NameInUse => (
+                "session.name_in_use",
+                "a live session already has that name",
+            ),
             DaemonError::Running => ("session.running", "session is still running (use --force)"),
             DaemonError::SpawnFailed => ("session.spawn_failed", "failed to spawn the session"),
             DaemonError::InvalidSignal => ("signal.invalid", "unknown or out-of-range signal"),
         };
-        WireError { code: code.to_string(), message: message.to_string() }
+        WireError {
+            code: code.to_string(),
+            message: message.to_string(),
+        }
     }
 }
 
@@ -35,7 +41,10 @@ pub fn to_wire(err: PtyError) -> WireError {
         PtyError::Io { .. } => ("pty.io", err.to_string()),
         PtyError::Backend { .. } => ("pty.backend", err.to_string()),
     };
-    WireError { code: code.to_string(), message }
+    WireError {
+        code: code.to_string(),
+        message,
+    }
 }
 
 #[cfg(test)]
@@ -47,7 +56,11 @@ mod tests {
     fn pty_errors_map_to_stable_codes() {
         assert_eq!(to_wire(PtyError::Closed).code, "session.closed");
         assert_eq!(
-            to_wire(PtyError::NotLeader { requester: ClientId::from_u64(0), current: None }).code,
+            to_wire(PtyError::NotLeader {
+                requester: ClientId::from_u64(0),
+                current: None
+            })
+            .code,
             "resize.not_leader"
         );
     }

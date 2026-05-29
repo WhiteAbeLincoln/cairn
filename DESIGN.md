@@ -59,3 +59,9 @@
   - View logs from claude, PI, and any other adapters we build
   - Uses the same chat UI as the agent messaging
   - Drop down to raw log view for more detail
+- [ ] User management
+  - Multi-user daemon, users map to unix users or groups on the machine for process execution?
+  - Profiles, defaults, permissions, allowed binaries (though should this be our concern? can be handled by a unix user)
+  - Sharable session links - user can send a link to another user so that they can watch a pty session
+    - should allow read-only, request control, grant control dynamically
+    - how to handle different sized windows?

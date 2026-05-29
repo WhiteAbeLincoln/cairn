@@ -22,7 +22,12 @@ pub struct Cli {
     /// If unset, defaults to the platform-standard local socket
     /// (`$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux,
     /// `$TMPDIR/cairn/cairn.sock` otherwise).
-    #[clap(long, env = "CAIRN_DAEMON", global = true, help_heading = "Global options")]
+    #[clap(
+        long,
+        env = "CAIRN_DAEMON",
+        global = true,
+        help_heading = "Global options"
+    )]
     pub daemon: Option<String>,
 
     /// Bearer token for authenticating to a remote daemon.
@@ -31,7 +36,13 @@ pub struct Cli {
     /// `CAIRN_TOKEN` environment variable over the command-line flag
     /// so the token doesn't appear in shell history or `ps` output;
     /// for the same reason `--help` won't echo the env var's value.
-    #[clap(long, env = "CAIRN_TOKEN", global = true, hide_env_values = true, help_heading = "Global options")]
+    #[clap(
+        long,
+        env = "CAIRN_TOKEN",
+        global = true,
+        hide_env_values = true,
+        help_heading = "Global options"
+    )]
     pub token: Option<String>,
 
     /// Increase log verbosity. Repeat for more detail: `-v` enables

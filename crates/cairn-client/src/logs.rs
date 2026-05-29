@@ -37,7 +37,9 @@ pub async fn run(
         return Ok(2);
     }
 
-    let window = tail.map(|n| LogWindow::Tail(n as u32)).unwrap_or(LogWindow::All);
+    let window = tail
+        .map(|n| LogWindow::Tail(n as u32))
+        .unwrap_or(LogWindow::All);
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
 
     let client = endpoint.client();
@@ -122,7 +124,10 @@ pub struct LineBuffer {
 
 impl LineBuffer {
     pub fn new(prefix: Option<String>) -> Self {
-        Self { prefix, partial: Vec::new() }
+        Self {
+            prefix,
+            partial: Vec::new(),
+        }
     }
 
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Vec<u8>> {

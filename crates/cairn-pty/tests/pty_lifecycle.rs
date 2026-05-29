@@ -165,11 +165,20 @@ async fn try_exit_status_is_none_before_exit_and_some_after() {
 #[tokio::test]
 async fn size_returns_cached_value_after_exit() {
     let cmd = tokio::process::Command::new("true");
-    let opts = SpawnOptions::new(cmd).with_size(TermSize { cols: 100, rows: 40 });
+    let opts = SpawnOptions::new(cmd).with_size(TermSize {
+        cols: 100,
+        rows: 40,
+    });
     let pty = GhosttyPty::spawn(opts).expect("spawn");
 
     let _ = pty.wait().await; // `true` exits immediately
 
     let size = pty.size().await.expect("size should still work post-exit");
-    assert_eq!(size, TermSize { cols: 100, rows: 40 });
+    assert_eq!(
+        size,
+        TermSize {
+            cols: 100,
+            rows: 40
+        }
+    );
 }

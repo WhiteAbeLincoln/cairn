@@ -31,7 +31,11 @@ struct Args {
     default_shell: Option<String>,
 
     /// `tracing-subscriber` filter directive.
-    #[arg(long, env = "CAIRN_LOG", default_value = "info,cairn_daemon=info,cairn_pty=info")]
+    #[arg(
+        long,
+        env = "CAIRN_LOG",
+        default_value = "info,cairn_daemon=info,cairn_pty=info"
+    )]
     log: String,
 }
 
@@ -60,7 +64,9 @@ fn main() -> anyhow::Result<()> {
         cfg.default_shell = s;
     }
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     rt.block_on(async {
         let daemon = cairn_daemon::daemon::Daemon::new(cfg);
         let shutdown = CancellationToken::new();
@@ -68,8 +74,7 @@ fn main() -> anyhow::Result<()> {
         // Install the SIGTERM handler before spawning so an install failure
         // propagates out of `main` rather than panicking in a detached task
         // (which would silently leave the daemon deaf to SIGTERM).
-        let mut term =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         tokio::spawn(async move {
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {},

@@ -2,32 +2,60 @@
 /// time (Unix epoch ms) the exit was detected. The timestamp is captured by the
 /// worker at exit-detection time so a caller that was not waiting can still
 /// report when the session ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitStatus {
     code: Option<i32>,
     signal: Option<i32>,
     unix_ms: u64,
+    reason: Option<String>,
 }
 
 impl ExitStatus {
     /// Exit code if the child exited normally.
-    pub fn code(&self) -> Option<i32> { self.code }
+    pub fn code(&self) -> Option<i32> {
+        self.code
+    }
     /// Terminating signal number if the child was killed by a signal.
-    pub fn signal(&self) -> Option<i32> { self.signal }
+    pub fn signal(&self) -> Option<i32> {
+        self.signal
+    }
     /// Wall-clock time (Unix epoch ms) the exit was detected.
-    pub fn unix_ms(&self) -> u64 { self.unix_ms }
+    pub fn unix_ms(&self) -> u64 {
+        self.unix_ms
+    }
+    /// Why the session exited, if the exit was externally triggered
+    /// (e.g. operator kill, daemon shutdown). `None` for self-exits.
+    pub fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
     /// True iff the child exited with code 0.
-    pub fn success(&self) -> bool { self.code == Some(0) }
+    pub fn success(&self) -> bool {
+        self.code == Some(0)
+    }
 
     /// Build from the std exit status the child reports, stamping `unix_ms`.
-    pub(crate) fn from_std(status: std::process::ExitStatus, unix_ms: u64) -> Self {
+    pub(crate) fn from_std(
+        status: std::process::ExitStatus,
+        unix_ms: u64,
+        reason: Option<String>,
+    ) -> Self {
         use std::os::unix::process::ExitStatusExt;
-        Self { code: status.code(), signal: status.signal(), unix_ms }
+        Self {
+            code: status.code(),
+            signal: status.signal(),
+            unix_ms,
+            reason,
+        }
     }
 
     /// Synthetic status for the "wait itself failed" fallback.
     pub(crate) fn synthetic(code: i32, unix_ms: u64) -> Self {
-        Self { code: Some(code), signal: None, unix_ms }
+        Self {
+            code: Some(code),
+            signal: None,
+            unix_ms,
+            reason: None,
+        }
     }
 }
 

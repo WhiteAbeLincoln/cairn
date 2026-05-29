@@ -160,6 +160,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     broadcast_capacity,
                     initial_size,
                     scrollback_lines,
+                    exit_reason: None,
                 })
                 .await;
             });
@@ -227,6 +228,7 @@ where
                     broadcast_capacity,
                     initial_size,
                     scrollback_lines,
+                    exit_reason: None,
                 })
                 .await;
             });
@@ -245,6 +247,7 @@ struct SessionState<P: Pty, C: ChildProcess> {
     broadcast_capacity: usize,
     initial_size: TermSize,
     scrollback_lines: usize,
+    exit_reason: Option<String>,
 }
 
 /// Main session loop. Runs inside the LocalSet on the dedicated thread.
@@ -424,7 +427,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         *bcast_tx.borrow_mut() = None;
                         if !exit_published
                             && let Ok(status) = s.child.wait().await {
-                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms())));
+                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms(), s.exit_reason.take())));
                                 exit_published = true;
                             }
                     }
@@ -446,7 +449,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         *bcast_tx.borrow_mut() = None;
                         if !exit_published
                             && let Ok(status) = s.child.wait().await {
-                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms())));
+                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms(), s.exit_reason.take())));
                                 exit_published = true;
                             }
                     }
@@ -508,7 +511,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         // is freely borrowable.
                         if !exit_published
                             && let Ok(status) = s.child.wait().await {
-                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms())));
+                                let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(status, crate::types::now_unix_ms(), s.exit_reason.take())));
                             }
                         break;
                     }
@@ -597,7 +600,10 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
                     }
-                    Command::Signal { sig, reply } => {
+                    Command::Signal { sig, reason, reply } => {
+                        if reason.is_some() {
+                            s.exit_reason = reason;
+                        }
                         let res = match s.child.id() {
                             Some(pid) => {
                                 // child is its own process-group leader (setsid).
@@ -645,7 +651,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
             // post-exit normalisation) until the caller drops GhosttyPty.
             status = s.child.wait(), if !exit_published => {
                 match status {
-                    Ok(s_val) => { let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms()))); }
+                    Ok(s_val) => { let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms(), s.exit_reason.take()))); }
                     Err(e) => {
                         tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
                         let _ = s.exit_tx.send(Some(crate::ExitStatus::synthetic(1, crate::types::now_unix_ms())));

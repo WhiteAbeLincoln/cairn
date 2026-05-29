@@ -12,7 +12,10 @@ pub async fn run(endpoint: &Endpoint) -> Result<i32> {
     let mut sessions = match sessions::list_all(&client, ()).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("error: cannot reach cairn-daemon at {}: {e}", endpoint.label());
+            eprintln!(
+                "error: cannot reach cairn-daemon at {}: {e}",
+                endpoint.label()
+            );
             return Ok(1);
         }
     };

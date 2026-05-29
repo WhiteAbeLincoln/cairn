@@ -20,8 +20,16 @@ async fn harness_smoke() -> anyhow::Result<()> {
 async fn whoami_prints_identity_and_exits_zero() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let out = h.run(&["whoami"], b"")?;
-    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
-    assert!(!stdout_str(&out).trim().is_empty(), "whoami stdout should be non-empty");
+    assert!(
+        out.status.success(),
+        "exit: {:?} stderr: {}",
+        out.status,
+        stderr_str(&out)
+    );
+    assert!(
+        !stdout_str(&out).trim().is_empty(),
+        "whoami stdout should be non-empty"
+    );
     Ok(())
 }
 
@@ -29,11 +37,19 @@ async fn whoami_prints_identity_and_exits_zero() -> anyhow::Result<()> {
 async fn version_prints_client_and_daemon_rows_exit_zero() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let out = h.run(&["version"], b"")?;
-    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit: {:?} stderr: {}",
+        out.status,
+        stderr_str(&out)
+    );
     let stdout = stdout_str(&out);
     assert!(stdout.contains("cairn"), "missing client row: {stdout}");
     assert!(stdout.contains("daemon"), "missing daemon row: {stdout}");
-    assert!(stdout.contains("cairn:daemon@0.1.0"), "missing protocol id: {stdout}");
+    assert!(
+        stdout.contains("cairn:daemon@0.1.0"),
+        "missing protocol id: {stdout}"
+    );
     Ok(())
 }
 
@@ -47,10 +63,16 @@ async fn version_with_unreachable_daemon_still_exits_zero() -> anyhow::Result<()
         .arg(format!("unix://{}", bad.display()))
         .arg("version")
         .output()?;
-    assert!(out.status.success(), "version must exit 0 even when daemon is down");
+    assert!(
+        out.status.success(),
+        "version must exit 0 even when daemon is down"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("cairn"), "client row missing: {stdout}");
-    assert!(stdout.contains("unreachable"), "daemon row missing 'unreachable': {stdout}");
+    assert!(
+        stdout.contains("unreachable"),
+        "daemon row missing 'unreachable': {stdout}"
+    );
     Ok(())
 }
 
@@ -63,9 +85,15 @@ async fn whoami_with_unreachable_daemon_exits_nonzero() -> anyhow::Result<()> {
         .arg(format!("unix://{}", bad.display()))
         .arg("whoami")
         .output()?;
-    assert!(!out.status.success(), "whoami is a connectivity probe; must exit non-zero on unreachable");
+    assert!(
+        !out.status.success(),
+        "whoami is a connectivity probe; must exit non-zero on unreachable"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("cannot reach") || stderr.contains("error"), "stderr should describe the failure: {stderr}");
+    assert!(
+        stderr.contains("cannot reach") || stderr.contains("error"),
+        "stderr should describe the failure: {stderr}"
+    );
     Ok(())
 }
 
@@ -73,8 +101,17 @@ async fn whoami_with_unreachable_daemon_exits_nonzero() -> anyhow::Result<()> {
 async fn list_on_empty_registry_says_no_sessions() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let out = h.run(&["list"], b"")?;
-    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
-    assert!(stdout_str(&out).contains("no sessions"), "got {}", stdout_str(&out));
+    assert!(
+        out.status.success(),
+        "exit: {:?} stderr: {}",
+        out.status,
+        stderr_str(&out)
+    );
+    assert!(
+        stdout_str(&out).contains("no sessions"),
+        "got {}",
+        stdout_str(&out)
+    );
     Ok(())
 }
 
@@ -169,7 +206,12 @@ async fn send_latest_with_argv_input_routes_to_most_recent_session() -> anyhow::
     let _newer = h.create(Harness::spec(&["cat"], Some("newer"))).await?;
 
     let out = h.run(&["send", "--latest", "hello", "world"], b"")?;
-    assert!(out.status.success(), "exit: {:?} stderr: {}", out.status, stderr_str(&out));
+    assert!(
+        out.status.success(),
+        "exit: {:?} stderr: {}",
+        out.status,
+        stderr_str(&out)
+    );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
@@ -177,11 +219,16 @@ async fn send_latest_with_argv_input_routes_to_most_recent_session() -> anyhow::
         if logs.contains("hello world") {
             // And the older session must not have received it.
             let other = read_snapshot(&h, "older").await?;
-            assert!(!other.contains("hello"), "older session should not have received input: {other:?}");
+            assert!(
+                !other.contains("hello"),
+                "older session should not have received input: {other:?}"
+            );
             return Ok(());
         }
         if std::time::Instant::now() > deadline {
-            anyhow::bail!("newer session's transcript never contained 'hello world'; got: {logs:?}");
+            anyhow::bail!(
+                "newer session's transcript never contained 'hello world'; got: {logs:?}"
+            );
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -194,8 +241,14 @@ async fn send_stdin_streams_raw_bytes_no_trailing_newline() -> anyhow::Result<()
     let out = h.run(&["send", "raw"], b"abc")?;
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
     let logs = read_snapshot(&h, "raw").await?;
-    assert!(logs.contains("abc"), "expected 'abc' in transcript: {logs:?}");
-    assert!(!logs.contains("abc\n"), "stdin path must not append a newline: {logs:?}");
+    assert!(
+        logs.contains("abc"),
+        "expected 'abc' in transcript: {logs:?}"
+    );
+    assert!(
+        !logs.contains("abc\n"),
+        "stdin path must not append a newline: {logs:?}"
+    );
     Ok(())
 }
 
@@ -231,7 +284,12 @@ async fn read_snapshot(h: &Harness, target: &str) -> anyhow::Result<String> {
 async fn restart_force_replaces_the_child_process() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     // sh -c 'while true; do sleep 1; done' — a stable, restartable child.
-    let info = h.create(Harness::spec(&["sh", "-c", "while true; do sleep 1; done"], Some("loopy"))).await?;
+    let info = h
+        .create(Harness::spec(
+            &["sh", "-c", "while true; do sleep 1; done"],
+            Some("loopy"),
+        ))
+        .await?;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let out = h.run(&["restart", "loopy", "--force"], b"")?;
@@ -240,8 +298,15 @@ async fn restart_force_replaces_the_child_process() -> anyhow::Result<()> {
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     // Session must still be alive (no exit) and resolve under its original id.
     let after = h.inspect(&info.id).await?;
-    assert_eq!(after.id, info.id, "session id must be stable across restart");
-    assert!(after.exit.is_none(), "restarted session must have no exit status; got {:?}", after.exit);
+    assert_eq!(
+        after.id, info.id,
+        "session id must be stable across restart"
+    );
+    assert!(
+        after.exit.is_none(),
+        "restarted session must have no exit status; got {:?}",
+        after.exit
+    );
     Ok(())
 }
 
@@ -250,7 +315,11 @@ async fn kick_all_on_empty_resolution_exits_two() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let out = h.run(&["kick", "--all"], b"")?;
     assert_eq!(out.status.code(), Some(2), "stderr: {}", stderr_str(&out));
-    assert!(stderr_str(&out).contains("no sessions matched"), "stderr: {}", stderr_str(&out));
+    assert!(
+        stderr_str(&out).contains("no sessions matched"),
+        "stderr: {}",
+        stderr_str(&out)
+    );
     Ok(())
 }
 
@@ -266,28 +335,48 @@ async fn kick_named_session_returns_zero() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn kill_blocks_until_session_exits() -> anyhow::Result<()> {
     let h = Harness::start().await?;
-    let info = h.create(Harness::spec(&["sleep", "30"], Some("zzz"))).await?;
+    let info = h
+        .create(Harness::spec(&["sleep", "30"], Some("zzz")))
+        .await?;
     let start = std::time::Instant::now();
     let out = h.run(&["kill", "zzz"], b"")?;
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
-    assert!(start.elapsed() < std::time::Duration::from_secs(5), "kill took too long: {:?}", start.elapsed());
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "kill took too long: {:?}",
+        start.elapsed()
+    );
 
     let after = h.inspect(&info.id).await?;
-    assert!(after.exit.is_some(), "session should be exited; got {:?}", after.exit);
+    assert!(
+        after.exit.is_some(),
+        "session should be exited; got {:?}",
+        after.exit
+    );
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn kill_no_wait_with_timeout_returns_immediately_then_daemon_escalates() -> anyhow::Result<()> {
+async fn kill_no_wait_with_timeout_returns_immediately_then_daemon_escalates() -> anyhow::Result<()>
+{
     let h = Harness::start().await?;
     // bash -c 'trap "" TERM; sleep 30' ignores TERM, so SIGKILL escalation is the only way out.
-    let info = h.create(Harness::spec(&["bash", "-c", "trap '' TERM; sleep 30"], Some("nope"))).await?;
+    let info = h
+        .create(Harness::spec(
+            &["bash", "-c", "trap '' TERM; sleep 30"],
+            Some("nope"),
+        ))
+        .await?;
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let start = std::time::Instant::now();
     let out = h.run(&["kill", "--no-wait", "--timeout", "1s", "nope"], b"")?;
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
-    assert!(start.elapsed() < std::time::Duration::from_millis(700), "should return ~immediately, took {:?}", start.elapsed());
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(700),
+        "should return ~immediately, took {:?}",
+        start.elapsed()
+    );
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
@@ -315,7 +404,9 @@ async fn kill_all_on_empty_registry_exits_two() -> anyhow::Result<()> {
 async fn wait_returns_child_exit_code() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     // `sh -c 'exit 7'` will exit with code 7 immediately.
-    let _ = h.create(Harness::spec(&["sh", "-c", "exit 7"], Some("seven"))).await?;
+    let _ = h
+        .create(Harness::spec(&["sh", "-c", "exit 7"], Some("seven")))
+        .await?;
     let out = h.run(&["wait", "seven"], b"")?;
     assert_eq!(out.status.code(), Some(7), "stderr: {}", stderr_str(&out));
     Ok(())
@@ -324,25 +415,39 @@ async fn wait_returns_child_exit_code() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wait_timeout_elapsed_exits_124_session_alive() -> anyhow::Result<()> {
     let h = Harness::start().await?;
-    let info = h.create(Harness::spec(&["sleep", "30"], Some("slow"))).await?;
+    let info = h
+        .create(Harness::spec(&["sleep", "30"], Some("slow")))
+        .await?;
     let out = h.run(&["wait", "--timeout", "300ms", "slow"], b"")?;
     assert_eq!(out.status.code(), Some(124), "stderr: {}", stderr_str(&out));
     let after = h.inspect(&info.id).await?;
-    assert!(after.exit.is_none(), "session must still be alive after a wait timeout; got {:?}", after.exit);
+    assert!(
+        after.exit.is_none(),
+        "session must still be alive after a wait timeout; got {:?}",
+        after.exit
+    );
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn logs_single_session_prints_snapshot() -> anyhow::Result<()> {
     let h = Harness::start().await?;
-    let _ = h.create(Harness::spec(&["sh", "-c", "echo hello-from-the-pty"], Some("lg"))).await?;
+    let _ = h
+        .create(Harness::spec(
+            &["sh", "-c", "echo hello-from-the-pty"],
+            Some("lg"),
+        ))
+        .await?;
     // Give the child time to print.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let out = h.run(&["logs", "lg"], b"")?;
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
     let stdout = stdout_str(&out);
-    assert!(stdout.contains("hello-from-the-pty"), "missing line: {stdout}");
+    assert!(
+        stdout.contains("hello-from-the-pty"),
+        "missing line: {stdout}"
+    );
     Ok(())
 }
 
@@ -350,7 +455,10 @@ async fn logs_single_session_prints_snapshot() -> anyhow::Result<()> {
 async fn logs_strip_removes_ansi_escapes() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let _ = h
-        .create(Harness::spec(&["sh", "-c", "printf '\\x1b[31mX\\x1b[0m\\n'"], Some("ansi")))
+        .create(Harness::spec(
+            &["sh", "-c", "printf '\\x1b[31mX\\x1b[0m\\n'"],
+            Some("ansi"),
+        ))
         .await?;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
@@ -358,7 +466,10 @@ async fn logs_strip_removes_ansi_escapes() -> anyhow::Result<()> {
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
     let stdout = stdout_str(&out);
     assert!(stdout.contains('X'), "missing X: {stdout:?}");
-    assert!(!stdout.contains('\u{1b}'), "ANSI escape still present: {stdout:?}");
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "ANSI escape still present: {stdout:?}"
+    );
     Ok(())
 }
 
@@ -366,14 +477,23 @@ async fn logs_strip_removes_ansi_escapes() -> anyhow::Result<()> {
 async fn logs_prefix_prepends_name_per_line() -> anyhow::Result<()> {
     let h = Harness::start().await?;
     let _ = h
-        .create(Harness::spec(&["sh", "-c", "echo a-line && echo b-line"], Some("p")))
+        .create(Harness::spec(
+            &["sh", "-c", "echo a-line && echo b-line"],
+            Some("p"),
+        ))
         .await?;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let out = h.run(&["logs", "--prefix", "--strip", "p"], b"")?;
     assert!(out.status.success(), "stderr: {}", stderr_str(&out));
     let stdout = stdout_str(&out);
-    assert!(stdout.contains("p: a-line"), "expected prefixed 'a-line': {stdout:?}");
-    assert!(stdout.contains("p: b-line"), "expected prefixed 'b-line': {stdout:?}");
+    assert!(
+        stdout.contains("p: a-line"),
+        "expected prefixed 'a-line': {stdout:?}"
+    );
+    assert!(
+        stdout.contains("p: b-line"),
+        "expected prefixed 'b-line': {stdout:?}"
+    );
     Ok(())
 }

@@ -25,7 +25,10 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget) -> Result<i32> {
             return Ok(1);
         }
         Err(e) => {
-            eprintln!("error: cannot reach cairn-daemon at {}: {e}", endpoint.label());
+            eprintln!(
+                "error: cannot reach cairn-daemon at {}: {e}",
+                endpoint.label()
+            );
             return Ok(1);
         }
     };
@@ -37,16 +40,31 @@ fn print_block(s: &SessionInfo) {
     let rows: Vec<(&str, String)> = vec![
         ("id", s.id.clone()),
         ("name", s.name.clone().unwrap_or_else(|| "(unnamed)".into())),
-        ("pid", s.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into())),
+        (
+            "pid",
+            s.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+        ),
         ("state", state_of(s)),
         ("size", format!("{}x{}", s.cols, s.rows)),
         ("created_at", rfc3339_or_raw(s.created_at_unix_ms)),
         ("command", shell_quote_join(&s.spec.command)),
-        ("workdir", s.spec.workdir.clone().unwrap_or_else(|| "(daemon default)".into())),
+        (
+            "workdir",
+            s.spec
+                .workdir
+                .clone()
+                .unwrap_or_else(|| "(daemon default)".into()),
+        ),
         ("tty", s.spec.tty.to_string()),
         ("stdin", s.spec.stdin.to_string()),
         ("env_inherit", s.spec.env_inherit.to_string()),
-        ("idle_timeout", s.spec.idle_timeout_secs.map(|t| format!("{t}s")).unwrap_or_else(|| "none".into())),
+        (
+            "idle_timeout",
+            s.spec
+                .idle_timeout_secs
+                .map(|t| format!("{t}s"))
+                .unwrap_or_else(|| "none".into()),
+        ),
         ("scrollback_lines", s.spec.scrollback_lines.to_string()),
         ("attached_clients", attached_str(&s.attached_clients)),
     ];
@@ -87,13 +105,22 @@ fn shell_quote_join(words: &[String]) -> String {
     }
     words
         .iter()
-        .map(|w| if needs_quoting(w) { format!("'{}'", w.replace('\'', r"'\''")) } else { w.clone() })
+        .map(|w| {
+            if needs_quoting(w) {
+                format!("'{}'", w.replace('\'', r"'\''"))
+            } else {
+                w.clone()
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
 fn needs_quoting(w: &str) -> bool {
-    w.is_empty() || w.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | ':' | ',')))
+    w.is_empty()
+        || w.chars().any(|c| {
+            !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | '=' | ':' | ','))
+        })
 }
 
 fn attached_str(ids: &[String]) -> String {

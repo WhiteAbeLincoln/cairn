@@ -210,7 +210,11 @@ async fn create(State(st): State<AppState>, Form(f): Form<CreateForm>) -> impl I
     let spec = t::SessionSpec {
         name: {
             let n = f.name.trim();
-            if n.is_empty() { None } else { Some(n.to_string()) }
+            if n.is_empty() {
+                None
+            } else {
+                Some(n.to_string())
+            }
         },
         // Shell-tokenize so `sh -c 'while …; done'` keeps its quoted arg;
         // fall back to whitespace split on unbalanced quotes. Empty -> the
@@ -276,12 +280,18 @@ setInterval(function(){{fetch('/s/{id}/state').then(function(r){{return r.text()
         exit = h(&exit),
         cmd = h(&info.spec.command.join(" ")),
     );
-    page(&format!("session {}", info.name.as_deref().unwrap_or(&id)), &body)
+    page(
+        &format!("session {}", info.name.as_deref().unwrap_or(&id)),
+        &body,
+    )
 }
 
 fn state_str(i: &t::SessionInfo) -> String {
     match &i.exit {
-        Some(e) => format!("exited code={:?} sig={:?} at={}", e.code, e.signal, e.unix_ms),
+        Some(e) => format!(
+            "exited code={:?} sig={:?} at={}",
+            e.code, e.signal, e.unix_ms
+        ),
         None => "running".to_string(),
     }
 }
@@ -324,11 +334,15 @@ async fn stream(State(st): State<AppState>, Path(id): Path<String>) -> axum::res
                 .chain(futures::stream::once(async {
                     Ok::<Event, Infallible>(Event::default().event("eof").data("end"))
                 }));
-            Sse::new(body).keep_alive(KeepAlive::default()).into_response()
+            Sse::new(body)
+                .keep_alive(KeepAlive::default())
+                .into_response()
         }
         Err(e) => {
             let body = futures::stream::iter(vec![
-                Ok::<Event, Infallible>(Event::default().data(esc_raw(format!("(logs error: {e})").as_bytes()))),
+                Ok::<Event, Infallible>(
+                    Event::default().data(esc_raw(format!("(logs error: {e})").as_bytes())),
+                ),
                 Ok(Event::default().event("eof").data("end")),
             ]);
             Sse::new(body).into_response()

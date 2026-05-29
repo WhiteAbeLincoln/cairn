@@ -9,7 +9,11 @@ fn test_daemon() -> Daemon {
     Daemon::new(DaemonConfig::default())
 }
 
-async fn create(daemon: &Daemon, name: &str, cmd: &[&str]) -> cairn_protocol::cairn::daemon::types::SessionInfo {
+async fn create(
+    daemon: &Daemon,
+    name: &str,
+    cmd: &[&str],
+) -> cairn_protocol::cairn::daemon::types::SessionInfo {
     let spec = SessionSpec {
         name: Some(name.to_string()),
         command: cmd.iter().map(|s| s.to_string()).collect(),
@@ -21,7 +25,11 @@ async fn create(daemon: &Daemon, name: &str, cmd: &[&str]) -> cairn_protocol::ca
         idle_timeout_secs: None,
         scrollback_lines: 100,
     };
-    daemon.registry.create(spec, &daemon.cfg.default_shell).await.unwrap()
+    daemon
+        .registry
+        .create(spec, &daemon.cfg.default_shell)
+        .await
+        .unwrap()
 }
 
 // ── wait ──────────────────────────────────────────────────────────────────
@@ -40,7 +48,11 @@ async fn wait_resolves_with_exit_code() {
 #[tokio::test]
 async fn wait_unknown_is_err() {
     let daemon = test_daemon();
-    assert!(cairn_daemon::handlers::wait::wait(&daemon, "nope".into()).await.is_err());
+    assert!(
+        cairn_daemon::handlers::wait::wait(&daemon, "nope".into())
+            .await
+            .is_err()
+    );
 }
 
 // ── send ──────────────────────────────────────────────────────────────────
@@ -108,7 +120,11 @@ async fn explicit_env_overrides_inherited() {
         idle_timeout_secs: None,
         scrollback_lines: 100,
     };
-    let info = daemon.registry.create(spec, &daemon.cfg.default_shell).await.unwrap();
+    let info = daemon
+        .registry
+        .create(spec, &daemon.cfg.default_shell)
+        .await
+        .unwrap();
     let entry = daemon.registry.resolve(&info.id).unwrap();
     let cid = daemon.registry.mint_client_id();
     let mut sub = entry.handle().subscribe(cid).await.unwrap();
@@ -130,7 +146,10 @@ async fn explicit_env_overrides_inherited() {
     .await
     .unwrap_or(false);
 
-    assert!(saw, "explicit spec.env must override the inherited CARGO_PKG_NAME");
+    assert!(
+        saw,
+        "explicit spec.env must override the inherited CARGO_PKG_NAME"
+    );
     assert!(
         !buf.windows(12).any(|w| w == b"cairn-daemon"),
         "inherited value must not leak through when explicitly overridden"
@@ -151,15 +170,19 @@ async fn logs_without_follow_emits_snapshot_then_closes() {
     // with a fixed sleep.
     let mut bytes = Vec::new();
     for _ in 0..40 {
-        let mut stream = cairn_daemon::handlers::logs::logs(
-            &daemon, info.id.clone(), LogWindow::All, false,
-        ).await.expect("logs");
+        let mut stream =
+            cairn_daemon::handlers::logs::logs(&daemon, info.id.clone(), LogWindow::All, false)
+                .await
+                .expect("logs");
         let mut buf = Vec::new();
         let collected = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while let Some(batch) = stream.next().await {
-                for chunk in batch { buf.extend_from_slice(&chunk); }
+                for chunk in batch {
+                    buf.extend_from_slice(&chunk);
+                }
             }
-        }).await;
+        })
+        .await;
         assert!(collected.is_ok(), "logs without follow must terminate");
         if !buf.is_empty() {
             bytes = buf;
@@ -167,25 +190,43 @@ async fn logs_without_follow_emits_snapshot_then_closes() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(!bytes.is_empty(), "snapshot should contain the printed output");
+    assert!(
+        !bytes.is_empty(),
+        "snapshot should contain the printed output"
+    );
 }
 
 #[tokio::test]
 async fn logs_unknown_is_err() {
     let daemon = test_daemon();
-    assert!(cairn_daemon::handlers::logs::logs(&daemon, "nope".into(), LogWindow::All, false).await.is_err());
+    assert!(
+        cairn_daemon::handlers::logs::logs(&daemon, "nope".into(), LogWindow::All, false)
+            .await
+            .is_err()
+    );
 }
 
 // ── attach ────────────────────────────────────────────────────────────────
 
 use cairn_protocol::cairn::daemon::types::{AttachInit, ClientEvent, ServerEvent};
 
-fn attach_init() -> AttachInit { AttachInit { cols: 80, rows: 24, no_stdin: false } }
+fn attach_init() -> AttachInit {
+    AttachInit {
+        cols: 80,
+        rows: 24,
+        no_stdin: false,
+    }
+}
 
 // Drain the next server-event batch within a timeout, flattened.
-async fn next_events(s: &mut (impl futures::Stream<Item = Vec<ServerEvent>> + Unpin)) -> Vec<ServerEvent> {
+async fn next_events(
+    s: &mut (impl futures::Stream<Item = Vec<ServerEvent>> + Unpin),
+) -> Vec<ServerEvent> {
     tokio::time::timeout(std::time::Duration::from_secs(2), s.next())
-        .await.ok().flatten().unwrap_or_default()
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 #[tokio::test]
@@ -194,10 +235,17 @@ async fn attach_first_event_is_snapshot() {
     let info = create(&daemon, "a", &["cat"]).await;
     let events = futures::stream::pending::<Vec<ClientEvent>>(); // no client input
     let mut out = cairn_daemon::handlers::attach::attach(
-        &daemon, info.id.clone(), attach_init(), Box::pin(events),
-    ).await;
+        &daemon,
+        info.id.clone(),
+        attach_init(),
+        Box::pin(events),
+    )
+    .await;
     let first = next_events(&mut out).await;
-    assert!(matches!(first.first(), Some(ServerEvent::Snapshot(_))), "first event must be Snapshot");
+    assert!(
+        matches!(first.first(), Some(ServerEvent::Snapshot(_))),
+        "first event must be Snapshot"
+    );
 }
 
 #[tokio::test]
@@ -207,10 +255,15 @@ async fn attach_input_is_echoed_as_output() {
     // Send one Input batch then keep the stream open (pending).
     let events = futures::stream::once(async {
         vec![ClientEvent::Input(bytes::Bytes::from_static(b"hey\n"))]
-    }).chain(futures::stream::pending());
+    })
+    .chain(futures::stream::pending());
     let mut out = cairn_daemon::handlers::attach::attach(
-        &daemon, info.id.clone(), attach_init(), Box::pin(events),
-    ).await;
+        &daemon,
+        info.id.clone(),
+        attach_init(),
+        Box::pin(events),
+    )
+    .await;
     let _snapshot = next_events(&mut out).await;
     // cat echoes "hey"; look for an Output event containing it.
     let mut saw = false;
@@ -222,7 +275,9 @@ async fn attach_input_is_echoed_as_output() {
                 saw = true;
             }
         }
-        if saw { break; }
+        if saw {
+            break;
+        }
     }
     assert!(saw, "input should be echoed back as Output");
 }
@@ -233,13 +288,18 @@ async fn attach_detach_event_ends_stream() {
     let info = create(&daemon, "a3", &["cat"]).await;
     let events = futures::stream::once(async { vec![ClientEvent::Detach] });
     let mut out = cairn_daemon::handlers::attach::attach(
-        &daemon, info.id.clone(), attach_init(), Box::pin(events),
-    ).await;
+        &daemon,
+        info.id.clone(),
+        attach_init(),
+        Box::pin(events),
+    )
+    .await;
     let _snapshot = next_events(&mut out).await;
     // After Detach the stream must end (next() yields None within the timeout).
     let ended = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while out.next().await.is_some() {}
-    }).await;
+    })
+    .await;
     assert!(ended.is_ok(), "stream should end after Detach");
 }
 
@@ -249,17 +309,32 @@ async fn attach_emits_exited_when_child_dies() {
     let info = create(&daemon, "a4", &["sh", "-c", "sleep 100"]).await;
     let events = futures::stream::pending::<Vec<ClientEvent>>();
     let mut out = cairn_daemon::handlers::attach::attach(
-        &daemon, info.id.clone(), attach_init(), Box::pin(events),
-    ).await;
+        &daemon,
+        info.id.clone(),
+        attach_init(),
+        Box::pin(events),
+    )
+    .await;
     let _snapshot = next_events(&mut out).await;
     // Kill via the registry handle; the bridge should emit Exited then end.
-    daemon.registry.resolve(&info.id).unwrap().handle().signal(nix::sys::signal::Signal::SIGKILL).await.unwrap();
+    daemon
+        .registry
+        .resolve(&info.id)
+        .unwrap()
+        .handle()
+        .signal(nix::sys::signal::Signal::SIGKILL, None)
+        .await
+        .unwrap();
     let mut saw_exit = false;
     for _ in 0..20 {
         for ev in next_events(&mut out).await {
-            if matches!(ev, ServerEvent::Exited(_)) { saw_exit = true; }
+            if matches!(ev, ServerEvent::Exited(_)) {
+                saw_exit = true;
+            }
         }
-        if saw_exit { break; }
+        if saw_exit {
+            break;
+        }
     }
     assert!(saw_exit, "bridge should emit Exited when the child dies");
 }
@@ -269,10 +344,17 @@ async fn attach_unknown_session_yields_error_event() {
     let daemon = test_daemon();
     let events = futures::stream::pending::<Vec<ClientEvent>>();
     let mut out = cairn_daemon::handlers::attach::attach(
-        &daemon, "nope".into(), attach_init(), Box::pin(events),
-    ).await;
+        &daemon,
+        "nope".into(),
+        attach_init(),
+        Box::pin(events),
+    )
+    .await;
     let first = next_events(&mut out).await;
-    assert!(matches!(first.first(), Some(ServerEvent::Error(_))), "unknown id -> Error event");
+    assert!(
+        matches!(first.first(), Some(ServerEvent::Error(_))),
+        "unknown id -> Error event"
+    );
 }
 
 #[tokio::test]
@@ -281,8 +363,12 @@ async fn kick_emits_kicked_event_then_ends() {
     let info = create(&daemon, "a6", &["cat"]).await;
     let events = futures::stream::pending::<Vec<ClientEvent>>();
     let mut out = cairn_daemon::handlers::attach::attach(
-        &daemon, info.id.clone(), attach_init(), Box::pin(events),
-    ).await;
+        &daemon,
+        info.id.clone(),
+        attach_init(),
+        Box::pin(events),
+    )
+    .await;
     let _snapshot = next_events(&mut out).await;
 
     // attach() registers the client synchronously before returning, so kick finds it.
@@ -305,5 +391,8 @@ async fn kick_emits_kicked_event_then_ends() {
     })
     .await;
     assert!(ended.is_ok(), "kick should end the attached stream");
-    assert!(saw_kicked, "kick should emit a client.kicked error event before ending");
+    assert!(
+        saw_kicked,
+        "kick should emit a client.kicked error event before ending"
+    );
 }

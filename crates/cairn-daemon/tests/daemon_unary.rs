@@ -3,8 +3,8 @@
 
 mod common;
 
-use cairn_protocol as bindings;
 use bindings::cairn::daemon::types::{SessionSpec, Signal, SignalName};
+use cairn_protocol as bindings;
 use common::DaemonHarness;
 
 fn spec(name: &str, cmd: &[&str]) -> SessionSpec {
@@ -28,11 +28,14 @@ async fn create_then_list_then_inspect() {
     let h = DaemonHarness::start().await;
     let client = h.client();
 
-    let created =
-        bindings::client::cairn::daemon::sessions::create(&client, (), &spec("dev", &["sleep", "100"]))
-            .await
-            .expect("create invocation")
-            .expect("create result");
+    let created = bindings::client::cairn::daemon::sessions::create(
+        &client,
+        (),
+        &spec("dev", &["sleep", "100"]),
+    )
+    .await
+    .expect("create invocation")
+    .expect("create result");
     assert_eq!(created.name, Some("dev".to_string()));
     // session has no exit yet
     assert!(created.exit.is_none());
@@ -54,11 +57,10 @@ async fn create_then_list_then_inspect() {
 #[tokio::test]
 async fn inspect_unknown_is_not_found() {
     let h = DaemonHarness::start().await;
-    let err =
-        bindings::client::cairn::daemon::sessions::inspect(&h.client(), (), "no-such-id")
-            .await
-            .expect("inspect invocation")
-            .expect_err("should be not found");
+    let err = bindings::client::cairn::daemon::sessions::inspect(&h.client(), (), "no-such-id")
+        .await
+        .expect("inspect invocation")
+        .expect_err("should be not found");
     assert_eq!(err.code, "session.not_found");
 }
 
@@ -72,11 +74,14 @@ async fn duplicate_name_is_rejected() {
         .expect("first create")
         .expect("first create ok");
 
-    let err =
-        bindings::client::cairn::daemon::sessions::create(&client, (), &spec("dev", &["sleep", "100"]))
-            .await
-            .expect("second create invocation")
-            .expect_err("should be dup name");
+    let err = bindings::client::cairn::daemon::sessions::create(
+        &client,
+        (),
+        &spec("dev", &["sleep", "100"]),
+    )
+    .await
+    .expect("second create invocation")
+    .expect_err("should be dup name");
     assert_eq!(err.code, "session.name_in_use");
 }
 
@@ -87,11 +92,14 @@ async fn kill_term_stops_session() {
     let h = DaemonHarness::start().await;
     let client = h.client();
 
-    let created =
-        bindings::client::cairn::daemon::sessions::create(&client, (), &spec("dev", &["sleep", "100"]))
-            .await
-            .expect("create")
-            .expect("create ok");
+    let created = bindings::client::cairn::daemon::sessions::create(
+        &client,
+        (),
+        &spec("dev", &["sleep", "100"]),
+    )
+    .await
+    .expect("create")
+    .expect("create ok");
 
     let sig = Signal::Named(SignalName::Term);
     bindings::client::cairn::daemon::sessions::kill(&client, (), &created.id, &sig, None)
@@ -102,11 +110,10 @@ async fn kill_term_stops_session() {
     // Poll inspect until exit is populated (SIGTERM should stop `sleep 100`).
     let mut exited = false;
     for _ in 0..50 {
-        let got =
-            bindings::client::cairn::daemon::sessions::inspect(&client, (), &created.id)
-                .await
-                .expect("inspect")
-                .expect("inspect ok");
+        let got = bindings::client::cairn::daemon::sessions::inspect(&client, (), &created.id)
+            .await
+            .expect("inspect")
+            .expect("inspect ok");
         if got.exit.is_some() {
             exited = true;
             break;
@@ -140,18 +147,20 @@ async fn kill_with_grace_escalates_to_sigkill() {
 
     let mut exited = false;
     for _ in 0..60 {
-        let got =
-            bindings::client::cairn::daemon::sessions::inspect(&client, (), &created.id)
-                .await
-                .expect("inspect")
-                .expect("inspect ok");
+        let got = bindings::client::cairn::daemon::sessions::inspect(&client, (), &created.id)
+            .await
+            .expect("inspect")
+            .expect("inspect ok");
         if got.exit.is_some() {
             exited = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert!(exited, "escalation should have SIGKILLed the stubborn session");
+    assert!(
+        exited,
+        "escalation should have SIGKILLed the stubborn session"
+    );
 }
 
 // ── rename + restart ──────────────────────────────────────────────────────
@@ -161,11 +170,14 @@ async fn rename_and_restart() {
     let h = DaemonHarness::start().await;
     let client = h.client();
 
-    let created =
-        bindings::client::cairn::daemon::sessions::create(&client, (), &spec("old", &["sleep", "100"]))
-            .await
-            .expect("create")
-            .expect("create ok");
+    let created = bindings::client::cairn::daemon::sessions::create(
+        &client,
+        (),
+        &spec("old", &["sleep", "100"]),
+    )
+    .await
+    .expect("create")
+    .expect("create ok");
 
     // Rename old → new.
     bindings::client::cairn::daemon::sessions::rename(&client, (), &created.id, "new")
@@ -180,11 +192,10 @@ async fn rename_and_restart() {
     assert_eq!(got.name, Some("new".to_string()));
 
     // restart while running without force → session.running error.
-    let err =
-        bindings::client::cairn::daemon::sessions::restart(&client, (), &created.id, false)
-            .await
-            .expect("restart invocation")
-            .expect_err("should reject running");
+    let err = bindings::client::cairn::daemon::sessions::restart(&client, (), &created.id, false)
+        .await
+        .expect("restart invocation")
+        .expect_err("should reject running");
     assert_eq!(err.code, "session.running");
 
     // with force → ok, same id.
@@ -194,10 +205,9 @@ async fn rename_and_restart() {
         .expect("force restart ok");
 
     // still resolves under the same id.
-    let after =
-        bindings::client::cairn::daemon::sessions::inspect(&client, (), &created.id)
-            .await
-            .expect("inspect after restart")
-            .expect("inspect ok");
+    let after = bindings::client::cairn::daemon::sessions::inspect(&client, (), &created.id)
+        .await
+        .expect("inspect after restart")
+        .expect("inspect ok");
     assert_eq!(after.id, created.id);
 }

@@ -5,7 +5,9 @@ use futures::{Stream, StreamExt as _};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::wrappers::ReceiverStream;
 
-use cairn_protocol::cairn::daemon::types::{AttachInit, ClientEvent, Error as WireError, ServerEvent};
+use cairn_protocol::cairn::daemon::types::{
+    AttachInit, ClientEvent, Error as WireError, ServerEvent,
+};
 
 use crate::daemon::Daemon;
 use crate::handlers::wire_exit;
@@ -16,7 +18,12 @@ type ClientEvents = Pin<Box<dyn Stream<Item = Vec<ClientEvent>> + Send + 'static
 /// `sessions.attach`: the bidirectional bridge. Resolve, subscribe, emit a
 /// `snapshot`, then bridge client-events × broadcast × kick onto the outbound
 /// `server-event` stream. Errors are in-band (`server-event::error`).
-pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEvents) -> ServerEvents {
+pub async fn attach(
+    d: &Daemon,
+    id: String,
+    init: AttachInit,
+    events: ClientEvents,
+) -> ServerEvents {
     let Some(entry) = d.registry.resolve(&id) else {
         return once_error("session.not_found", &format!("no such session: {id}"));
     };
@@ -26,7 +33,15 @@ pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEven
     // Leader-wins: the first interactive attacher claims the empty seat + sets
     // size; followers get NotLeader (ignored). Read-only attaches don't claim.
     if !init.no_stdin {
-        let _ = handle.resize(client_id, TermSize { cols: init.cols, rows: init.rows }).await;
+        let _ = handle
+            .resize(
+                client_id,
+                TermSize {
+                    cols: init.cols,
+                    rows: init.rows,
+                },
+            )
+            .await;
     }
 
     let sub = match handle.subscribe(client_id).await {
@@ -45,7 +60,11 @@ pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEven
         let mut sub = sub;
         let mut events = events;
 
-        if tx.send(vec![ServerEvent::Snapshot(sub.snapshot.clone())]).await.is_err() {
+        if tx
+            .send(vec![ServerEvent::Snapshot(sub.snapshot.clone())])
+            .await
+            .is_err()
+        {
             return; // client already gone
         }
 
@@ -104,6 +123,9 @@ pub async fn attach(d: &Daemon, id: String, init: AttachInit, events: ClientEven
 
 /// A one-element stream carrying a single `server-event::error`, then close.
 fn once_error(code: &str, message: &str) -> ServerEvents {
-    let err = ServerEvent::Error(WireError { code: code.to_string(), message: message.to_string() });
+    let err = ServerEvent::Error(WireError {
+        code: code.to_string(),
+        message: message.to_string(),
+    });
     Box::pin(futures::stream::once(async move { vec![err] }))
 }

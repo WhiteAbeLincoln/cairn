@@ -13,12 +13,11 @@ use common::{StubHandler, sample_session_info, spawn_server};
 
 #[tokio::test]
 async fn meta_version_round_trips_record_fields() {
-    let stub = StubHandler::new().on_version(|_ctx| {
-        bindings::exports::cairn::daemon::meta::VersionInfo {
+    let stub =
+        StubHandler::new().on_version(|_ctx| bindings::exports::cairn::daemon::meta::VersionInfo {
             daemon: "cairn-test-daemon/0.1.0".to_string(),
             protocol: "cairn:daemon@0.1.0".to_string(),
-        }
-    });
+        });
     let harness = spawn_server(stub).await.expect("spawn_server");
 
     let info = bindings::client::cairn::daemon::meta::version(&harness.unix_client(), ())
@@ -67,7 +66,10 @@ async fn sessions_list_all_round_trips_two_entries_with_optional_fields() {
         result[0].spec.command,
         vec!["/bin/echo".to_string(), "hi".to_string()]
     );
-    assert_eq!(result[0].spec.env, vec![("FOO".to_string(), "bar".to_string())]);
+    assert_eq!(
+        result[0].spec.env,
+        vec![("FOO".to_string(), "bar".to_string())]
+    );
     assert!(result[0].spec.env_inherit);
     assert_eq!(result[0].spec.workdir, Some("/tmp".to_string()));
     assert!(result[0].spec.tty);
@@ -93,7 +95,10 @@ async fn sessions_list_all_round_trips_two_entries_with_optional_fields() {
         result[1].spec.command,
         vec!["/bin/echo".to_string(), "hi".to_string()]
     );
-    assert_eq!(result[1].spec.env, vec![("FOO".to_string(), "bar".to_string())]);
+    assert_eq!(
+        result[1].spec.env,
+        vec![("FOO".to_string(), "bar".to_string())]
+    );
     assert!(result[1].spec.env_inherit);
     assert_eq!(result[1].spec.workdir, Some("/tmp".to_string()));
     assert!(result[1].spec.tty);
@@ -117,17 +122,23 @@ async fn meta_authenticate_round_trips_error_variant() {
     let harness = spawn_server(stub).await.expect("spawn_server");
 
     // Success path.
-    let ok =
-        bindings::client::cairn::daemon::meta::authenticate(&harness.unix_client(), (), "valid-token")
-            .await
-            .expect("authenticate invocation (ok)");
+    let ok = bindings::client::cairn::daemon::meta::authenticate(
+        &harness.unix_client(),
+        (),
+        "valid-token",
+    )
+    .await
+    .expect("authenticate invocation (ok)");
     assert!(ok.is_ok(), "expected Ok(_), got {ok:?}");
 
     // Failure path.
-    let err =
-        bindings::client::cairn::daemon::meta::authenticate(&harness.unix_client(), (), "wrong-token")
-            .await
-            .expect("authenticate invocation (err)");
+    let err = bindings::client::cairn::daemon::meta::authenticate(
+        &harness.unix_client(),
+        (),
+        "wrong-token",
+    )
+    .await
+    .expect("authenticate invocation (err)");
     let err = err.expect_err("expected error variant");
     assert_eq!(err.code, "auth.invalid_token");
     assert_eq!(err.message, "supplied token did not match");

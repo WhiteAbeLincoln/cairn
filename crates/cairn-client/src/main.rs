@@ -6,8 +6,8 @@ mod connect;
 mod detach;
 mod exec;
 mod inspect;
-mod kill;
 mod kick;
+mod kill;
 mod list;
 mod logs;
 mod meta;
@@ -37,7 +37,9 @@ fn main() -> anyhow::Result<()> {
 
     init_tracing(args.verbose);
 
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
     let code = rt.block_on(dispatch(args))?;
     std::process::exit(code);
 }
@@ -59,7 +61,11 @@ fn init_tracing(verbose: u8) {
 
 async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
     match &cli.command {
-        Command::Attach { session, no_stdin, detach_keys } => {
+        Command::Attach {
+            session,
+            no_stdin,
+            detach_keys,
+        } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             let target = targets::resolve_one(&endpoint, session).await?;
             let opts = AttachOptions {
@@ -101,12 +107,24 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             // `required_unless_present = "latest"` on `args` guarantees
             // the non-`--latest` branch sees at least one element.
             let (target, input) = if *latest {
-                (SessionTarget { session: None, latest: true }, args.as_slice())
+                (
+                    SessionTarget {
+                        session: None,
+                        latest: true,
+                    },
+                    args.as_slice(),
+                )
             } else {
                 let (s, rest) = args
                     .split_first()
                     .expect("clap `required_unless_present(latest)` guarantees args is non-empty");
-                (SessionTarget { session: Some(s.clone()), latest: false }, rest)
+                (
+                    SessionTarget {
+                        session: Some(s.clone()),
+                        latest: false,
+                    },
+                    rest,
+                )
             };
             send::run(&endpoint, &target, *raw, input).await
         }
@@ -114,7 +132,12 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             kick::run(&endpoint, sessions, client.as_deref()).await
         }
-        Command::Kill { signal, no_wait, timeout, sessions } => {
+        Command::Kill {
+            signal,
+            no_wait,
+            timeout,
+            sessions,
+        } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             kill::run(&endpoint, sessions, *signal, *no_wait, *timeout).await
         }
@@ -122,11 +145,16 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             wait::run(&endpoint, session, *timeout).await
         }
-        Command::Logs { sessions, strip, prefix, follow, tail } => {
+        Command::Logs {
+            sessions,
+            strip,
+            prefix,
+            follow,
+            tail,
+        } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
             logs::run(&endpoint, sessions, *strip, *prefix, *follow, *tail).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime
     }
 }
-

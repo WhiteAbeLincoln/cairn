@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
-use cairn_pty::{ClientId, GhosttyPty, PtySession};
 use cairn_protocol::cairn::daemon::types::{ExitStatus as WireExit, SessionInfo, SessionSpec};
+use cairn_pty::{ClientId, GhosttyPty, PtySession};
 use tokio::sync::oneshot;
 
 use crate::error::DaemonError;
@@ -59,7 +59,13 @@ impl SessionEntry {
             .lock()
             .expect("attached lock")
             .insert(client_id, AttachHandle { kick: kick_tx });
-        (kick_rx, AttachGuard { entry: Arc::clone(self), client_id })
+        (
+            kick_rx,
+            AttachGuard {
+                entry: Arc::clone(self),
+                client_id,
+            },
+        )
     }
 
     /// Rendered ids of currently-attached clients (for list/inspect).
@@ -127,7 +133,12 @@ impl SessionRegistry {
     }
 
     pub fn list(&self) -> Vec<Arc<SessionEntry>> {
-        self.sessions.read().expect("sessions lock").values().cloned().collect()
+        self.sessions
+            .read()
+            .expect("sessions lock")
+            .values()
+            .cloned()
+            .collect()
     }
 
     /// Spawn a new session. Rejects an explicit name already used by a live
@@ -155,12 +166,18 @@ impl SessionRegistry {
             created_at_unix_ms: now_unix_ms(),
             spec: spec.clone(),
             name: Mutex::new(name),
-            running: RwLock::new(Running { handle: Arc::new(handle), pid }),
+            running: RwLock::new(Running {
+                handle: Arc::new(handle),
+                pid,
+            }),
             attached: Mutex::new(HashMap::new()),
         });
         // Build SessionInfo before inserting — lock is dropped before .await.
         let info = session_info(&entry).await;
-        self.sessions.write().expect("sessions lock").insert(id, entry);
+        self.sessions
+            .write()
+            .expect("sessions lock")
+            .insert(id, entry);
         Ok(info)
     }
 
@@ -169,7 +186,11 @@ impl SessionRegistry {
     /// random tail — the leading digits are a shared millisecond timestamp).
     /// Always appended; extends the tail on the rare collision with a live name.
     fn inferred_unique_name(&self, spec: &SessionSpec, default_shell: &str, id: &str) -> String {
-        let prog = spec.command.first().map(String::as_str).unwrap_or(default_shell);
+        let prog = spec
+            .command
+            .first()
+            .map(String::as_str)
+            .unwrap_or(default_shell);
         let base = std::path::Path::new(prog)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -198,12 +219,7 @@ impl SessionRegistry {
     }
 
     /// Re-spawn under the same id/name; rejects a still-running session unless `force`.
-    pub fn restart(
-        &self,
-        key: &str,
-        force: bool,
-        default_shell: &str,
-    ) -> Result<(), DaemonError> {
+    pub fn restart(&self, key: &str, force: bool, default_shell: &str) -> Result<(), DaemonError> {
         let entry = self.resolve(key).ok_or(DaemonError::NotFound)?;
         if entry.handle().try_exit_status().is_none() && !force {
             return Err(DaemonError::Running);
@@ -230,11 +246,16 @@ pub(crate) fn now_unix_ms() -> u64 {
 pub async fn session_info(entry: &SessionEntry) -> SessionInfo {
     // Clone handle out — lock released here before any .await.
     let handle = entry.handle();
-    let (cols, rows) = handle.size().await.map(|s| (s.cols, s.rows)).unwrap_or((0, 0));
+    let (cols, rows) = handle
+        .size()
+        .await
+        .map(|s| (s.cols, s.rows))
+        .unwrap_or((0, 0));
     let exit = handle.try_exit_status().map(|st| WireExit {
         code: st.code(),
         signal: st.signal().map(|s| s as u8),
         unix_ms: st.unix_ms(),
+        reason: st.reason().map(String::from),
     });
     let attached_clients = entry.attached_ids();
     SessionInfo {
@@ -272,7 +293,10 @@ mod tests {
     #[tokio::test]
     async fn create_then_resolve_by_name_and_id() {
         let reg = SessionRegistry::new();
-        let info = reg.create(spec(Some("dev")), "/bin/sh").await.expect("create");
+        let info = reg
+            .create(spec(Some("dev")), "/bin/sh")
+            .await
+            .expect("create");
         let by_name = reg.resolve("dev").expect("by name");
         let by_id = reg.resolve(&info.id).expect("by id");
         assert_eq!(by_name.id, info.id);
@@ -283,8 +307,13 @@ mod tests {
     #[tokio::test]
     async fn duplicate_live_name_is_rejected() {
         let reg = SessionRegistry::new();
-        reg.create(spec(Some("dev")), "/bin/sh").await.expect("first");
-        let err = reg.create(spec(Some("dev")), "/bin/sh").await.expect_err("dup");
+        reg.create(spec(Some("dev")), "/bin/sh")
+            .await
+            .expect("first");
+        let err = reg
+            .create(spec(Some("dev")), "/bin/sh")
+            .await
+            .expect_err("dup");
         assert!(matches!(err, crate::error::DaemonError::NameInUse));
     }
 
@@ -299,7 +328,10 @@ mod tests {
     #[tokio::test]
     async fn rename_updates_resolve() {
         let reg = SessionRegistry::new();
-        let info = reg.create(spec(Some("old")), "/bin/sh").await.expect("create");
+        let info = reg
+            .create(spec(Some("old")), "/bin/sh")
+            .await
+            .expect("create");
         reg.rename(&info.id, "new".to_string()).expect("rename");
         assert!(reg.resolve("old").is_none());
         let e = reg.resolve("new").expect("by new name");
@@ -309,9 +341,13 @@ mod tests {
     #[tokio::test]
     async fn rename_to_same_name_is_ok() {
         let reg = SessionRegistry::new();
-        let info = reg.create(spec(Some("same")), "/bin/sh").await.expect("create");
+        let info = reg
+            .create(spec(Some("same")), "/bin/sh")
+            .await
+            .expect("create");
         // Renaming a session to its own current name should be a no-op success.
-        reg.rename(&info.id, "same".to_string()).expect("rename to same name");
+        reg.rename(&info.id, "same".to_string())
+            .expect("rename to same name");
         let e = reg.resolve("same").expect("still resolvable");
         assert_eq!(e.id, info.id);
     }
@@ -319,9 +355,13 @@ mod tests {
     #[tokio::test]
     async fn restart_force_replaces_running() {
         let reg = SessionRegistry::new();
-        let info = reg.create(spec(Some("worker")), "/bin/sh").await.expect("create");
+        let info = reg
+            .create(spec(Some("worker")), "/bin/sh")
+            .await
+            .expect("create");
         // Session is running — force restart should succeed.
-        reg.restart(&info.id, true, "/bin/sh").expect("force restart");
+        reg.restart(&info.id, true, "/bin/sh")
+            .expect("force restart");
         // Session still resolves under the same id.
         let e = reg.resolve(&info.id).expect("still in registry");
         assert_eq!(e.id, info.id);
@@ -330,8 +370,13 @@ mod tests {
     #[tokio::test]
     async fn restart_without_force_while_running_is_rejected() {
         let reg = SessionRegistry::new();
-        let info = reg.create(spec(Some("worker")), "/bin/sh").await.expect("create");
-        let err = reg.restart(&info.id, false, "/bin/sh").expect_err("should reject");
+        let info = reg
+            .create(spec(Some("worker")), "/bin/sh")
+            .await
+            .expect("create");
+        let err = reg
+            .restart(&info.id, false, "/bin/sh")
+            .expect_err("should reject");
         assert!(matches!(err, crate::error::DaemonError::Running));
     }
 
@@ -354,16 +399,26 @@ mod tests {
             .strip_prefix("sleep-")
             .unwrap_or_else(|| panic!("expected 'sleep-' prefix, got {name}"));
         assert_eq!(suffix.len(), 6, "suffix should be 6 hex chars: {name}");
-        assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()), "suffix not hex: {name}");
+        assert!(
+            suffix.chars().all(|c| c.is_ascii_hexdigit()),
+            "suffix not hex: {name}"
+        );
         // The suffix is the tail of the session id's hex digits.
         let hex: String = info.id.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-        assert_eq!(suffix, &hex[hex.len() - 6..], "suffix must be the id's hex tail");
+        assert_eq!(
+            suffix,
+            &hex[hex.len() - 6..],
+            "suffix must be the id's hex tail"
+        );
     }
 
     #[tokio::test]
     async fn attach_registers_then_guard_drop_removes() {
         let reg = SessionRegistry::new();
-        let info = reg.create(spec(Some("dev")), "/bin/sh").await.expect("create");
+        let info = reg
+            .create(spec(Some("dev")), "/bin/sh")
+            .await
+            .expect("create");
         let entry = reg.resolve(&info.id).expect("resolve");
         let cid = reg.mint_client_id();
 

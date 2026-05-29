@@ -62,7 +62,9 @@ pub async fn run_exec(
     let stdin = args.interactive_with_default(default_interactive);
     let workdir = match &args.workdir {
         Some(w) => Some(w.to_string_lossy().into_owned()),
-        None => std::env::current_dir().ok().map(|p| p.to_string_lossy().into_owned()),
+        None => std::env::current_dir()
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned()),
     };
 
     let spec = SessionSpec {
@@ -77,7 +79,10 @@ pub async fn run_exec(
         scrollback_lines: 1000,
     };
 
-    let info = match sessions::create(&client, (), &spec).await.context("create session")? {
+    let info = match sessions::create(&client, (), &spec)
+        .await
+        .context("create session")?
+    {
         Ok(info) => info,
         Err(e) => {
             eprintln!("cairn: create failed: {}: {}", e.code, e.message);
@@ -132,13 +137,19 @@ mod tests {
     fn bare_key_copies_from_client_env_when_set() {
         // CARGO_PKG_NAME is set during `cargo test` -> "cairn".
         let env = merge_env(&[], &["CARGO_PKG_NAME".to_string()]).unwrap();
-        assert!(env.iter().any(|(k, v)| k == "CARGO_PKG_NAME" && v == "cairn"));
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "CARGO_PKG_NAME" && v == "cairn")
+        );
     }
 
     #[test]
     fn bare_key_absent_is_skipped() {
         let env = merge_env(&[], &["CAIRN_DEFINITELY_UNSET_VAR_XYZ".to_string()]).unwrap();
-        assert!(env.iter().all(|(k, _)| k != "CAIRN_DEFINITELY_UNSET_VAR_XYZ"));
+        assert!(
+            env.iter()
+                .all(|(k, _)| k != "CAIRN_DEFINITELY_UNSET_VAR_XYZ")
+        );
     }
 
     #[test]

@@ -59,9 +59,18 @@ mod tests {
 
     #[test]
     fn named_term_resolves_to_libc_sigterm() {
-        assert_eq!(to_nix(&Signal::Named(SignalName::Term)).unwrap(), NixSignal::SIGTERM);
-        assert_eq!(to_nix(&Signal::Named(SignalName::Kill)).unwrap(), NixSignal::SIGKILL);
-        assert_eq!(to_nix(&Signal::Named(SignalName::Int)).unwrap(), NixSignal::SIGINT);
+        assert_eq!(
+            to_nix(&Signal::Named(SignalName::Term)).unwrap(),
+            NixSignal::SIGTERM
+        );
+        assert_eq!(
+            to_nix(&Signal::Named(SignalName::Kill)).unwrap(),
+            NixSignal::SIGKILL
+        );
+        assert_eq!(
+            to_nix(&Signal::Named(SignalName::Int)).unwrap(),
+            NixSignal::SIGINT
+        );
     }
 
     #[test]

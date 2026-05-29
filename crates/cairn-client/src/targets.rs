@@ -113,15 +113,25 @@ fn resolve_many_in(sessions: &[SessionInfo], t: &SessionTargets) -> ResolvedMany
             }
         }
     }
-    ResolvedMany { matched, unresolved }
+    ResolvedMany {
+        matched,
+        unresolved,
+    }
 }
 
 fn into_target(s: &SessionInfo) -> ResolvedTarget {
-    ResolvedTarget { id: s.id.clone(), name: s.name.clone(), info: s.clone() }
+    ResolvedTarget {
+        id: s.id.clone(),
+        name: s.name.clone(),
+        info: s.clone(),
+    }
 }
 
 fn find_literal<'a>(sessions: &'a [SessionInfo], tok: &str) -> Option<&'a SessionInfo> {
-    sessions.iter().find(|s| s.name.as_deref() == Some(tok)).or_else(|| sessions.iter().find(|s| s.id == tok))
+    sessions
+        .iter()
+        .find(|s| s.name.as_deref() == Some(tok))
+        .or_else(|| sessions.iter().find(|s| s.id == tok))
 }
 
 fn is_glob(tok: &str) -> bool {
@@ -169,7 +179,12 @@ mod tests {
             attached_clients: vec![],
             created_at_unix_ms: created,
             exit: if exited {
-                Some(ExitStatus { code: Some(0), signal: None, unix_ms: created + 1 })
+                Some(ExitStatus {
+                    code: Some(0),
+                    signal: None,
+                    unix_ms: created + 1,
+                    reason: None,
+                })
             } else {
                 None
             },
@@ -187,32 +202,53 @@ mod tests {
 
     #[test]
     fn one_latest_picks_max_created_at() {
-        let xs = vec![s("a", Some("old"), 10, false), s("b", Some("new"), 20, false)];
-        let t = SessionTarget { session: None, latest: true };
+        let xs = vec![
+            s("a", Some("old"), 10, false),
+            s("b", Some("new"), 20, false),
+        ];
+        let t = SessionTarget {
+            session: None,
+            latest: true,
+        };
         let got = resolve_one_in(&xs, &t).unwrap();
         assert_eq!(got.id, "b");
     }
 
     #[test]
     fn one_literal_matches_name_then_id() {
-        let xs = vec![s("a", Some("bash"), 1, false), s("b", Some("zsh"), 2, false)];
-        let t = SessionTarget { session: Some("bash".into()), latest: false };
+        let xs = vec![
+            s("a", Some("bash"), 1, false),
+            s("b", Some("zsh"), 2, false),
+        ];
+        let t = SessionTarget {
+            session: Some("bash".into()),
+            latest: false,
+        };
         assert_eq!(resolve_one_in(&xs, &t).unwrap().id, "a");
-        let t = SessionTarget { session: Some("b".into()), latest: false };
+        let t = SessionTarget {
+            session: Some("b".into()),
+            latest: false,
+        };
         assert_eq!(resolve_one_in(&xs, &t).unwrap().id, "b");
     }
 
     #[test]
     fn one_unmatched_literal_errors_with_token() {
         let xs = vec![s("a", Some("bash"), 1, false)];
-        let t = SessionTarget { session: Some("zsh".into()), latest: false };
+        let t = SessionTarget {
+            session: Some("zsh".into()),
+            latest: false,
+        };
         let err = resolve_one_in(&xs, &t).unwrap_err().to_string();
         assert!(err.contains("zsh"), "got {err}");
     }
 
     #[test]
     fn many_all_excludes_exited() {
-        let xs = vec![s("a", Some("live"), 1, false), s("b", Some("dead"), 2, true)];
+        let xs = vec![
+            s("a", Some("live"), 1, false),
+            s("b", Some("dead"), 2, true),
+        ];
         let r = resolve_many_in(&xs, &many(&[], false, true));
         let ids: Vec<&str> = r.matched.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["a"]);
@@ -234,7 +270,10 @@ mod tests {
 
     #[test]
     fn many_dedups_literal_and_overlapping_glob() {
-        let xs = vec![s("a", Some("bash-3f"), 1, false), s("b", Some("bash-7c"), 2, false)];
+        let xs = vec![
+            s("a", Some("bash-3f"), 1, false),
+            s("b", Some("bash-7c"), 2, false),
+        ];
         let r = resolve_many_in(&xs, &many(&["bash-3f", "bash-*"], false, false));
         let ids: Vec<&str> = r.matched.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, vec!["a", "b"]); // a appears once, even though both expressions match it
@@ -259,7 +298,10 @@ mod tests {
     #[test]
     fn one_latest_on_empty_list_errors() {
         let xs: Vec<SessionInfo> = vec![];
-        let t = SessionTarget { session: None, latest: true };
+        let t = SessionTarget {
+            session: None,
+            latest: true,
+        };
         let err = resolve_one_in(&xs, &t).unwrap_err().to_string();
         assert!(err.contains("no sessions to operate on"), "got {err}");
     }
@@ -272,7 +314,10 @@ mod tests {
             // Session B: id "target-id", name "different".
             s("target-id", Some("different"), 2, false),
         ];
-        let t = SessionTarget { session: Some("target-id".into()), latest: false };
+        let t = SessionTarget {
+            session: Some("target-id".into()),
+            latest: false,
+        };
         // Should match A by name, not B by id.
         assert_eq!(resolve_one_in(&xs, &t).unwrap().id, "other-id");
     }

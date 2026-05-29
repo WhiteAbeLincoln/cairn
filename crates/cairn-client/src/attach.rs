@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use bytes::Bytes;
-use futures::{SinkExt, StreamExt};
 use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
 
 use cairn_protocol::cairn::daemon::types::{AttachInit, ClientEvent, ServerEvent};
 use cairn_protocol::client::cairn::daemon::sessions;
@@ -25,7 +25,11 @@ pub struct AttachOptions {
 
 enum Outcome {
     Detached,
-    Exited { code: Option<i32>, signal: Option<u8> },
+    Exited {
+        code: Option<i32>,
+        signal: Option<u8>,
+        reason: Option<String>,
+    },
     Fatal(String),
     Reconnect,
 }
@@ -44,7 +48,11 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
     // a detach. `guard` is held for the whole attach and restores the TTY on drop.
     let raw_mode = guard.is_raw();
 
-    let mut stdin_rx = if opts.no_stdin { None } else { Some(spawn_stdin_reader()?) };
+    let mut stdin_rx = if opts.no_stdin {
+        None
+    } else {
+        Some(spawn_stdin_reader()?)
+    };
     let mut matcher = Matcher::new(opts.detach_keys.clone());
     let mut term = Termination::install()?;
     let mut winch = window_changes()?;
@@ -55,7 +63,11 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
 
     loop {
         let (cols, rows) = terminal::window_size().unwrap_or((80, 24));
-        let init = AttachInit { cols, rows, no_stdin: opts.no_stdin };
+        let init = AttachInit {
+            cols,
+            rows,
+            no_stdin: opts.no_stdin,
+        };
         let (mut events_tx, events_rx) = mpsc::channel::<Vec<ClientEvent>>(64);
         let events: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<ClientEvent>> + Send>> =
             Box::pin(events_rx);
@@ -168,10 +180,28 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
 
         match outcome {
             Outcome::Detached => return Ok(0),
-            Outcome::Exited { code, signal } => return Ok(exit_code(code, signal)),
+            Outcome::Exited {
+                code,
+                signal,
+                reason,
+            } => {
+                if raw_mode {
+                    if let Some(reason) = reason {
+                        drop(guard);
+                        eprintln!("cairn: {reason}");
+                    }
+                }
+                return Ok(exit_code(code, signal));
+            }
             Outcome::Fatal(msg) => {
+                // we want to avoid printing the error for a
+                // scripted session. an interactive session had raw mode set
+                // so we can guard using this
+                let was_raw = guard.is_raw();
                 drop(guard);
-                eprintln!("cairn: {msg}");
+                if was_raw {
+                    eprintln!("cairn: {msg}");
+                }
                 return Ok(1);
             }
             Outcome::Reconnect => {} // fall through to backoff
@@ -187,7 +217,10 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
         let now = Instant::now();
         let dl = *deadline.get_or_insert(now + budget);
         if budget != Duration::ZERO && now >= dl {
-            eprintln!("cairn: connection lost (gave up reconnecting after {:?})", budget);
+            eprintln!(
+                "cairn: connection lost (gave up reconnecting after {:?})",
+                budget
+            );
             return Ok(1);
         }
         tokio::time::sleep(backoff).await;
@@ -202,7 +235,11 @@ fn handle_server_batch(batch: Vec<ServerEvent>) -> Option<Outcome> {
         match ev {
             ServerEvent::Snapshot(b) | ServerEvent::Output(b) => terminal::write_stdout(&b),
             ServerEvent::Exited(st) => {
-                return Some(Outcome::Exited { code: st.code, signal: st.signal });
+                return Some(Outcome::Exited {
+                    code: st.code,
+                    signal: st.signal,
+                    reason: st.reason,
+                });
             }
             ServerEvent::Error(e) => {
                 if e.code == error_codes::CLIENT_LAGGED {

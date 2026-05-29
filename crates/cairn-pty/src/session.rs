@@ -37,8 +37,14 @@ pub trait PtySession: Send + Sync {
     async fn write(&self, client_id: ClientId, data: Bytes) -> Result<(), PtyError>;
 
     /// Deliver a signal to the child's process group. Not leader-gated.
-    /// `Ok(())` if the child has already exited.
-    async fn signal(&self, sig: nix::sys::signal::Signal) -> Result<(), PtyError>;
+    /// `Ok(())` if the child has already exited. An optional `reason`
+    /// is attached to the `ExitStatus` if the signal causes the child
+    /// to exit (last-writer-wins if multiple signals are sent).
+    async fn signal(
+        &self,
+        sig: nix::sys::signal::Signal,
+        reason: Option<String>,
+    ) -> Result<(), PtyError>;
 
     /// Write bytes to the PTY with no client identity and no leader
     /// promotion. Backs `cairn send`.

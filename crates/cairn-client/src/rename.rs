@@ -23,7 +23,10 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget, new_name: &str) ->
             Ok(1)
         }
         Err(e) => {
-            eprintln!("error: cannot reach cairn-daemon at {}: {e}", endpoint.label());
+            eprintln!(
+                "error: cannot reach cairn-daemon at {}: {e}",
+                endpoint.label()
+            );
             Ok(1)
         }
     }

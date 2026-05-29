@@ -32,6 +32,7 @@ interface types {
         code: option<s32>,
         signal: option<u8>,
         unix-ms: u64,
+        reason: option<string>,
     }
 
     variant signal {

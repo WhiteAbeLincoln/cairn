@@ -43,6 +43,7 @@ pub(crate) enum Command {
     /// Deliver `sig` to the child's process group. Not leader-gated.
     Signal {
         sig: nix::sys::signal::Signal,
+        reason: Option<String>,
         reply: oneshot::Sender<Result<(), PtyError>>,
     },
     /// Write to the PTY with no client identity and no leader promotion.
@@ -98,7 +99,7 @@ impl GhosttyPty {
     pub async fn wait(&self) -> crate::ExitStatus {
         let mut rx = self.exit_rx.clone();
         loop {
-            if let Some(status) = *rx.borrow() {
+            if let Some(status) = rx.borrow().clone() {
                 return status;
             }
             // changed() returns Err only when the sender is dropped. Normally
@@ -107,22 +108,31 @@ impl GhosttyPty {
             // before publishing, the borrow is None — fall back to a
             // synthetic failing status so callers don't see a phantom success.
             if rx.changed().await.is_err() {
-                return (*rx.borrow())
-                    .unwrap_or_else(|| crate::ExitStatus::synthetic(1, crate::types::now_unix_ms()));
+                return rx.borrow().clone().unwrap_or_else(|| {
+                    crate::ExitStatus::synthetic(1, crate::types::now_unix_ms())
+                });
             }
         }
     }
 
     /// Non-blocking peek at the exit state. `None` while the child is running.
     pub fn try_exit_status(&self) -> Option<crate::ExitStatus> {
-        *self.exit_rx.borrow()
+        self.exit_rx.borrow().clone()
     }
 
     /// Deliver a signal to the child's process group.
-    pub async fn signal(&self, sig: nix::sys::signal::Signal) -> Result<(), PtyError> {
+    pub async fn signal(
+        &self,
+        sig: nix::sys::signal::Signal,
+        reason: Option<String>,
+    ) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Signal { sig, reply: tx })
+            .send_async(Command::Signal {
+                sig,
+                reason,
+                reply: tx,
+            })
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
@@ -188,8 +198,12 @@ impl super::PtySession for GhosttyPty {
         rx.await.map_err(|_| PtyError::Closed)?
     }
 
-    async fn signal(&self, sig: nix::sys::signal::Signal) -> Result<(), PtyError> {
-        GhosttyPty::signal(self, sig).await
+    async fn signal(
+        &self,
+        sig: nix::sys::signal::Signal,
+        reason: Option<String>,
+    ) -> Result<(), PtyError> {
+        GhosttyPty::signal(self, sig, reason).await
     }
 
     async fn inject(&self, data: bytes::Bytes) -> Result<(), PtyError> {

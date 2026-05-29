@@ -9,7 +9,7 @@ use std::time::Duration;
 use cairn_protocol::cairn::daemon::types::{Error as WireError, SessionInfo, SessionSpec, Signal};
 
 use crate::daemon::Daemon;
-use crate::error::{to_wire, DaemonError};
+use crate::error::{DaemonError, to_wire};
 use crate::registry::session_info;
 use crate::signal::to_nix;
 
@@ -20,24 +20,37 @@ pub async fn list_all(d: &Daemon) -> Vec<SessionInfo> {
 }
 
 pub async fn inspect(d: &Daemon, id: String) -> Result<SessionInfo, WireError> {
-    let entry = d.registry.resolve(&id).ok_or_else(|| DaemonError::NotFound.to_wire())?;
+    let entry = d
+        .registry
+        .resolve(&id)
+        .ok_or_else(|| DaemonError::NotFound.to_wire())?;
     Ok(session_info(&entry).await)
 }
 
 pub async fn create(d: &Daemon, spec: SessionSpec) -> Result<SessionInfo, WireError> {
-    d.registry.create(spec, &d.cfg.default_shell).await.map_err(DaemonError::to_wire)
+    d.registry
+        .create(spec, &d.cfg.default_shell)
+        .await
+        .map_err(DaemonError::to_wire)
 }
 
 pub async fn rename(d: &Daemon, id: String, new_name: String) -> Result<(), WireError> {
-    d.registry.rename(&id, new_name).map_err(DaemonError::to_wire)
+    d.registry
+        .rename(&id, new_name)
+        .map_err(DaemonError::to_wire)
 }
 
 pub async fn restart(d: &Daemon, id: String, force: bool) -> Result<(), WireError> {
-    d.registry.restart(&id, force, &d.cfg.default_shell).map_err(DaemonError::to_wire)
+    d.registry
+        .restart(&id, force, &d.cfg.default_shell)
+        .map_err(DaemonError::to_wire)
 }
 
 pub async fn kick(d: &Daemon, id: String, client: Option<String>) -> Result<(), WireError> {
-    let entry = d.registry.resolve(&id).ok_or_else(|| DaemonError::NotFound.to_wire())?;
+    let entry = d
+        .registry
+        .resolve(&id)
+        .ok_or_else(|| DaemonError::NotFound.to_wire())?;
     // Note: `attached` is only populated by the attach bridge in Plan 3, so this
     // is a no-op success for the core slice — which is the correct behavior.
     let mut attached = entry.attached.lock().expect("attached lock");
@@ -66,11 +79,17 @@ pub async fn kill(
     sig: Signal,
     grace_ms: Option<u32>,
 ) -> Result<(), WireError> {
-    let entry = d.registry.resolve(&id).ok_or_else(|| DaemonError::NotFound.to_wire())?;
+    let entry = d
+        .registry
+        .resolve(&id)
+        .ok_or_else(|| DaemonError::NotFound.to_wire())?;
     let sig = to_nix(&sig).map_err(DaemonError::to_wire)?;
     // Clone handle out before any .await — lock is released immediately.
     let handle = entry.handle();
-    handle.signal(sig).await.map_err(to_wire)?;
+    handle
+        .signal(sig, Some("killed by operator".into()))
+        .await
+        .map_err(to_wire)?;
 
     if let Some(g) = grace_ms {
         // Arm a daemon-owned escalation task: fires SIGKILL after the grace period
@@ -81,7 +100,12 @@ pub async fn kill(
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(g as u64)).await;
             if handle.try_exit_status().is_none() {
-                let _ = handle.signal(nix::sys::signal::Signal::SIGKILL).await;
+                let _ = handle
+                    .signal(
+                        nix::sys::signal::Signal::SIGKILL,
+                        Some("killed by operator (escalated to SIGKILL)".into()),
+                    )
+                    .await;
             }
         });
     }

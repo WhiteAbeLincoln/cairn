@@ -24,9 +24,7 @@ impl Accept for &PeerCredListener {
     type Outgoing = OwnedWriteHalf;
     type Incoming = OwnedReadHalf;
 
-    async fn accept(
-        &self,
-    ) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
+    async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
         let (stream, _addr) = self.0.accept().await?;
         let peer = stream.peer_cred().ok();
         let (rx, tx) = stream.into_split();
@@ -67,9 +65,12 @@ pub async fn serve(
     let invocations = cairn_protocol::serve(srv.as_ref(), daemon.clone()).await?;
 
     let pump = tokio::spawn(async move {
-        use futures::stream::{select_all, StreamExt as _};
-        let mut invocations =
-            select_all(invocations.into_iter().map(|(i, n, s)| s.map(move |r| (i, n, r))));
+        use futures::stream::{StreamExt as _, select_all};
+        let mut invocations = select_all(
+            invocations
+                .into_iter()
+                .map(|(i, n, s)| s.map(move |r| (i, n, r))),
+        );
         while let Some((_i, _n, res)) = invocations.next().await {
             if let Ok(fut) = res {
                 tokio::spawn(fut);
@@ -102,10 +103,7 @@ fn bind_with_cleanup(
         let created = !parent.exists();
         std::fs::create_dir_all(parent)?;
         if created {
-            std::fs::set_permissions(
-                parent,
-                std::fs::Permissions::from_mode(cfg.dir_mode),
-            )?;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(cfg.dir_mode))?;
         }
     }
 
@@ -140,7 +138,13 @@ async fn drain_sessions(daemon: &crate::daemon::Daemon, grace: std::time::Durati
     let entries = daemon.registry.list();
     // Send SIGTERM to all sessions (ignore errors — session may already be gone).
     for e in &entries {
-        let _ = e.handle().signal(nix::sys::signal::Signal::SIGTERM).await;
+        let _ = e
+            .handle()
+            .signal(
+                nix::sys::signal::Signal::SIGTERM,
+                Some("daemon shutting down".into()),
+            )
+            .await;
     }
     // Wait for each with a shared timeout budget.
     let waits = entries.iter().map(|e| {

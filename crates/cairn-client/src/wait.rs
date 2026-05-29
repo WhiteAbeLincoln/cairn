@@ -13,7 +13,11 @@ use crate::targets;
 
 const TIMEOUT_EXIT_CODE: i32 = 124;
 
-pub async fn run(endpoint: &Endpoint, target: &SessionTarget, timeout: Option<Duration>) -> Result<i32> {
+pub async fn run(
+    endpoint: &Endpoint,
+    target: &SessionTarget,
+    timeout: Option<Duration>,
+) -> Result<i32> {
     let resolved = match targets::resolve_one(endpoint, target).await {
         Ok(r) => r,
         Err(e) => {
@@ -63,7 +67,12 @@ mod tests {
     use super::*;
 
     fn st(code: Option<i32>, signal: Option<u8>) -> ExitStatus {
-        ExitStatus { code, signal, unix_ms: 0 }
+        ExitStatus {
+            code,
+            signal,
+            unix_ms: 0,
+            reason: None,
+        }
     }
 
     #[test]

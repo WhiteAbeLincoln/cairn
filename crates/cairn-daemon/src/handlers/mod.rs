@@ -13,5 +13,6 @@ pub fn wire_exit(st: cairn_pty::ExitStatus) -> WireExit {
         code: st.code(),
         signal: st.signal().map(|s| s as u8),
         unix_ms: st.unix_ms(),
+        reason: st.reason().map(String::from),
     }
 }

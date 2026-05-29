@@ -87,10 +87,9 @@ where
         .context("bindings::serve failed")?;
 
     let server_task = tokio::spawn(async move {
-        let mut invocations =
-            select_all(invocations.into_iter().map(|(instance, name, invocations)| {
-                invocations.map(move |res| (instance, name, res))
-            }));
+        let mut invocations = select_all(invocations.into_iter().map(
+            |(instance, name, invocations)| invocations.map(move |res| (instance, name, res)),
+        ));
         while let Some((_instance, _name, res)) = invocations.next().await {
             if let Ok(fut) = res {
                 tokio::spawn(fut);
@@ -208,11 +207,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         }
     }
 
-    async fn inspect(
-        &self,
-        _ctx: Ctx,
-        _id: String,
-    ) -> anyhow::Result<Result<SessionInfo, Error>> {
+    async fn inspect(&self, _ctx: Ctx, _id: String) -> anyhow::Result<Result<SessionInfo, Error>> {
         unimplemented!("sessions.inspect not stubbed in this test")
     }
 
@@ -257,7 +252,11 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         _id: String,
     ) -> anyhow::Result<
         std::pin::Pin<
-            Box<dyn std::future::Future<Output = bindings::cairn::daemon::types::ExitStatus> + Send + 'static>,
+            Box<
+                dyn std::future::Future<Output = bindings::cairn::daemon::types::ExitStatus>
+                    + Send
+                    + 'static,
+            >,
         >,
     > {
         unimplemented!("sessions.wait not stubbed in this test")
@@ -281,11 +280,19 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         _id: String,
         _init: bindings::cairn::daemon::types::AttachInit,
         _events: std::pin::Pin<
-            Box<dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ClientEvent>> + Send + 'static>,
+            Box<
+                dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ClientEvent>>
+                    + Send
+                    + 'static,
+            >,
         >,
     ) -> anyhow::Result<
         std::pin::Pin<
-            Box<dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ServerEvent>> + Send + 'static>,
+            Box<
+                dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::ServerEvent>>
+                    + Send
+                    + 'static,
+            >,
         >,
     > {
         unimplemented!("sessions.attach not stubbed in this test")
