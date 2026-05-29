@@ -1,7 +1,8 @@
-//! UDS listener + wRPC server wiring: `ConnCtx`, `PeerCredListener`,
-//! `bind_with_cleanup`, `serve()`, and graceful `drain_sessions`.
+//! UDS + WebTransport listeners + wRPC server wiring: `ConnCtx`,
+//! `PeerCredListener`, `AuthenticatedWtAccept`, `bind_with_cleanup`,
+//! `serve()`, and graceful `drain_sessions`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -35,29 +36,56 @@ impl Accept for &PeerCredListener {
     }
 }
 
+// ── WebTransport Accept adapter ───────────────────────────────────────────
+
+/// Wraps a `wrpc_transport_web::Client` (which implements `Accept<Context=()>`)
+/// and injects a pre-authenticated `ConnCtx` as the context, so the same
+/// `Handler<ConnCtx>` impl works for both UDS and WT connections.
+struct AuthenticatedWtAccept {
+    inner: wrpc_transport_web::Client,
+    ctx: ConnCtx,
+}
+
+impl Accept for &AuthenticatedWtAccept {
+    type Context = ConnCtx;
+    type Outgoing = wtransport::SendStream;
+    type Incoming = wtransport::RecvStream;
+
+    async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
+        let ((), tx, rx) = Accept::accept(&self.inner).await?;
+        Ok((self.ctx.clone(), tx, rx))
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────
 
-/// Bind the daemon socket, pump the wRPC accept/serve loops, and block until
-/// `shutdown` is cancelled. On shutdown: drain all sessions (SIGTERM + grace),
-/// abort the accept/pump tasks, then remove the socket file.
+/// Bind the daemon socket(s), pump the wRPC accept/serve loops, and block
+/// until `shutdown` is cancelled. On shutdown: drain all sessions
+/// (SIGTERM + grace), abort the accept/pump tasks, then remove the socket
+/// file.
 pub async fn serve(
     daemon: crate::daemon::Daemon,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
+    // At least one listener must be configured.
+    if daemon.cfg.listeners.is_empty() {
+        anyhow::bail!("no listeners configured");
+    }
+
+    let auth_chain = Arc::new(daemon.build_auth_chain()?);
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    // ── UDS listener ─────────────────────────────────────────────────────
+
     // Find the Unix listener config, if any.
     let unix_path = daemon.cfg.listeners.iter().find_map(|l| match l {
         crate::listen::ListenerConfig::Unix(p) => Some(p.clone()),
         _ => None,
     });
 
-    // At least one listener must be configured.
-    if daemon.cfg.listeners.is_empty() {
-        anyhow::bail!("no listeners configured");
-    }
-
     let listener = if let Some(ref path) = unix_path {
         let l = bind_with_cleanup(path, &daemon.cfg)?;
-        tracing::info!(socket = %path.display(), "listening");
+        tracing::info!(socket = %path.display(), "UDS listening");
         Some(l)
     } else {
         None
@@ -66,11 +94,11 @@ pub async fn serve(
     let srv = Arc::new(wrpc_transport::Server::default());
 
     // Only wire up the accept loop when we have a UDS listener.
-    let accept = if let Some(listener) = listener {
+    if let Some(listener) = listener {
         let pl = Arc::new(PeerCredListener(listener));
         let srv = Arc::clone(&srv);
         let shutdown = shutdown.clone();
-        Some(tokio::spawn(async move {
+        tasks.push(tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -79,14 +107,12 @@ pub async fn serve(
                     }
                 }
             }
-        }))
-    } else {
-        None
-    };
+        }));
+    }
 
     let invocations = cairn_protocol::serve(srv.as_ref(), daemon.clone()).await?;
 
-    let pump = tokio::spawn(async move {
+    tasks.push(tokio::spawn(async move {
         use futures::stream::{StreamExt as _, select_all};
         let mut invocations = select_all(
             invocations
@@ -98,14 +124,84 @@ pub async fn serve(
                 tokio::spawn(fut);
             }
         }
+    }));
+
+    // ── WebTransport listener ────────────────────────────────────────────
+
+    let wt_addr = daemon.cfg.listeners.iter().find_map(|l| match l {
+        crate::listen::ListenerConfig::WebTransport(addr) => Some(*addr),
+        _ => None,
     });
+
+    if let Some(addr) = wt_addr {
+        let (tls, cert_path, key_path) = resolve_tls(&daemon.cfg)?;
+        let rt_dir = runtime_dir();
+        std::fs::create_dir_all(&rt_dir)?;
+        tls.export_hash(&rt_dir.join("cert-hash"))?;
+
+        let identity = wtransport::Identity::load_pemfiles(&cert_path, &key_path)
+            .await
+            .map_err(|e| anyhow::anyhow!("loading TLS identity: {e}"))?;
+
+        let config = wtransport::ServerConfig::builder()
+            .with_bind_address(addr)
+            .with_identity(identity)
+            .keep_alive_interval(Some(std::time::Duration::from_secs(15)))
+            .max_idle_timeout(Some(daemon.cfg.wt_idle_timeout))
+            .map_err(|e| anyhow::anyhow!("invalid idle timeout: {e}"))?
+            .build();
+
+        let endpoint = wtransport::Endpoint::server(config)?;
+        let bound_addr = endpoint.local_addr()?;
+        tracing::info!(%bound_addr, hash = %tls.spki_hash_hex(), "WT listening");
+
+        tasks.push(tokio::spawn({
+            let daemon = daemon.clone();
+            let auth_chain = Arc::clone(&auth_chain);
+            let shutdown = shutdown.clone();
+            async move {
+                loop {
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        incoming = endpoint.accept() => {
+                            let request = match incoming.await {
+                                Ok(req) => req,
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "WT session request error");
+                                    continue;
+                                }
+                            };
+                            let conn = match request.accept().await {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    tracing::debug!(error = %e, "WT connection accept error");
+                                    continue;
+                                }
+                            };
+                            let daemon = daemon.clone();
+                            let auth_chain = Arc::clone(&auth_chain);
+                            let shutdown = shutdown.clone();
+                            tokio::spawn(async move {
+                                serve_wt_connection(conn, &auth_chain, daemon, shutdown).await;
+                            });
+                        }
+                    }
+                }
+            }
+        }));
+    }
+
+    if tasks.is_empty() {
+        anyhow::bail!("no listeners configured");
+    }
+
+    // ── Shutdown ─────────────────────────────────────────────────────────
 
     shutdown.cancelled().await;
     drain_sessions(&daemon, daemon.cfg.shutdown_grace).await;
-    if let Some(accept) = accept {
-        accept.abort();
+    for t in &tasks {
+        t.abort();
     }
-    pump.abort();
     // Clean up the socket file on shutdown.
     if let Some(ref path) = unix_path {
         let _ = std::fs::remove_file(path);
@@ -177,6 +273,137 @@ async fn drain_sessions(daemon: &crate::daemon::Daemon, grace: std::time::Durati
     });
     futures::future::join_all(waits).await;
     // Dropping the registry's Arcs (on daemon teardown) is the final SIGKILL backstop.
+}
+
+// ── WebTransport per-connection handler ───────────────────────────────────
+
+/// Handle a single authenticated WebTransport connection: authenticate via the
+/// auth chain, wrap the connection's bidirectional streams into a per-connection
+/// wRPC server, register handlers, and pump invocations until the connection
+/// closes or the daemon shuts down.
+async fn serve_wt_connection(
+    conn: wtransport::Connection,
+    auth_chain: &crate::auth::AuthChain,
+    daemon: crate::daemon::Daemon,
+    shutdown: CancellationToken,
+) {
+    let peer_addr = conn.remote_address();
+    let ctx = crate::auth::AuthContext {
+        peer_addr,
+        token: None,
+    };
+
+    let identity = match auth_chain.try_transport(&ctx).await {
+        Ok(id) => id,
+        Err(crate::auth::AuthError::NotApplicable) => {
+            tracing::warn!(%peer_addr, "no auth backend accepted the WT connection");
+            return;
+        }
+        Err(crate::auth::AuthError::Rejected(reason)) => {
+            tracing::warn!(%peer_addr, %reason, "WT connection rejected");
+            return;
+        }
+    };
+
+    tracing::info!(%peer_addr, identity = ?identity, "WT connection authenticated");
+    let conn_ctx = ConnCtx { identity };
+
+    let acceptor = Arc::new(AuthenticatedWtAccept {
+        inner: wrpc_transport_web::Client::from(conn),
+        ctx: conn_ctx,
+    });
+
+    // Per-connection wRPC server with ConnCtx context type and WT stream
+    // handler for graceful shutdown.
+    let srv: Arc<
+        wrpc_transport::Server<
+            ConnCtx,
+            wtransport::RecvStream,
+            wtransport::SendStream,
+            wrpc_transport_web::ConnHandler,
+        >,
+    > = Arc::new(wrpc_transport::Server::new());
+
+    let accept_task = tokio::spawn({
+        let srv = Arc::clone(&srv);
+        let acceptor = Arc::clone(&acceptor);
+        let shutdown = shutdown.clone();
+        async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    res = srv.accept(acceptor.as_ref()) => {
+                        if res.is_err() { break; }
+                    }
+                }
+            }
+        }
+    });
+
+    // Register the same Handler<ConnCtx> for this per-connection server
+    // and pump the resulting invocation streams.
+    match cairn_protocol::serve(srv.as_ref(), daemon).await {
+        Ok(invocations) => {
+            use futures::stream::{StreamExt as _, select_all};
+            let mut merged = select_all(
+                invocations
+                    .into_iter()
+                    .map(|(i, n, s)| s.map(move |r| (i, n, r))),
+            );
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    item = merged.next() => {
+                        match item {
+                            Some((_i, _n, Ok(fut))) => { tokio::spawn(fut); }
+                            Some((_i, _n, Err(_))) => {}
+                            None => break,
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::error!(%peer_addr, error = %e, "WT invocation serve setup failed");
+        }
+    }
+
+    accept_task.abort();
+}
+
+// ── TLS resolution ───────────────────────────────────────────────────────
+
+/// Resolve the TLS configuration for the WebTransport listener.
+///
+/// Returns the `TlsConfig` and the filesystem paths to cert and key PEM files.
+/// If the user provided `--wt-cert` and `--wt-key`, those paths are used.
+/// Otherwise a self-signed certificate is generated (or reused) under
+/// `runtime_dir()/tls/`.
+fn resolve_tls(
+    cfg: &crate::config::DaemonConfig,
+) -> anyhow::Result<(crate::tls::TlsConfig, PathBuf, PathBuf)> {
+    match (&cfg.wt_cert, &cfg.wt_key) {
+        (Some(cert), Some(key)) => {
+            let tls = crate::tls::TlsConfig::from_pem_files(cert, key)?;
+            Ok((tls, cert.clone(), key.clone()))
+        }
+        (None, None) => {
+            let tls_dir = runtime_dir().join("tls");
+            let tls = crate::tls::TlsConfig::self_signed(&tls_dir)?;
+            Ok((tls, tls_dir.join("cert.pem"), tls_dir.join("key.pem")))
+        }
+        _ => anyhow::bail!("--wt-cert and --wt-key must both be provided, or both omitted"),
+    }
+}
+
+/// The daemon's runtime directory: `$XDG_RUNTIME_DIR/cairn` or `$TMPDIR/cairn`
+/// or `/tmp/cairn`.
+fn runtime_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("cairn")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

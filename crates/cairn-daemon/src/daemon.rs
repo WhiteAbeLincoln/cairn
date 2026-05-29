@@ -26,6 +26,24 @@ impl Daemon {
             cfg: Arc::new(cfg),
         }
     }
+
+    /// Build the auth chain from the configured backend names.
+    pub fn build_auth_chain(&self) -> anyhow::Result<crate::auth::AuthChain> {
+        let mut backends: Vec<Box<dyn crate::auth::AuthBackend>> = Vec::new();
+        for name in &self.cfg.auth_backends {
+            match name.as_str() {
+                "none" => backends.push(Box::new(crate::auth::none::NoneBackend)),
+                "tailscale" => {
+                    anyhow::bail!("tailscale auth backend not yet implemented");
+                }
+                other => anyhow::bail!("unknown auth backend: {other:?}"),
+            }
+        }
+        if backends.is_empty() {
+            anyhow::bail!("at least one --auth backend is required");
+        }
+        Ok(crate::auth::AuthChain::new(backends))
+    }
 }
 
 // ── sessions::Handler<ConnCtx> ────────────────────────────────────────────
