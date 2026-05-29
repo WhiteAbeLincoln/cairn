@@ -75,7 +75,7 @@ async fn send_injects_into_session() {
     // cat echoes; the broadcast should carry "ping" within a short window.
     let saw = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(b) if b.windows(4).any(|w| w == b"ping") => return true,
                 Ok(_) => continue,
                 Err(_) => return false,
@@ -137,7 +137,7 @@ async fn explicit_env_overrides_inherited() {
             if buf.windows(10).any(|w| w == b"overridden") {
                 return true;
             }
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(b) => buf.extend_from_slice(&b),
                 Err(_) => return buf.windows(10).any(|w| w == b"overridden"),
             }

@@ -22,7 +22,7 @@ async fn main() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     let mut total = 0usize;
     let mut buff = Vec::new();
-    while let Ok(chunk) = sub.stream.try_recv() {
+    while let Ok(chunk) = sub.try_recv() {
         total += chunk.len();
         buff.extend_from_slice(&chunk);
     }

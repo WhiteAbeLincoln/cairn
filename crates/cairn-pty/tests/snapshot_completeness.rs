@@ -64,7 +64,7 @@ async fn spawn_raw_session() -> GhosttyPty {
     pty
 }
 
-/// Drain `sub.snapshot` and subsequent `sub.stream` chunks until the
+/// Drain `sub.snapshot` and subsequent `sub.recv()` chunks until the
 /// accumulated bytes contain `needle` or the deadline elapses. Same shape
 /// as the helper in `tests/pty_io.rs`; duplicated rather than shared because
 /// Cargo integration tests are separate compilation units.
@@ -75,7 +75,7 @@ async fn read_until_contains(sub: &mut Subscription, needle: &[u8], deadline: Du
     }
     let read = async {
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(chunk) => {
                     acc.extend_from_slice(&chunk);
                     if windows_contain(&acc, needle) {

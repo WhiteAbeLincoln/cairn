@@ -44,7 +44,7 @@ pub async fn logs(
             return;
         }
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(b) => {
                     if tx.send(vec![b]).await.is_err() {
                         return;
