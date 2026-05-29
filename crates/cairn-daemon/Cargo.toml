@@ -26,7 +26,7 @@ rcgen = { workspace = true, features = ["pem"] }
 serde.workspace = true
 serde_json.workspace = true
 hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1"] }
 http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 futures.workspace = true

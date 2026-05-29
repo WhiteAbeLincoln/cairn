@@ -34,7 +34,10 @@ impl Daemon {
             match name.as_str() {
                 "none" => backends.push(Box::new(crate::auth::none::NoneBackend)),
                 "tailscale" => {
-                    anyhow::bail!("tailscale auth backend not yet implemented");
+                    backends.push(Box::new(
+                        crate::auth::tailscale::TailscaleBackend::new()
+                            .map_err(|e| anyhow::anyhow!("tailscale auth backend init: {e}"))?,
+                    ));
                 }
                 other => anyhow::bail!("unknown auth backend: {other:?}"),
             }

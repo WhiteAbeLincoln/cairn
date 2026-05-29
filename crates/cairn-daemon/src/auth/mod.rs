@@ -1,6 +1,7 @@
 //! Pluggable authentication backends for WebTransport connections.
 
 pub mod none;
+pub mod tailscale;
 
 use std::net::SocketAddr;
 
