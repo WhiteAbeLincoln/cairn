@@ -1,12 +1,15 @@
 //! TLS certificate handling for the WebTransport listener.
 //!
-//! Generates self-signed Ed25519 certificates, loads PEM files, and exports
+//! Generates self-signed ECDSA P-256 certificates, loads PEM files, and exports
 //! SPKI hashes for client-side certificate pinning.
+//!
+//! ECDSA P-256 is required by the W3C WebTransport spec for `serverCertificateHashes`
+//! pinning — Ed25519 is rejected by compliant clients.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use rcgen::{CertificateParams, KeyPair, PKCS_ED25519};
+use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use ring::digest;
 use rustls_pki_types::CertificateDer;
 use rustls_pki_types::pem::PemObject as _;
@@ -36,7 +39,7 @@ impl TlsConfig {
         })
     }
 
-    /// Generate or reuse a self-signed Ed25519 certificate in `tls_dir`.
+    /// Generate or reuse a self-signed ECDSA P-256 certificate in `tls_dir`.
     ///
     /// If `tls_dir/cert.pem` and `tls_dir/key.pem` already exist and the cert
     /// has not expired (checked by file modification time — files modified more
@@ -81,12 +84,16 @@ impl TlsConfig {
     }
 }
 
-/// Generate a self-signed Ed25519 certificate valid for 14 days, with
+/// Generate a self-signed ECDSA P-256 certificate valid for 14 days, with
 /// "localhost" as a Subject Alternative Name.
+///
+/// ECDSA P-256 is required for `serverCertificateHashes` pinning per the
+/// W3C WebTransport spec — Ed25519 is not accepted by compliant clients.
 ///
 /// Returns `(cert_pem, key_pem)`.
 pub fn generate_self_signed() -> Result<(String, String)> {
-    let key_pair = KeyPair::generate_for(&PKCS_ED25519).context("generating Ed25519 key pair")?;
+    let key_pair = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256)
+        .context("generating ECDSA P-256 key pair")?;
 
     let mut params = CertificateParams::new(vec!["localhost".to_string()])
         .context("building certificate params")?;

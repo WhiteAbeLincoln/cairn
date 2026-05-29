@@ -20,6 +20,9 @@ pub struct DaemonHarness {
     pub socket_path: PathBuf,
     /// Bound address of the WebTransport listener, if started with `start_with_wt()`.
     pub wt_addr: Option<SocketAddr>,
+    /// Hex-encoded SHA-256 cert hash for WebTransport client-side pinning,
+    /// set when started with `start_with_wt()`.
+    pub cert_hash: Option<String>,
     _tmp: tempfile::TempDir,
     shutdown: CancellationToken,
     task: tokio::task::JoinHandle<anyhow::Result<()>>,
@@ -49,6 +52,7 @@ impl DaemonHarness {
         Self {
             socket_path,
             wt_addr: None,
+            cert_hash: None,
             _tmp: tmp,
             shutdown,
             task,
@@ -67,7 +71,8 @@ impl DaemonHarness {
 
         // Generate the cert in advance so we can pass explicit paths to the
         // daemon and know the hash for client-side pinning.
-        let _tls = cairn_daemon::tls::TlsConfig::self_signed(&tls_dir).unwrap();
+        let tls = cairn_daemon::tls::TlsConfig::self_signed(&tls_dir).unwrap();
+        let cert_hash = tls.spki_hash_hex();
         let cert_path = tls_dir.join("cert.pem");
         let key_path = tls_dir.join("key.pem");
 
@@ -103,6 +108,7 @@ impl DaemonHarness {
         Self {
             socket_path,
             wt_addr: Some(wt_addr),
+            cert_hash: Some(cert_hash),
             _tmp: tmp,
             shutdown,
             task,

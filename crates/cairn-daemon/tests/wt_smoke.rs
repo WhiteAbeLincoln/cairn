@@ -1,27 +1,35 @@
 //! Smoke tests: daemon with a WebTransport listener, client connects via QUIC.
 //!
 //! Validates the end-to-end WT pipeline: daemon binds a QUIC endpoint with a
-//! self-signed cert, client connects with cert validation disabled (test-only),
-//! and wRPC invocations round-trip over the WebTransport connection.
+//! self-signed ECDSA P-256 cert, client connects with cert hash pinning via
+//! `serverCertificateHashes`, and wRPC invocations round-trip over the
+//! WebTransport connection.
 
 mod common;
 
 use common::DaemonHarness;
 
-/// Build a `wrpc_transport_web::Client` that connects to the WT endpoint.
+/// Build a `wrpc_transport_web::Client` that connects to the WT endpoint,
+/// pinning the server cert by its SHA-256 hash.
 ///
-/// Uses `with_no_cert_validation()` because the daemon generates Ed25519
-/// self-signed certs, while `with_server_certificate_hashes()` requires
-/// ECDSA P-256. This is acceptable for integration tests.
-async fn build_wt_client(addr: std::net::SocketAddr) -> wrpc_transport_web::Client {
+/// Uses `with_server_certificate_hashes()` as required by the W3C WebTransport
+/// spec, which mandates ECDSA P-256 or P-384 certs for hash pinning.
+async fn build_wt_client(
+    addr: std::net::SocketAddr,
+    cert_hash_hex: &str,
+) -> wrpc_transport_web::Client {
+    let mut hash_bytes = [0u8; 32];
+    for (i, byte) in hash_bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&cert_hash_hex[i * 2..i * 2 + 2], 16).unwrap();
+    }
+
     let config = wtransport::ClientConfig::builder()
         .with_bind_default()
-        .with_no_cert_validation()
+        .with_server_certificate_hashes(vec![wtransport::tls::Sha256Digest::new(hash_bytes)])
         .build();
 
     let endpoint = wtransport::Endpoint::client(config).unwrap();
-    let url = format!("https://{addr}");
-    let conn = endpoint.connect(&url).await.unwrap();
+    let conn = endpoint.connect(format!("https://{addr}")).await.unwrap();
     wrpc_transport_web::Client::from(conn)
 }
 
@@ -29,8 +37,9 @@ async fn build_wt_client(addr: std::net::SocketAddr) -> wrpc_transport_web::Clie
 async fn wt_version_round_trip() {
     let harness = DaemonHarness::start_with_wt().await;
     let wt_addr = harness.wt_addr.unwrap();
+    let cert_hash = harness.cert_hash.as_deref().unwrap();
 
-    let wt_client = build_wt_client(wt_addr).await;
+    let wt_client = build_wt_client(wt_addr, cert_hash).await;
 
     let info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, ())
         .await
@@ -47,6 +56,7 @@ async fn wt_version_round_trip() {
 async fn uds_and_wt_coexist() {
     let harness = DaemonHarness::start_with_wt().await;
     let wt_addr = harness.wt_addr.unwrap();
+    let cert_hash = harness.cert_hash.as_deref().unwrap();
 
     // Query version over UDS.
     let uds_client = harness.client();
@@ -55,7 +65,7 @@ async fn uds_and_wt_coexist() {
         .expect("version via UDS");
 
     // Query version over WebTransport.
-    let wt_client = build_wt_client(wt_addr).await;
+    let wt_client = build_wt_client(wt_addr, cert_hash).await;
     let wt_info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, ())
         .await
         .expect("version via WT");
