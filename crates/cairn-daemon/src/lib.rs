@@ -11,3 +11,4 @@ pub mod registry;
 pub mod serve;
 pub mod signal;
 pub mod spawn;
+pub mod tls;
