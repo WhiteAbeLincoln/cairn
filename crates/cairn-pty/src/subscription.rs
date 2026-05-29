@@ -4,35 +4,47 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use bytes::Bytes;
 use tokio::sync::broadcast;
 
+pub use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+
 use crate::ClientId;
 use crate::ghostty::Command;
 
 /// Result of a successful [`crate::PtySession::subscribe`] call.
 ///
-/// `snapshot` is an opaque VT escape sequence representing the
-/// terminal state at the moment of subscription. Feed it to a
-/// VT100/xterm-compatible emulator (xterm.js, ghostty-web, etc.)
-/// before processing `stream` bytes.
+/// `snapshot` is an opaque VT escape sequence representing the terminal
+/// state at the moment of subscription. Feed it to a VT100/xterm-compatible
+/// emulator (xterm.js, ghostty-web, etc.) before processing further bytes.
 ///
-/// `stream` yields bytes that arrived strictly *after* the snapshot
+/// Use [`Subscription::recv`] (async) or [`Subscription::try_recv`]
+/// (non-blocking) to pull bytes that arrived strictly *after* the snapshot
 /// was captured — no gap, no overlap.
-/// `broadcast::error::RecvError::Lagged(_)` means the subscriber fell
-/// behind the broadcast capacity; recover by dropping this
-/// `Subscription` and calling `subscribe()` again — the new snapshot
-/// reflects current state and the new receiver starts clean.
-/// `RecvError::Closed` means the session has exited.
 ///
-/// While a `Subscription` is alive, the worker treats this client as
-/// a "primary" attached emulator: backend auto-replies to terminal
-/// queries (DA, XTVERSION, DSR, etc.) are suppressed so the client's
-/// emulator can answer instead. The primary count returns to zero
-/// when this Subscription is dropped.
+/// **Session-end semantics.** `recv()`/`try_recv()` return
+/// [`RecvError::Closed`] / [`TryRecvError::Closed`] when the underlying
+/// session has ended. The worker guarantees that the broadcast sender is
+/// dropped within a bounded delay of the child being reaped — after a
+/// brief drain to flush any output the kernel had queued on the master
+/// PTY at exit. That drain is essential on Linux, where the SIGCHLD reap
+/// frequently wins the race against `EPOLLHUP` propagation on the master
+/// FD; without it, subscribers would either block indefinitely on a
+/// still-open broadcast or lose the child's final bytes.
 ///
-/// Dropping the Subscription also sends `Command::Detach` to the
-/// worker so it can clear the leader seat if this client held it.
+/// `RecvError::Lagged(n)` means the subscriber fell behind the broadcast
+/// capacity; recover by dropping this `Subscription` and calling
+/// `subscribe()` again — the new snapshot reflects current state and the
+/// new receiver starts clean.
+///
+/// While a `Subscription` is alive, the worker treats this client as a
+/// "primary" attached emulator: backend auto-replies to terminal queries
+/// (DA, XTVERSION, DSR, etc.) are suppressed so the client's emulator can
+/// answer instead. The primary count returns to zero when this Subscription
+/// is dropped.
+///
+/// Dropping the Subscription also sends `Command::Detach` to the worker so
+/// it can clear the leader seat if this client held it.
 pub struct Subscription {
     pub snapshot: Bytes,
-    pub stream: broadcast::Receiver<Bytes>,
+    stream: broadcast::Receiver<Bytes>,
     _guard: SubscriptionGuard,
 }
 
@@ -56,6 +68,19 @@ impl Subscription {
                 cmd_tx,
             },
         }
+    }
+
+    /// Yield the next chunk of session output. Blocks until output is
+    /// available, the subscriber lags, or the session ends.
+    pub async fn recv(&mut self) -> Result<Bytes, RecvError> {
+        self.stream.recv().await
+    }
+
+    /// Non-blocking variant of [`recv`]. Returns `Empty` if no chunk is
+    /// available right now and the session is still live; returns `Closed`
+    /// if the session has ended.
+    pub fn try_recv(&mut self) -> Result<Bytes, TryRecvError> {
+        self.stream.try_recv()
     }
 }
 
@@ -162,5 +187,23 @@ mod tests {
             Command::Detach { client_id: id } => assert_eq!(id, client_id),
             other => panic!("expected Detach, got {:?}", std::mem::discriminant(&other)),
         }
+    }
+
+    /// `recv()` returns `Closed` once the broadcast sender is dropped — the
+    /// signal the worker emits during its post-exit drain.
+    #[tokio::test]
+    async fn recv_returns_closed_when_broadcast_sender_dropped() {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let (bcast_tx, bcast_rx) = broadcast::channel::<Bytes>(4);
+        let mut sub = Subscription::new(
+            Bytes::new(),
+            bcast_rx,
+            counter,
+            ClientId::from_u64(0),
+            dummy_channel(),
+        );
+        drop(bcast_tx);
+        let err = sub.recv().await.unwrap_err();
+        assert!(matches!(err, RecvError::Closed));
     }
 }

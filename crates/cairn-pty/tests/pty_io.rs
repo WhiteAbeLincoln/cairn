@@ -18,7 +18,7 @@ async fn read_until_contains(
     }
     let read = async {
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(chunk) => {
                     acc.extend_from_slice(&chunk);
                     if acc.windows(needle.len()).any(|w| w == needle) {
@@ -279,7 +279,7 @@ async fn subscribers_observe_close_on_child_exit() {
     // get Closed (not Lagged, not data).
     let saw_close = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(_) => continue,
                 Err(RecvError::Closed) => return true,
                 Err(RecvError::Lagged(_)) => continue,

@@ -87,7 +87,7 @@ pub async fn attach(
                     }
                     None => return, // client closed the inbound stream
                 },
-                out_chunk = sub.stream.recv() => match out_chunk {
+                out_chunk = sub.recv() => match out_chunk {
                     Ok(bytes) => {
                         if tx.send(vec![ServerEvent::Output(bytes)]).await.is_err() { return; }
                     }
@@ -100,7 +100,9 @@ pub async fn attach(
                         return;
                     }
                     Err(RecvError::Closed) => {
-                        // Child exited. wait() resolves immediately now.
+                        // Session ended. Subscription joins broadcast-close
+                        // and exit-publication internally; wait() resolves
+                        // immediately because exit_status is already set.
                         let exit = wire_exit(handle.wait().await);
                         let _ = tx.send(vec![ServerEvent::Exited(exit)]).await;
                         return;

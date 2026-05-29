@@ -67,7 +67,7 @@ async fn drop_kills_running_child() {
     // Closed). Without Drop killing the child, this loop would wait 60 s.
     let saw_close = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(_) => continue,
                 Err(RecvError::Closed) => return true,
                 Err(RecvError::Lagged(_)) => continue,
@@ -128,7 +128,7 @@ async fn write_after_exit_returns_closed() {
     // This replaces a fragile fixed sleep with an event-driven barrier.
     let saw_close = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            match sub.stream.recv().await {
+            match sub.recv().await {
                 Ok(_) => continue,
                 Err(RecvError::Closed) => return true,
                 Err(RecvError::Lagged(_)) => continue,

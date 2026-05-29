@@ -646,9 +646,25 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
             // exit has been reported; tokio::select! skips the branch on
             // subsequent iterations without polling s.child again.
             //
-            // Don't break here — the PTY may still have buffered output, and
-            // we want to keep handling commands (returning Closed via
-            // post-exit normalisation) until the caller drops GhosttyPty.
+            // Don't break here — we still want to keep handling commands
+            // (returning Closed via post-exit normalisation) until the
+            // caller drops GhosttyPty.
+            //
+            // After publishing the exit status we drain the master PTY for
+            // a brief window before dropping the broadcast sender. On Linux
+            // SIGCHLD frequently wins the race against EPOLLHUP on the
+            // master FD, so without this drain (a) the kernel-buffered tail
+            // of the child's output never gets vt_write'd into the snapshot
+            // and broadcast to live subscribers, and (b) subscribers waiting
+            // on the broadcast for `RecvError::Closed` would block until
+            // EPOLLHUP eventually propagates — which on a loaded box can be
+            // many seconds or never (the hang that this branch existed to
+            // prevent). With the drain, subscribers see a clean Closed
+            // within `EXIT_DRAIN`. Any data the kernel queues beyond the
+            // drain window is still picked up by subsequent pty.read calls
+            // (the outer loop continues running) and flows into the
+            // terminal state for future snapshots — it's only the live
+            // broadcast that ends here.
             status = s.child.wait(), if !exit_published => {
                 match status {
                     Ok(s_val) => { let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms(), s.exit_reason.take()))); }
@@ -658,6 +674,14 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     }
                 }
                 exit_published = true;
+                drain_pty_after_exit(
+                    &mut s.pty,
+                    &mut buf,
+                    &terminal,
+                    &bcast_tx,
+                    &pending_writes,
+                ).await;
+                *bcast_tx.borrow_mut() = None;
             },
         }
     }
@@ -687,6 +711,42 @@ async fn flush_pending_writes<P: Pty>(pending: &Rc<RefCell<VecDeque<Bytes>>>, pt
         if let Err(e) = pty.write_all(&chunk).await {
             tracing::warn!(error = %e, "PtyWriteFn flush failed; dropping response");
             return;
+        }
+    }
+}
+
+/// Maximum time spent draining the master PTY after the child is reaped,
+/// before we drop the broadcast sender and let subscribers observe `Closed`.
+/// 50ms is far longer than the kernel needs to flush a healthy slave-side
+/// write, but short enough that callers don't notice. See the comment on
+/// the child-wait arm in `run_session` for why this exists.
+const EXIT_DRAIN: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Read from the master PTY for up to [`EXIT_DRAIN`] after the child has
+/// been reaped, feeding any data into the terminal and broadcasting it.
+/// Returns once the master signals EOF/IO error, or the deadline elapses.
+async fn drain_pty_after_exit<P: Pty>(
+    pty: &mut P,
+    buf: &mut [u8],
+    terminal: &Rc<RefCell<libghostty_vt::Terminal<'_, '_>>>,
+    bcast_tx: &Rc<RefCell<Option<broadcast::Sender<Bytes>>>>,
+    pending_writes: &Rc<RefCell<VecDeque<Bytes>>>,
+) {
+    let deadline = tokio::time::Instant::now() + EXIT_DRAIN;
+    loop {
+        tokio::select! {
+            res = pty.read(buf) => match res {
+                Ok(0) | Err(_) => return,
+                Ok(n) => {
+                    let chunk = Bytes::copy_from_slice(&buf[..n]);
+                    terminal.borrow_mut().vt_write(&chunk);
+                    if let Some(tx) = bcast_tx.borrow().as_ref() {
+                        let _ = tx.send(chunk);
+                    }
+                    flush_pending_writes(pending_writes, pty).await;
+                }
+            },
+            _ = tokio::time::sleep_until(deadline) => return,
         }
     }
 }
