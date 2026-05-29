@@ -11,10 +11,10 @@ use tokio_util::sync::CancellationToken;
 #[command(version, about = "The cairn session-manager daemon")]
 struct Args {
     /// Listener endpoints. Repeat or comma-separate. Examples:
-    ///   unix                  — default UDS path
-    ///   unix:///path/to.sock  — explicit UDS path
-    ///   wt://0.0.0.0:9443     — WebTransport listener
-    ///   /path/to.sock         — bare path treated as unix://
+    ///   unix                    — default UDS path
+    ///   unix:///path/to.sock    — explicit UDS path
+    ///   https://0.0.0.0:9443    — WebTransport listener (W3C scheme)
+    ///   /path/to.sock           — bare path treated as unix://
     #[arg(
         long,
         env = "CAIRN_LISTEN",
@@ -131,14 +131,16 @@ fn main() -> anyhow::Result<()> {
     if has_wt {
         // Warn if WT is configured but cert/key are missing (not fatal — WT isn't wired yet).
         if cfg.wt_cert.is_none() || cfg.wt_key.is_none() {
-            tracing::warn!("wt:// listener configured but --wt-cert / --wt-key not set");
+            tracing::warn!(
+                "https:// (WebTransport) listener configured but --wt-cert / --wt-key not set"
+            );
         }
         // Warn if auth=none is used with a non-loopback WT listener.
         if cfg.auth_backends.iter().any(|b| b == "none")
             && cfg.listeners.iter().any(|l| l.is_wt() && !l.is_loopback())
         {
             tracing::warn!(
-                "auth=none with a non-loopback wt:// listener exposes the daemon without authentication"
+                "auth=none with a non-loopback https:// listener exposes the daemon without authentication"
             );
         }
     }

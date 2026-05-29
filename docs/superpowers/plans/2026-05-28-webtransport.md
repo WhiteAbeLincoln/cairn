@@ -2,6 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-05-29 amendment.** Post-implementation, the `wt://` URL scheme
+> used in this plan has been replaced with the standard `https://` scheme
+> defined by the W3C WebTransport spec. `wt://` is not an IANA-registered
+> URI scheme; a future WebSocket transport would use the standard
+> `wss://`, so `https://` already unambiguously selects WebTransport.
+> Read `https://host:port` wherever the plan body says `wt://host:port`.
+
 **Goal:** Add a WebTransport (QUIC/HTTP/3) listener to cairn-daemon and WebTransport client support to cairn-client, enabling remote daemon access alongside the existing Unix domain socket transport.
 
 **Architecture:** The daemon gains an optional WT listener via `wrpc-transport-web` + `wtransport`. Both transports feed the same `Daemon` handler through a unified `ConnCtx { identity: Identity }`. Authentication is pluggable: an `AuthBackend` trait chain with `none` and `tailscale` (Tailscale LocalAPI) implementations for v0. TLS uses user-provided PEM certs or auto-generated self-signed certs with SPKI hash export for CLI pinning. The CLI client gains a `Client` enum wrapping both UDS and WT transports with a forwarding `Invoke` impl. Transports are individually selectable via `--listen unix`/`--listen wt://host:port`.

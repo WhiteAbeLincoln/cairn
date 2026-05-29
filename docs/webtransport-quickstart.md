@@ -1,10 +1,14 @@
 # WebTransport quickstart
 
+WebTransport endpoints use the `https://` URL scheme — the one defined by
+the W3C WebTransport spec. (Earlier revisions of cairn used a `wt://`
+alias, but that scheme is not registered with IANA and has been removed.)
+
 ## Without certificates (self-signed, same machine)
 
 **Terminal 1 -- daemon:**
 ```bash
-cargo run -p cairn-daemon -- --listen unix --listen wt://127.0.0.1:4433 --auth none
+cargo run -p cairn-daemon -- --listen unix --listen https://127.0.0.1:4433 --auth none
 ```
 
 The daemon generates a self-signed ECDSA P-256 cert, writes the hash to `$TMPDIR/cairn/cert-hash`, and logs it. Both UDS and WT listeners start.
@@ -12,11 +16,11 @@ The daemon generates a self-signed ECDSA P-256 cert, writes the hash to `$TMPDIR
 **Terminal 2 -- client over WT:**
 ```bash
 # The CLI auto-loads the cert hash from $TMPDIR/cairn/cert-hash for loopback
-cargo run -p cairn -- --daemon wt://127.0.0.1:4433 version
+cargo run -p cairn -- --daemon https://127.0.0.1:4433 version
 
 # Create a session and list it
-cargo run -p cairn -- --daemon wt://127.0.0.1:4433 run -- echo hello
-cargo run -p cairn -- --daemon wt://127.0.0.1:4433 list
+cargo run -p cairn -- --daemon https://127.0.0.1:4433 run -- echo hello
+cargo run -p cairn -- --daemon https://127.0.0.1:4433 list
 ```
 
 Compare with UDS (should show the same sessions):
@@ -37,7 +41,7 @@ tailscale cert --cert-path /tmp/cairn-ts.crt --key-path /tmp/cairn-ts.key your-h
 # Start daemon on the Tailscale IP
 cargo run -p cairn-daemon -- \
   --listen unix \
-  --listen wt://0.0.0.0:4433 \
+  --listen https://0.0.0.0:4433 \
   --wt-cert /tmp/cairn-ts.crt \
   --wt-key /tmp/cairn-ts.key \
   --auth tailscale
@@ -46,8 +50,8 @@ cargo run -p cairn-daemon -- \
 From another Tailscale machine:
 ```bash
 # Tailscale certs are CA-signed, so no --cert-hash needed
-cargo run -p cairn -- --daemon wt://your-hostname.ts.net:4433 version
-cargo run -p cairn -- --daemon wt://your-hostname.ts.net:4433 whoami
+cargo run -p cairn -- --daemon https://your-hostname.ts.net:4433 version
+cargo run -p cairn -- --daemon https://your-hostname.ts.net:4433 whoami
 # ^ should show your Tailscale login name
 ```
 
@@ -55,7 +59,7 @@ cargo run -p cairn -- --daemon wt://your-hostname.ts.net:4433 whoami
 
 ```bash
 # Start daemon in background with both listeners
-cargo run -p cairn-daemon -- --listen unix --listen wt://127.0.0.1:4433 --auth none &
+cargo run -p cairn-daemon -- --listen unix --listen https://127.0.0.1:4433 --auth none &
 sleep 1
 
 # UDS
@@ -63,8 +67,8 @@ cargo run -p cairn -- version
 cargo run -p cairn -- whoami
 
 # WT (auto-pins cert hash for loopback)
-cargo run -p cairn -- --daemon wt://127.0.0.1:4433 version
-cargo run -p cairn -- --daemon wt://127.0.0.1:4433 whoami
+cargo run -p cairn -- --daemon https://127.0.0.1:4433 version
+cargo run -p cairn -- --daemon https://127.0.0.1:4433 whoami
 
 # Kill daemon
 kill %1

@@ -15,30 +15,49 @@ pub enum ListenerConfig {
 /// Accepted forms:
 /// - `unix` — use the default socket path
 /// - `unix:///absolute/path` — explicit UDS path
-/// - `wt://host:port` — WebTransport listener
+/// - `https://host:port` — WebTransport listener (the W3C
+///   WebTransport URL scheme; a future WebSocket listener would
+///   use `wss://`)
 /// - `/absolute/path` — bare path, treated as `unix://`
 pub fn parse_listener(s: &str) -> anyhow::Result<ListenerConfig> {
     if s == "unix" {
         return Ok(ListenerConfig::Unix(crate::config::default_socket_path()));
     }
-    if let Some(rest) = s.strip_prefix("unix://") {
-        if rest.is_empty() {
-            anyhow::bail!("`--listen unix://` requires a socket path");
-        }
-        return Ok(ListenerConfig::Unix(PathBuf::from(rest)));
-    }
-    if let Some(rest) = s.strip_prefix("wt://") {
-        let addr: SocketAddr = rest
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid wt:// address {rest:?}: {e}"))?;
-        return Ok(ListenerConfig::WebTransport(addr));
-    }
     if s.starts_with('/') {
         return Ok(ListenerConfig::Unix(PathBuf::from(s)));
     }
-    anyhow::bail!(
-        "unrecognized --listen value {s:?}; expected `unix`, `unix:///path`, or `wt://host:port`"
-    )
+
+    let url =
+        url::Url::parse(s).map_err(|e| anyhow::anyhow!("invalid --listen value {s:?}: {e}"))?;
+
+    match url.scheme() {
+        "unix" => {
+            let path = url.path();
+            if path.is_empty() {
+                anyhow::bail!("`--listen {s}` requires a socket path");
+            }
+            Ok(ListenerConfig::Unix(PathBuf::from(path)))
+        }
+        "https" => {
+            // WebTransport listeners bind to a socket; the URL form is
+            // only used here as a transport selector. A `host:port` with
+            // a hostname requires DNS to bind, which we don't do — IP
+            // literals only.
+            let host = url
+                .host_str()
+                .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a host"))?;
+            let port = url
+                .port()
+                .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a port"))?;
+            let addr: SocketAddr = format!("{host}:{port}")
+                .parse()
+                .map_err(|e| anyhow::anyhow!("--listen {s:?} must be IP:port (no DNS): {e}"))?;
+            Ok(ListenerConfig::WebTransport(addr))
+        }
+        other => anyhow::bail!(
+            "unrecognized --listen scheme {other:?} in {s:?}; expected `unix`, `unix:///path`, or `https://host:port`"
+        ),
+    }
 }
 
 impl ListenerConfig {
@@ -76,8 +95,8 @@ mod tests {
     }
 
     #[test]
-    fn wt_uri_extracts_socket_addr() {
-        let l = parse_listener("wt://127.0.0.1:9443").unwrap();
+    fn https_uri_extracts_socket_addr() {
+        let l = parse_listener("https://127.0.0.1:9443").unwrap();
         assert_eq!(
             l,
             ListenerConfig::WebTransport("127.0.0.1:9443".parse().unwrap())
@@ -99,8 +118,16 @@ mod tests {
     }
 
     #[test]
-    fn invalid_wt_addr_rejected() {
-        assert!(parse_listener("wt://not-an-addr").is_err());
+    fn invalid_https_addr_rejected() {
+        // Hostnames (no DNS-at-bind-time) and bare paths are not valid.
+        assert!(parse_listener("https://not-an-addr").is_err());
+    }
+
+    #[test]
+    fn https_hostname_rejected() {
+        // The daemon binds to a socket; hostnames would need DNS, which
+        // we don't do at listen time.
+        assert!(parse_listener("https://myhost.example:9443").is_err());
     }
 
     #[test]

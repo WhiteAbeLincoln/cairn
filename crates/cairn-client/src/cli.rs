@@ -15,9 +15,10 @@ pub struct Cli {
     /// `SO_PEERCRED` plus filesystem permissions on the socket, so
     /// `--token` is not consulted for this transport.
     ///
-    /// `wt://host:port` and `https://host:port` connect to a remote
-    /// daemon over WebTransport (QUIC). `--cert-hash` (or
-    /// `CAIRN_CERT_HASH`) is used to pin self-signed certificates.
+    /// `https://host:port[/path]` connects to a remote daemon over
+    /// WebTransport (QUIC); the URL scheme is the one defined by the
+    /// W3C WebTransport spec. `--cert-hash` (or `CAIRN_CERT_HASH`) is
+    /// used to pin self-signed certificates.
     ///
     /// If unset, defaults to the platform-standard local socket
     /// (`$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux,

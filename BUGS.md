@@ -29,6 +29,10 @@ The cairn client is unresponsive to keystrokes (but responds when an external `c
 User might not know if it's set in a config file or env var
 (not the case right now).
 
+## whoami should show the authentication method
+
+tailscale, jwt, local unix
+
 ## Attach on running session doesn't place cursor correctly
 
 **Known cairn-pty snapshot gap.** The daemon sends `clear_screen()` then the
@@ -39,13 +43,6 @@ session's actual cursor is. Alt-screen, application-cursor-keys, and
 scrolling-region gaps compound this for TUI apps. Pinned by
 `snapshot_preserves_cursor_position` (and 10 other `#[should_panic]` tests)
 in `cairn-pty/tests/snapshot_completeness.rs`.
-
-## `--daemon wt://` rejects hostnames
-
-`connect.rs::parse_wt()` parses the address as `SocketAddr`, which only
-accepts IP:port. `--daemon wt://myhost.ts.net:4433` fails with a parse
-error. Needs `tokio::net::lookup_host()` to resolve DNS, keeping the
-original hostname as the `host` field for TLS SNI.
 
 ## Tailscale auth backend not implemented on Linux
 

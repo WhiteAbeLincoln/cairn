@@ -8,7 +8,6 @@
 //! lands, the only edits are inside this file: add an `Endpoint` variant, add
 //! a `Client` enum variant, write the forwarding `Invoke` impl.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
@@ -46,12 +45,15 @@ impl Invoke for Client {
 
 /// A resolved daemon endpoint. `Unix` is the local unix-socket transport;
 /// `WebTransport` is the QUIC-based remote transport.
+///
+/// WebTransport endpoints use the standard `https://` URL scheme (per
+/// W3C WebTransport). Path and query are passed through to the server's
+/// H3 `:path`; fragment is rejected as it has no on-wire meaning.
 #[derive(Debug)]
 pub enum Endpoint {
     Unix(PathBuf),
     WebTransport {
-        addr: SocketAddr,
-        host: String,
+        url: url::Url,
         cert_hash: Option<String>,
     },
 }
@@ -68,41 +70,55 @@ impl Endpoint {
     }
 
     fn from_uri(s: &str, cert_hash: Option<String>) -> Result<Self> {
-        if let Some(rest) = s.strip_prefix("unix://") {
-            if rest.is_empty() {
-                bail!("`--daemon unix://` has no socket path");
-            }
-            return Ok(Self::Unix(PathBuf::from(rest)));
-        }
+        // Bare absolute path is a shorthand for unix:// — not a URI form, so
+        // it's the one input we can't hand to `url::Url::parse`.
         if s.starts_with('/') {
             return Ok(Self::Unix(PathBuf::from(s)));
         }
-        if let Some(rest) = s.strip_prefix("wt://") {
-            return Self::parse_wt(rest, cert_hash);
+
+        let url = url::Url::parse(s)
+            .map_err(|e| anyhow::anyhow!("invalid --daemon endpoint {s:?}: {e}"))?;
+
+        match url.scheme() {
+            "unix" => {
+                let path = url.path();
+                if path.is_empty() {
+                    bail!("`--daemon {s}` has no socket path");
+                }
+                Ok(Self::Unix(PathBuf::from(path)))
+            }
+            "https" => Self::parse_https(&url, cert_hash),
+            "ws" | "wss" => {
+                bail!("WebSocket transport is not supported")
+            }
+            other => bail!(
+                "unrecognized --daemon scheme {other:?} in {s:?} (expected `unix://` or `https://`)"
+            ),
         }
-        if let Some(rest) = s.strip_prefix("https://") {
-            return Self::parse_wt(rest, cert_hash);
-        }
-        if s.starts_with("ws://") || s.starts_with("wss://") {
-            bail!("WebSocket transport is not supported; use wt:// for WebTransport");
-        }
-        bail!(
-            "unrecognized --daemon endpoint {s:?} (expected `unix:///path/to/cairn.sock`, `wt://host:port`, or `https://host:port`)"
-        );
     }
 
-    fn parse_wt(host_port: &str, cert_hash: Option<String>) -> Result<Self> {
-        let addr: SocketAddr = host_port
-            .parse()
-            .map_err(|e| anyhow::anyhow!("invalid WebTransport address {host_port:?}: {e}"))?;
-        let host = host_port
-            .rsplit_once(':')
-            .map(|(h, _)| h.to_string())
-            .unwrap_or_else(|| addr.ip().to_string());
+    fn parse_https(url: &url::Url, cert_hash: Option<String>) -> Result<Self> {
+        let host = url
+            .host()
+            .ok_or_else(|| anyhow::anyhow!("WebTransport endpoint {url} is missing a host"))?;
+        if url.port().is_none() {
+            bail!("WebTransport endpoint {url} is missing a port");
+        }
+        if url.fragment().is_some() {
+            bail!("WebTransport endpoint {url} must not include a fragment (not sent on the wire)");
+        }
 
-        // Auto-load cert hash from file for localhost endpoints.
+        // Auto-load cert hash from file for loopback endpoints. Hostnames
+        // other than `localhost` are not resolved here; users pointing at a
+        // hostname that happens to resolve to loopback need to pass
+        // `--cert-hash` explicitly.
+        let is_loopback = match host {
+            url::Host::Domain(d) => d.eq_ignore_ascii_case("localhost"),
+            url::Host::Ipv4(ip) => ip.is_loopback(),
+            url::Host::Ipv6(ip) => ip.is_loopback(),
+        };
         let cert_hash = cert_hash.or_else(|| {
-            if addr.ip().is_loopback() {
+            if is_loopback {
                 let hash_path = runtime_dir().join("cert-hash");
                 std::fs::read_to_string(&hash_path)
                     .ok()
@@ -113,8 +129,7 @@ impl Endpoint {
         });
 
         Ok(Self::WebTransport {
-            addr,
-            host,
+            url: url.clone(),
             cert_hash,
         })
     }
@@ -124,7 +139,7 @@ impl Endpoint {
     pub fn label(&self) -> String {
         match self {
             Self::Unix(p) => format!("unix://{}", p.display()),
-            Self::WebTransport { addr, .. } => format!("wt://{addr}"),
+            Self::WebTransport { url, .. } => url.to_string(),
         }
     }
 
@@ -145,19 +160,14 @@ impl Endpoint {
     pub async fn client(&self) -> Result<Client> {
         match self {
             Self::Unix(p) => Ok(Client::Unix(wrpc_transport::unix::Client::from(p.clone()))),
-            Self::WebTransport {
-                addr,
-                host,
-                cert_hash,
-            } => {
-                let config = build_wt_client_config(host, cert_hash.as_deref())?;
+            Self::WebTransport { url, cert_hash } => {
+                let config = build_wt_client_config(url.as_str(), cert_hash.as_deref())?;
                 let endpoint = wtransport::Endpoint::client(config)
                     .map_err(|e| anyhow::anyhow!("creating WT endpoint: {e}"))?;
-                let url = format!("https://{addr}");
                 let conn = endpoint
-                    .connect(&url)
+                    .connect(url.as_str())
                     .await
-                    .map_err(|e| anyhow::anyhow!("WebTransport connect to {addr}: {e}"))?;
+                    .map_err(|e| anyhow::anyhow!("WebTransport connect to {url}: {e}"))?;
                 Ok(Client::WebTransport(wrpc_transport_web::Client::from(conn)))
             }
         }
@@ -263,28 +273,53 @@ mod tests {
     }
 
     #[test]
-    fn wt_uri_yields_webtransport_endpoint() {
-        let ep = Endpoint::resolve(Some("wt://192.168.1.10:4433"), None).unwrap();
+    fn https_uri_yields_webtransport_endpoint() {
+        let ep = Endpoint::resolve(Some("https://192.168.1.10:4433"), None).unwrap();
         assert!(matches!(ep, Endpoint::WebTransport { .. }));
-        assert_eq!(ep.label(), "wt://192.168.1.10:4433");
+        assert_eq!(ep.label(), "https://192.168.1.10:4433/");
     }
 
     #[test]
-    fn https_uri_aliases_to_wt() {
-        let ep = Endpoint::resolve(Some("https://10.0.0.1:4433"), None).unwrap();
+    fn https_uri_accepts_hostname() {
+        let ep = Endpoint::resolve(Some("https://myhost.ts.net:4433"), None).unwrap();
         assert!(matches!(ep, Endpoint::WebTransport { .. }));
+        assert_eq!(ep.label(), "https://myhost.ts.net:4433/");
     }
 
     #[test]
-    fn wt_is_gone_always_returns_false() {
-        let ep = Endpoint::resolve(Some("wt://192.168.1.10:4433"), None).unwrap();
+    fn https_uri_accepts_bracketed_ipv6() {
+        let ep = Endpoint::resolve(Some("https://[2001:db8::1]:4433"), None).unwrap();
+        assert_eq!(ep.label(), "https://[2001:db8::1]:4433/");
+    }
+
+    #[test]
+    fn https_uri_accepts_path() {
+        // https://example.com:4999/wt is the canonical WebTransport example
+        // from the W3C spec. The path is sent as the H3 :path pseudo-header.
+        let ep = Endpoint::resolve(Some("https://example.com:4999/wt"), None).unwrap();
+        assert_eq!(ep.label(), "https://example.com:4999/wt");
+    }
+
+    #[test]
+    fn https_uri_rejects_missing_port() {
+        assert!(Endpoint::resolve(Some("https://myhost.ts.net"), None).is_err());
+    }
+
+    #[test]
+    fn https_uri_rejects_fragment() {
+        assert!(Endpoint::resolve(Some("https://myhost.ts.net:4433#x"), None).is_err());
+    }
+
+    #[test]
+    fn https_is_gone_always_returns_false() {
+        let ep = Endpoint::resolve(Some("https://192.168.1.10:4433"), None).unwrap();
         assert!(!ep.is_gone());
     }
 
     #[test]
-    fn wt_with_cert_hash() {
+    fn https_with_cert_hash() {
         let hash = "a".repeat(64);
-        let ep = Endpoint::resolve(Some("wt://10.0.0.1:4433"), Some(hash.clone())).unwrap();
+        let ep = Endpoint::resolve(Some("https://10.0.0.1:4433"), Some(hash.clone())).unwrap();
         match ep {
             Endpoint::WebTransport { cert_hash, .. } => assert_eq!(cert_hash, Some(hash)),
             _ => panic!("expected WebTransport"),

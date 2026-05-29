@@ -4,6 +4,14 @@
 
 Design. Adds a WebTransport listener to the daemon and WebTransport endpoint support to the CLI client, enabling remote access over QUIC/HTTP/3. Builds on the transport and auth decisions in `2026-05-26-daemon-protocol-design.md`.
 
+> **2026-05-29 amendment.** The `wt://` URL scheme referenced throughout
+> this doc has been dropped in favour of the standard `https://` scheme
+> defined by the W3C WebTransport spec. `wt://` is not registered with
+> IANA; treating it as a real scheme was misleading. A future WebSocket
+> implementation would use the standard `wss://`, so `https://` is
+> already unambiguous as the WebTransport selector. Wherever this doc
+> says `wt://host:port`, read `https://host:port`.
+
 ## Summary
 
 cairn-daemon gains an optional WebTransport (HTTP/3 over QUIC) listener alongside the existing Unix domain socket. cairn-client gains the ability to connect to a remote daemon via a `wt://` or `https://` endpoint. Authentication is pluggable: v0 ships Tailscale (LocalAPI `whois`) and `none` (loopback-only) backends, with SSH-key and JWT-token backends designed into the trait for v1.

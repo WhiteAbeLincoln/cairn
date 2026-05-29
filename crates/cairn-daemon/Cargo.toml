@@ -43,6 +43,7 @@ humantime = "2"
 ring = "0.17"
 time = { version = "0.3", features = ["std"] }
 rustls-pki-types = "1"
+url = { version = "2.5" }
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }
