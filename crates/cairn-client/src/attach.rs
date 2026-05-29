@@ -185,11 +185,9 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
                 signal,
                 reason,
             } => {
-                if raw_mode {
-                    if let Some(reason) = reason {
-                        drop(guard);
-                        eprintln!("cairn: {reason}");
-                    }
+                if raw_mode && let Some(reason) = reason {
+                    drop(guard);
+                    eprintln!("cairn: {reason}");
                 }
                 return Ok(exit_code(code, signal));
             }

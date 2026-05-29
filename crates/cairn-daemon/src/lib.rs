@@ -5,6 +5,7 @@ pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod handlers;
+pub mod identity;
 pub mod registry;
 pub mod serve;
 pub mod signal;

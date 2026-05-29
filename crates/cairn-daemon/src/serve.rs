@@ -3,16 +3,14 @@
 
 use std::sync::Arc;
 
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf, UCred};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio_util::sync::CancellationToken;
 use wrpc_transport::frame::Accept;
 
-/// Per-connection context handed to every `Handler` method. On UDS the peer
-/// credentials identify the caller (for `whoami` and audit). The future WT
-/// transport will fill the same shape with the authenticated token identity.
-#[derive(Clone, Copy, Debug)]
+/// Per-connection context handed to every `Handler` method.
+#[derive(Clone, Debug)]
 pub struct ConnCtx {
-    pub peer: Option<UCred>,
+    pub identity: crate::identity::Identity,
 }
 
 /// A `UnixListener` whose `accept` captures `SO_PEERCRED` into `ConnCtx`
@@ -27,8 +25,12 @@ impl Accept for &PeerCredListener {
     async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
         let (stream, _addr) = self.0.accept().await?;
         let peer = stream.peer_cred().ok();
+        let identity = crate::identity::Identity::Unix {
+            uid: peer.map(|c| c.uid()).unwrap_or(u32::MAX),
+            username: peer.map(|c| c.uid()).and_then(username_for),
+        };
         let (rx, tx) = stream.into_split();
-        Ok((ConnCtx { peer }, tx, rx))
+        Ok((ConnCtx { identity }, tx, rx))
     }
 }
 
@@ -157,6 +159,15 @@ async fn drain_sessions(daemon: &crate::daemon::Daemon, grace: std::time::Durati
     // Dropping the registry's Arcs (on daemon teardown) is the final SIGKILL backstop.
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────
+
+fn username_for(uid: u32) -> Option<String> {
+    nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
+        .ok()
+        .flatten()
+        .map(|u| u.name)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -176,7 +187,13 @@ mod tests {
         });
 
         let (ctx, _tx, _rx) = (&pl).accept().await.unwrap();
-        assert_eq!(ctx.peer.unwrap().uid(), nix_geteuid());
+        match &ctx.identity {
+            crate::identity::Identity::Unix { uid, username } => {
+                assert_eq!(*uid, nix_geteuid());
+                assert!(username.is_some());
+            }
+            other => panic!("expected Unix identity, got {other:?}"),
+        }
         connect.await.unwrap();
     }
 

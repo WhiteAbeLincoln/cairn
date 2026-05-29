@@ -13,25 +13,24 @@ pub fn version() -> VersionInfo {
     }
 }
 
-/// UDS is pre-authenticated by the kernel; first-message auth is a WebTransport
-/// concern. Accept any token unconditionally on this transport.
+/// UDS is pre-authenticated by the kernel; first-message auth is a
+/// WebTransport concern. Accept any token unconditionally on this transport.
 pub fn authenticate(_token: String) -> Result<(), WireError> {
     Ok(())
 }
 
-/// The peer identity from `SO_PEERCRED`. v0 reports the numeric uid (see
-/// [`username_for`] for the deferred name-resolution hook).
 pub fn whoami(ctx: &ConnCtx) -> Result<String, WireError> {
-    let uid = ctx.peer.map(|c| c.uid());
-    Ok(match uid {
-        Some(uid) => username_for(uid).unwrap_or_else(|| uid.to_string()),
-        None => "unknown".to_string(),
-    })
-}
-
-fn username_for(uid: u32) -> Option<String> {
-    nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
-        .ok()
-        .flatten()
-        .map(|u| u.name)
+    use crate::identity::Identity;
+    let name = match &ctx.identity {
+        Identity::Unix { uid, username } => username.clone().unwrap_or_else(|| uid.to_string()),
+        other => {
+            let dn = other.display_name();
+            if dn.is_empty() {
+                "unknown".to_string()
+            } else {
+                dn.to_string()
+            }
+        }
+    };
+    Ok(name)
 }
