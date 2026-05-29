@@ -5,8 +5,14 @@ use std::net::SocketAddr;
 use crate::auth::{AuthBackend, AuthContext, AuthError, AuthPhase};
 use crate::identity::Identity;
 
+type HttpClient = hyper_util::client::legacy::Client<
+    hyper_util::client::legacy::connect::HttpConnector,
+    http_body_util::Empty<bytes::Bytes>,
+>;
+
 pub struct TailscaleBackend {
     base_url: String,
+    client: HttpClient,
 }
 
 impl TailscaleBackend {
@@ -18,7 +24,10 @@ impl TailscaleBackend {
             // which requires hyper-util's UDS connector. For now, fall through to TCP.
             "http://localhost".to_string()
         };
-        Ok(Self { base_url })
+        let client =
+            hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+                .build_http();
+        Ok(Self { base_url, client })
     }
 }
 
@@ -63,23 +72,18 @@ impl TailscaleBackend {
 
     async fn http_get(&self, url: &str) -> Result<String, WhoisError> {
         use http_body_util::BodyExt as _;
-        use hyper_util::client::legacy::Client;
-        use hyper_util::rt::TokioExecutor;
-
-        type EmptyBody = http_body_util::Empty<bytes::Bytes>;
-
-        let client: Client<_, EmptyBody> = Client::builder(TokioExecutor::new()).build_http();
 
         let req = hyper::Request::get(url)
-            .body(EmptyBody::new())
+            .body(http_body_util::Empty::new())
             .map_err(|e| WhoisError::Unavailable(e.to_string()))?;
 
-        let resp = client
-            .request(req)
-            .await
-            .map_err(|e: hyper_util::client::legacy::Error| {
-                WhoisError::Unavailable(e.to_string())
-            })?;
+        let resp =
+            self.client
+                .request(req)
+                .await
+                .map_err(|e: hyper_util::client::legacy::Error| {
+                    WhoisError::Unavailable(e.to_string())
+                })?;
 
         if resp.status() == hyper::StatusCode::NOT_FOUND {
             return Err(WhoisError::NotFound);

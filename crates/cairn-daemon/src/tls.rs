@@ -133,6 +133,22 @@ pub fn hex_encode(bytes: &[u8]) -> String {
         })
 }
 
+/// Decode a 64-char hex string into a 32-byte array (SHA-256 digest).
+pub fn hex_decode(hex: &str) -> Result<[u8; 32]> {
+    let hex = hex.trim();
+    anyhow::ensure!(
+        hex.len() == 64,
+        "cert hash must be 64 hex chars (32 bytes), got {}",
+        hex.len()
+    );
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .with_context(|| format!("invalid hex at position {}", i * 2))?;
+    }
+    Ok(bytes)
+}
+
 /// Returns `true` if the file's modification time is older than 13 days,
 /// which means a 14-day cert written alongside it is expired (or nearly so).
 fn is_expired(path: &Path) -> bool {

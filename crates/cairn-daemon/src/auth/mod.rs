@@ -65,34 +65,18 @@ impl AuthChain {
         Self { backends }
     }
 
-    /// Whether any backend in the chain requires a first-message token.
-    pub fn has_first_message_backends(&self) -> bool {
-        self.backends
-            .iter()
-            .any(|b| b.phase() == AuthPhase::FirstMessage)
-    }
-
     /// Run all transport-phase backends. First success wins.
     pub async fn try_transport(&self, ctx: &AuthContext) -> Result<Identity, AuthError> {
-        for backend in &self.backends {
-            if backend.phase() != AuthPhase::Transport {
-                continue;
-            }
-            match backend.authenticate(ctx).await {
-                Ok(identity) => return Ok(identity),
-                Err(AuthError::NotApplicable) => continue,
-                Err(e @ AuthError::Rejected(_)) => return Err(e),
-            }
-        }
-        Err(AuthError::NotApplicable)
+        self.run_phase(AuthPhase::Transport, ctx).await
     }
 
     /// Run all first-message-phase backends.
     pub async fn try_first_message(&self, ctx: &AuthContext) -> Result<Identity, AuthError> {
-        for backend in &self.backends {
-            if backend.phase() != AuthPhase::FirstMessage {
-                continue;
-            }
+        self.run_phase(AuthPhase::FirstMessage, ctx).await
+    }
+
+    async fn run_phase(&self, phase: AuthPhase, ctx: &AuthContext) -> Result<Identity, AuthError> {
+        for backend in self.backends.iter().filter(|b| b.phase() == phase) {
             match backend.authenticate(ctx).await {
                 Ok(identity) => return Ok(identity),
                 Err(AuthError::NotApplicable) => continue,

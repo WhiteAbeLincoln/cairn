@@ -39,14 +39,20 @@ impl Default for DaemonConfig {
     }
 }
 
-/// `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux, `$TMPDIR/cairn/cairn.sock`
-/// otherwise. The `cairn/` parent is daemon-owned so `dir_mode` governs it.
-pub fn default_socket_path() -> PathBuf {
+/// The daemon's runtime directory: `$XDG_RUNTIME_DIR/cairn` or
+/// `$TMPDIR/cairn` or `/tmp/cairn`.
+pub fn runtime_dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("cairn").join("cairn.sock")
+    base.join("cairn")
+}
+
+/// `$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux, `$TMPDIR/cairn/cairn.sock`
+/// otherwise. The `cairn/` parent is daemon-owned so `dir_mode` governs it.
+pub fn default_socket_path() -> PathBuf {
+    runtime_dir().join("cairn.sock")
 }
 
 fn default_shell() -> String {

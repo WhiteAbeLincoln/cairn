@@ -26,10 +26,10 @@ impl Accept for &PeerCredListener {
 
     async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
         let (stream, _addr) = self.0.accept().await?;
-        let peer = stream.peer_cred().ok();
+        let uid = stream.peer_cred().ok().map(|c| c.uid()).unwrap_or(u32::MAX);
         let identity = crate::identity::Identity::Unix {
-            uid: peer.map(|c| c.uid()).unwrap_or(u32::MAX),
-            username: peer.map(|c| c.uid()).and_then(username_for),
+            uid,
+            username: username_for(uid),
         };
         let (rx, tx) = stream.into_split();
         Ok((ConnCtx { identity }, tx, rx))
@@ -135,7 +135,7 @@ pub async fn serve(
 
     if let Some(addr) = wt_addr {
         let (tls, cert_path, key_path) = resolve_tls(&daemon.cfg)?;
-        let rt_dir = runtime_dir();
+        let rt_dir = crate::config::runtime_dir();
         std::fs::create_dir_all(&rt_dir)?;
         tls.export_hash(&rt_dir.join("cert-hash"))?;
 
@@ -189,10 +189,6 @@ pub async fn serve(
                 }
             }
         }));
-    }
-
-    if tasks.is_empty() {
-        anyhow::bail!("no listeners configured");
     }
 
     // ── Shutdown ─────────────────────────────────────────────────────────
@@ -378,7 +374,7 @@ async fn serve_wt_connection(
 /// Returns the `TlsConfig` and the filesystem paths to cert and key PEM files.
 /// If the user provided `--wt-cert` and `--wt-key`, those paths are used.
 /// Otherwise a self-signed certificate is generated (or reused) under
-/// `runtime_dir()/tls/`.
+/// `crate::config::runtime_dir()/tls/`.
 fn resolve_tls(
     cfg: &crate::config::DaemonConfig,
 ) -> anyhow::Result<(crate::tls::TlsConfig, PathBuf, PathBuf)> {
@@ -388,22 +384,12 @@ fn resolve_tls(
             Ok((tls, cert.clone(), key.clone()))
         }
         (None, None) => {
-            let tls_dir = runtime_dir().join("tls");
+            let tls_dir = crate::config::runtime_dir().join("tls");
             let tls = crate::tls::TlsConfig::self_signed(&tls_dir)?;
             Ok((tls, tls_dir.join("cert.pem"), tls_dir.join("key.pem")))
         }
         _ => anyhow::bail!("--wt-cert and --wt-key must both be provided, or both omitted"),
     }
-}
-
-/// The daemon's runtime directory: `$XDG_RUNTIME_DIR/cairn` or `$TMPDIR/cairn`
-/// or `/tmp/cairn`.
-fn runtime_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("cairn")
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

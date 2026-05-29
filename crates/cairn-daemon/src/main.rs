@@ -134,23 +134,12 @@ fn main() -> anyhow::Result<()> {
             tracing::warn!("wt:// listener configured but --wt-cert / --wt-key not set");
         }
         // Warn if auth=none is used with a non-loopback WT listener.
-        let auth_none = cfg.auth_backends.iter().any(|b| b == "none");
-        if auth_none {
-            use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-            let has_non_loopback_wt = cfg.listeners.iter().any(|l| match l {
-                cairn_daemon::listen::ListenerConfig::WebTransport(addr) => {
-                    let ip = addr.ip();
-                    ip != IpAddr::V4(Ipv4Addr::LOCALHOST)
-                        && ip != IpAddr::V6(Ipv6Addr::LOCALHOST)
-                        && !addr.ip().is_loopback()
-                }
-                _ => false,
-            });
-            if has_non_loopback_wt {
-                tracing::warn!(
-                    "auth=none with a non-loopback wt:// listener exposes the daemon without authentication"
-                );
-            }
+        if cfg.auth_backends.iter().any(|b| b == "none")
+            && cfg.listeners.iter().any(|l| l.is_wt() && !l.is_loopback())
+        {
+            tracing::warn!(
+                "auth=none with a non-loopback wt:// listener exposes the daemon without authentication"
+            );
         }
     }
 

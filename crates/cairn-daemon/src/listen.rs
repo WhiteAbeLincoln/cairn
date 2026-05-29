@@ -48,6 +48,12 @@ impl ListenerConfig {
     pub fn is_wt(&self) -> bool {
         matches!(self, Self::WebTransport(_))
     }
+    pub fn is_loopback(&self) -> bool {
+        match self {
+            Self::Unix(_) => true,
+            Self::WebTransport(addr) => addr.ip().is_loopback(),
+        }
+    }
 }
 
 #[cfg(test)]

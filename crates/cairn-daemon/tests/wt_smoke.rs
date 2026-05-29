@@ -18,10 +18,7 @@ async fn build_wt_client(
     addr: std::net::SocketAddr,
     cert_hash_hex: &str,
 ) -> wrpc_transport_web::Client {
-    let mut hash_bytes = [0u8; 32];
-    for (i, byte) in hash_bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&cert_hash_hex[i * 2..i * 2 + 2], 16).unwrap();
-    }
+    let hash_bytes = cairn_daemon::tls::hex_decode(cert_hash_hex).unwrap();
 
     let config = wtransport::ClientConfig::builder()
         .with_bind_default()
