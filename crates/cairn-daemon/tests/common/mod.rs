@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use cairn_daemon::{config::DaemonConfig, daemon::Daemon, serve::serve};
+use cairn_daemon::{config::DaemonConfig, daemon::Daemon, listen::ListenerConfig, serve::serve};
 use tokio_util::sync::CancellationToken;
 
 pub struct DaemonHarness {
@@ -24,7 +24,7 @@ impl DaemonHarness {
         let tmp = tempfile::tempdir().unwrap();
         let socket_path = tmp.path().join("cairn").join("cairn.sock");
         let cfg = DaemonConfig {
-            socket_path: socket_path.clone(),
+            listeners: vec![ListenerConfig::Unix(socket_path.clone())],
             ..DaemonConfig::default()
         };
         let daemon = Daemon::new(cfg);

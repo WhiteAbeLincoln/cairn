@@ -3,12 +3,20 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::listen::ListenerConfig;
+
 /// Resolved daemon configuration.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
-    pub socket_path: PathBuf,
+    pub listeners: Vec<ListenerConfig>,
     pub dir_mode: u32,
     pub socket_mode: u32,
+    pub wt_cert: Option<PathBuf>,
+    pub wt_key: Option<PathBuf>,
+    pub wt_connect_timeout: Duration,
+    pub wt_idle_timeout: Duration,
+    pub auth_backends: Vec<String>,
+    pub auth_timeout: Duration,
     pub shutdown_grace: Duration,
     pub default_shell: String,
 }
@@ -16,9 +24,15 @@ pub struct DaemonConfig {
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
-            socket_path: default_socket_path(),
+            listeners: vec![ListenerConfig::Unix(default_socket_path())],
             dir_mode: 0o700,
             socket_mode: 0o600,
+            wt_cert: None,
+            wt_key: None,
+            wt_connect_timeout: Duration::from_secs(30),
+            wt_idle_timeout: Duration::from_secs(300),
+            auth_backends: vec!["none".into()],
+            auth_timeout: Duration::from_secs(5),
             shutdown_grace: Duration::from_secs(5),
             default_shell: default_shell(),
         }
@@ -62,6 +76,7 @@ mod tests {
         assert_eq!(c.dir_mode, 0o700);
         assert_eq!(c.socket_mode, 0o600);
         assert_eq!(c.shutdown_grace, std::time::Duration::from_secs(5));
-        assert!(c.socket_path.ends_with("cairn/cairn.sock"));
+        assert_eq!(c.listeners.len(), 1);
+        assert!(c.listeners[0].is_unix());
     }
 }

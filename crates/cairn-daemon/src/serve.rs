@@ -1,6 +1,7 @@
 //! UDS listener + wRPC server wiring: `ConnCtx`, `PeerCredListener`,
 //! `bind_with_cleanup`, `serve()`, and graceful `drain_sessions`.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
@@ -43,16 +44,33 @@ pub async fn serve(
     daemon: crate::daemon::Daemon,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let listener = bind_with_cleanup(&daemon.cfg)?;
-    tracing::info!(socket = %daemon.cfg.socket_path.display(), "listening");
-    let srv = Arc::new(wrpc_transport::Server::default());
-    let pl = Arc::new(PeerCredListener(listener));
+    // Find the Unix listener config, if any.
+    let unix_path = daemon.cfg.listeners.iter().find_map(|l| match l {
+        crate::listen::ListenerConfig::Unix(p) => Some(p.clone()),
+        _ => None,
+    });
 
-    let accept = tokio::spawn({
+    // At least one listener must be configured.
+    if daemon.cfg.listeners.is_empty() {
+        anyhow::bail!("no listeners configured");
+    }
+
+    let listener = if let Some(ref path) = unix_path {
+        let l = bind_with_cleanup(path, &daemon.cfg)?;
+        tracing::info!(socket = %path.display(), "listening");
+        Some(l)
+    } else {
+        None
+    };
+
+    let srv = Arc::new(wrpc_transport::Server::default());
+
+    // Only wire up the accept loop when we have a UDS listener.
+    let accept = if let Some(listener) = listener {
+        let pl = Arc::new(PeerCredListener(listener));
         let srv = Arc::clone(&srv);
-        let pl = Arc::clone(&pl);
         let shutdown = shutdown.clone();
-        async move {
+        Some(tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = shutdown.cancelled() => break,
@@ -61,8 +79,10 @@ pub async fn serve(
                     }
                 }
             }
-        }
-    });
+        }))
+    } else {
+        None
+    };
 
     let invocations = cairn_protocol::serve(srv.as_ref(), daemon.clone()).await?;
 
@@ -82,9 +102,14 @@ pub async fn serve(
 
     shutdown.cancelled().await;
     drain_sessions(&daemon, daemon.cfg.shutdown_grace).await;
-    accept.abort();
+    if let Some(accept) = accept {
+        accept.abort();
+    }
     pump.abort();
-    let _ = std::fs::remove_file(&daemon.cfg.socket_path);
+    // Clean up the socket file on shutdown.
+    if let Some(ref path) = unix_path {
+        let _ = std::fs::remove_file(path);
+    }
     Ok(())
 }
 
@@ -97,11 +122,12 @@ pub async fn serve(
 /// - Probes a pre-existing socket: live → bail; connection-refused → unlink.
 /// - Binds and chmods the socket to `socket_mode`.
 fn bind_with_cleanup(
+    path: &Path,
     cfg: &crate::config::DaemonConfig,
 ) -> anyhow::Result<tokio::net::UnixListener> {
     use std::os::unix::fs::PermissionsExt as _;
 
-    if let Some(parent) = cfg.socket_path.parent() {
+    if let Some(parent) = path.parent() {
         let created = !parent.exists();
         std::fs::create_dir_all(parent)?;
         if created {
@@ -109,24 +135,18 @@ fn bind_with_cleanup(
         }
     }
 
-    if cfg.socket_path.exists() {
+    if path.exists() {
         // Probe: a live daemon means refuse; connection-refused means stale.
-        match std::os::unix::net::UnixStream::connect(&cfg.socket_path) {
-            Ok(_) => anyhow::bail!(
-                "a daemon is already listening on {}",
-                cfg.socket_path.display()
-            ),
+        match std::os::unix::net::UnixStream::connect(path) {
+            Ok(_) => anyhow::bail!("a daemon is already listening on {}", path.display()),
             Err(_) => {
-                let _ = std::fs::remove_file(&cfg.socket_path);
+                let _ = std::fs::remove_file(path);
             }
         }
     }
 
-    let listener = tokio::net::UnixListener::bind(&cfg.socket_path)?;
-    std::fs::set_permissions(
-        &cfg.socket_path,
-        std::fs::Permissions::from_mode(cfg.socket_mode),
-    )?;
+    let listener = tokio::net::UnixListener::bind(path)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(cfg.socket_mode))?;
     Ok(listener)
 }
 

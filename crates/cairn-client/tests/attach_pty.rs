@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use cairn_daemon::config::DaemonConfig;
 use cairn_daemon::daemon::Daemon;
+use cairn_daemon::listen::ListenerConfig;
 use cairn_protocol::cairn::daemon::types::SessionSpec;
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +34,7 @@ async fn attach_echoes_input_then_detach_keeps_session_alive() -> anyhow::Result
     let tmp = tempfile::tempdir()?;
     let sock = tmp.path().join("cairn.sock");
     let cfg = DaemonConfig {
-        socket_path: sock.clone(),
+        listeners: vec![ListenerConfig::Unix(sock.clone())],
         ..Default::default()
     };
     let daemon = Daemon::new(cfg);

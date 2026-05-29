@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod error;
 pub mod handlers;
 pub mod identity;
+pub mod listen;
 pub mod registry;
 pub mod serve;
 pub mod signal;

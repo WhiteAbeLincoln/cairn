@@ -10,7 +10,7 @@ async fn binary_starts_and_serves_version() {
     // `CARGO_BIN_EXE_cairn-daemon` is set by cargo for integration tests.
     let bin = env!("CARGO_BIN_EXE_cairn-daemon");
     let mut child = tokio::process::Command::new(bin)
-        .env("CAIRN_SOCKET", &socket)
+        .env("CAIRN_LISTEN", format!("unix://{}", socket.display()))
         .env("CAIRN_LOG", "warn")
         .kill_on_drop(true)
         .spawn()
