@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use cairn_daemon::config::DaemonConfig;
 use cairn_daemon::daemon::Daemon;
+use cairn_daemon::listen::ListenerConfig;
 use cairn_protocol::cairn::daemon::types::{SessionInfo, SessionSpec};
 use cairn_protocol::client::cairn::daemon as api;
 use tokio_util::sync::CancellationToken;
@@ -31,7 +32,7 @@ impl Harness {
         let tmp = tempfile::tempdir()?;
         let socket = tmp.path().join("cairn.sock");
         let cfg = DaemonConfig {
-            socket_path: socket.clone(),
+            listeners: vec![ListenerConfig::Unix(socket.clone())],
             ..Default::default()
         };
         let daemon = Daemon::new(cfg);

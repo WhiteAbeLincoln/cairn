@@ -3,11 +3,10 @@
 use anyhow::Result;
 use cairn_protocol::client::cairn::daemon::meta;
 
-use crate::connect::Endpoint;
+use crate::connect::Client;
 
-pub async fn whoami(endpoint: &Endpoint) -> Result<i32> {
-    let client = endpoint.client();
-    match meta::whoami(&client, ()).await {
+pub async fn whoami(client: &Client) -> Result<i32> {
+    match meta::whoami(client, ()).await {
         Ok(Ok(identity)) => {
             println!("{identity}");
             Ok(0)
@@ -17,19 +16,15 @@ pub async fn whoami(endpoint: &Endpoint) -> Result<i32> {
             Ok(1)
         }
         Err(e) => {
-            eprintln!(
-                "error: cannot reach cairn-daemon at {}: {e}",
-                endpoint.label()
-            );
+            eprintln!("error: cannot reach cairn-daemon: {e}");
             Ok(1)
         }
     }
 }
 
-pub async fn version(endpoint: &Endpoint) -> Result<i32> {
+pub async fn version(client: &Client) -> Result<i32> {
     println!("cairn {}", env!("CARGO_PKG_VERSION"));
-    let client = endpoint.client();
-    match meta::version(&client, ()).await {
+    match meta::version(client, ()).await {
         Ok(v) => println!("daemon: {} (protocol {})", v.daemon, v.protocol),
         Err(e) => println!("daemon: unreachable: {e}"),
     }

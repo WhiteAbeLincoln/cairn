@@ -8,8 +8,8 @@ use cairn_protocol::cairn::daemon::types::SessionSpec;
 use cairn_protocol::client::cairn::daemon::sessions;
 
 use crate::attach::{self, AttachOptions};
-use crate::cli::{Cli, ExecArgs};
-use crate::connect::Endpoint;
+use crate::cli::ExecArgs;
+use crate::connect::{Client, Endpoint};
 use crate::detach::DetachKeys;
 
 /// Merge `--env-file` files (lowest precedence, applied in order) with `-e`
@@ -50,14 +50,12 @@ pub fn merge_env(env_files: &[PathBuf], env_args: &[String]) -> Result<Vec<(Stri
 
 /// Shared body for `exec` (default `-it` off) and `run` (default `-it` on).
 pub async fn run_exec(
-    cli: &Cli,
     args: &ExecArgs,
     default_tty: bool,
     default_interactive: bool,
+    endpoint: &Endpoint,
+    client: &Client,
 ) -> Result<i32> {
-    let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
-    let client = endpoint.client();
-
     let tty = args.tty_with_default(default_tty);
     let stdin = args.interactive_with_default(default_interactive);
     let workdir = match &args.workdir {
@@ -79,7 +77,7 @@ pub async fn run_exec(
         scrollback_lines: 1000,
     };
 
-    let info = match sessions::create(&client, (), &spec)
+    let info = match sessions::create(client, (), &spec)
         .await
         .context("create session")?
     {
@@ -102,7 +100,7 @@ pub async fn run_exec(
         detach_keys: DetachKeys::parse_or_default(args.detach_keys.as_deref())
             .map_err(|e| anyhow::anyhow!(e))?,
     };
-    attach::run(&endpoint, &info.id, opts).await
+    attach::run(endpoint, &info.id, opts).await
 }
 
 #[cfg(test)]

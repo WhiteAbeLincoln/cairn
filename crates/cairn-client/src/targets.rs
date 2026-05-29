@@ -7,7 +7,7 @@ use anyhow::Result;
 use cairn_protocol::cairn::daemon::types::SessionInfo;
 
 use crate::cli::{SessionTarget, SessionTargets};
-use crate::connect::Endpoint;
+use crate::connect::Client;
 
 /// A session that the user wants to operate on.
 #[derive(Debug, Clone)]
@@ -31,13 +31,13 @@ pub struct ResolvedMany {
     pub unresolved: Vec<String>,
 }
 
-pub async fn resolve_one(ep: &Endpoint, t: &SessionTarget) -> Result<ResolvedTarget> {
-    let sessions = list_all(ep).await?;
+pub async fn resolve_one(client: &Client, t: &SessionTarget) -> Result<ResolvedTarget> {
+    let sessions = list_all(client).await?;
     resolve_one_in(&sessions, t)
 }
 
-pub async fn resolve_many(ep: &Endpoint, t: &SessionTargets) -> Result<ResolvedMany> {
-    let sessions = list_all(ep).await?;
+pub async fn resolve_many(client: &Client, t: &SessionTargets) -> Result<ResolvedMany> {
+    let sessions = list_all(client).await?;
     Ok(resolve_many_in(&sessions, t))
 }
 
@@ -142,12 +142,11 @@ fn build_glob(pat: &str) -> Result<globset::GlobMatcher, globset::Error> {
     Ok(globset::Glob::new(pat)?.compile_matcher())
 }
 
-async fn list_all(ep: &Endpoint) -> Result<Vec<SessionInfo>> {
+async fn list_all(client: &Client) -> Result<Vec<SessionInfo>> {
     use cairn_protocol::client::cairn::daemon::sessions;
-    let client = ep.client();
-    sessions::list_all(&client, ())
+    sessions::list_all(client, ())
         .await
-        .map_err(|e| anyhow::anyhow!("cannot reach cairn-daemon at {}: {e}", ep.label()))
+        .map_err(|e| anyhow::anyhow!("cannot reach cairn-daemon: {e}"))
 }
 
 #[cfg(test)]

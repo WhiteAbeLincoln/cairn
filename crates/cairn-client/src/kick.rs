@@ -7,15 +7,15 @@ use cairn_protocol::client::cairn::daemon::sessions;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use crate::cli::SessionTargets;
-use crate::connect::Endpoint;
+use crate::connect::Client;
 use crate::targets;
 
 pub async fn run(
-    endpoint: &Endpoint,
+    client: &Client,
     sessions_arg: &SessionTargets,
     client_filter: Option<&str>,
 ) -> Result<i32> {
-    let resolved = match targets::resolve_many(endpoint, sessions_arg).await {
+    let resolved = match targets::resolve_many(client, sessions_arg).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -31,7 +31,6 @@ pub async fn run(
         eprintln!("no sessions matched");
         return Ok(2);
     }
-    let client = endpoint.client();
     let mut tasks = FuturesUnordered::new();
     for t in &resolved.matched {
         let client = client.clone();

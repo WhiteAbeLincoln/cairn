@@ -1,4 +1,4 @@
-//! Daemon endpoint resolution. v0 supports only the unix-socket transport.
+//! Daemon endpoint resolution and multi-transport client.
 //!
 //! Only this file may name `wrpc_transport::*` types. Every other module in
 //! `cairn-client` touches the wRPC backend through `Endpoint::client()`'s
@@ -8,36 +8,66 @@
 //! lands, the only edits are inside this file: add an `Endpoint` variant, add
 //! a `Client` enum variant, write the forwarding `Invoke` impl.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{Result, bail};
+use wrpc_transport::Invoke;
 
-/// The wRPC client type for the local unix-socket transport. Cheap to clone
-/// (holds only the socket path); each invocation opens a fresh connection.
-///
-/// Today's `Client` is just the UDS client. When WebTransport lands, this
-/// alias becomes an enum wrapper with a forwarding `wrpc_transport::Invoke`
-/// impl — the public `Endpoint::client()` API stays unchanged.
-pub type Client = wrpc_transport::unix::Client<PathBuf>;
+/// Multi-transport wRPC client.
+#[derive(Clone)]
+pub enum Client {
+    Unix(wrpc_transport::unix::Client<PathBuf>),
+    WebTransport(wrpc_transport_web::Client),
+}
 
-/// A resolved daemon endpoint. v0 has only the `Unix` variant; future
-/// transports add variants alongside it.
+impl Invoke for Client {
+    type Context = ();
+    type Outgoing = wrpc_transport::frame::Outgoing;
+    type Incoming = wrpc_transport::frame::Incoming;
+
+    async fn invoke<P>(
+        &self,
+        cx: Self::Context,
+        instance: &str,
+        func: &str,
+        params: bytes::Bytes,
+        paths: impl AsRef<[P]> + Send,
+    ) -> anyhow::Result<(Self::Outgoing, Self::Incoming)>
+    where
+        P: AsRef<[Option<usize>]> + Send + Sync,
+    {
+        match self {
+            Self::Unix(c) => c.invoke(cx, instance, func, params, paths).await,
+            Self::WebTransport(c) => c.invoke(cx, instance, func, params, paths).await,
+        }
+    }
+}
+
+/// A resolved daemon endpoint. `Unix` is the local unix-socket transport;
+/// `WebTransport` is the QUIC-based remote transport.
 #[derive(Debug)]
 pub enum Endpoint {
     Unix(PathBuf),
+    WebTransport {
+        addr: SocketAddr,
+        host: String,
+        cert_hash: Option<String>,
+    },
 }
 
 impl Endpoint {
     /// Resolve from `--daemon` / `CAIRN_DAEMON` (already read by clap) or the
-    /// platform default socket.
-    pub fn resolve(daemon: Option<&str>) -> Result<Self> {
+    /// platform default socket. `cert_hash` is used for WebTransport
+    /// self-signed certificate pinning.
+    pub fn resolve(daemon: Option<&str>, cert_hash: Option<String>) -> Result<Self> {
         match daemon {
             None => Ok(Self::Unix(default_socket())),
-            Some(s) => Self::from_uri(s),
+            Some(s) => Self::from_uri(s, cert_hash),
         }
     }
 
-    fn from_uri(s: &str) -> Result<Self> {
+    fn from_uri(s: &str, cert_hash: Option<String>) -> Result<Self> {
         if let Some(rest) = s.strip_prefix("unix://") {
             if rest.is_empty() {
                 bail!("`--daemon unix://` has no socket path");
@@ -47,10 +77,46 @@ impl Endpoint {
         if s.starts_with('/') {
             return Ok(Self::Unix(PathBuf::from(s)));
         }
-        if s.starts_with("ws://") || s.starts_with("wss://") {
-            bail!("remote transports (WebTransport) are not yet supported; v0 is unix-socket only");
+        if let Some(rest) = s.strip_prefix("wt://") {
+            return Self::parse_wt(rest, cert_hash);
         }
-        bail!("unrecognized --daemon endpoint {s:?} (expected `unix:///path/to/cairn.sock`)");
+        if let Some(rest) = s.strip_prefix("https://") {
+            return Self::parse_wt(rest, cert_hash);
+        }
+        if s.starts_with("ws://") || s.starts_with("wss://") {
+            bail!("WebSocket transport is not supported; use wt:// for WebTransport");
+        }
+        bail!(
+            "unrecognized --daemon endpoint {s:?} (expected `unix:///path/to/cairn.sock`, `wt://host:port`, or `https://host:port`)"
+        );
+    }
+
+    fn parse_wt(host_port: &str, cert_hash: Option<String>) -> Result<Self> {
+        let addr: SocketAddr = host_port
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid WebTransport address {host_port:?}: {e}"))?;
+        let host = host_port
+            .rsplit_once(':')
+            .map(|(h, _)| h.to_string())
+            .unwrap_or_else(|| addr.ip().to_string());
+
+        // Auto-load cert hash from file for localhost endpoints.
+        let cert_hash = cert_hash.or_else(|| {
+            if addr.ip().is_loopback() {
+                let hash_path = runtime_dir().join("cert-hash");
+                std::fs::read_to_string(&hash_path)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
+
+        Ok(Self::WebTransport {
+            addr,
+            host,
+            cert_hash,
+        })
     }
 
     /// Human-readable label used in error messages. Avoids leaking
@@ -58,36 +124,96 @@ impl Endpoint {
     pub fn label(&self) -> String {
         match self {
             Self::Unix(p) => format!("unix://{}", p.display()),
+            Self::WebTransport { addr, .. } => format!("wt://{addr}"),
         }
     }
 
     /// True if the endpoint's underlying resource is known-gone without even
     /// attempting a connection. For the Unix transport this is "the socket
     /// path no longer exists" — used by the reconnect loop to give up
-    /// immediately when the daemon has been torn down. A future remote
-    /// transport may always return `false` here (you only learn it's gone
-    /// by failing to connect).
+    /// immediately when the daemon has been torn down. WebTransport always
+    /// returns `false` (you only learn it's gone by failing to connect).
     pub fn is_gone(&self) -> bool {
         match self {
             Self::Unix(p) => !p.exists(),
+            Self::WebTransport { .. } => false,
         }
     }
 
-    pub fn client(&self) -> Client {
+    /// Build a wRPC client for this endpoint. For UDS this is cheap (just
+    /// stores the path). For WebTransport this opens a QUIC connection.
+    pub async fn client(&self) -> Result<Client> {
         match self {
-            Self::Unix(p) => wrpc_transport::unix::Client::from(p.clone()),
+            Self::Unix(p) => Ok(Client::Unix(wrpc_transport::unix::Client::from(p.clone()))),
+            Self::WebTransport {
+                addr,
+                host,
+                cert_hash,
+            } => {
+                let config = build_wt_client_config(host, cert_hash.as_deref())?;
+                let endpoint = wtransport::Endpoint::client(config)
+                    .map_err(|e| anyhow::anyhow!("creating WT endpoint: {e}"))?;
+                let url = format!("https://{addr}");
+                let conn = endpoint
+                    .connect(&url)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("WebTransport connect to {addr}: {e}"))?;
+                Ok(Client::WebTransport(wrpc_transport_web::Client::from(conn)))
+            }
         }
     }
+}
+
+fn build_wt_client_config(
+    _host: &str,
+    cert_hash: Option<&str>,
+) -> Result<wtransport::ClientConfig> {
+    use wtransport::ClientConfig;
+
+    let builder = ClientConfig::builder().with_bind_default();
+
+    let config = if let Some(hash_hex) = cert_hash {
+        let hash_bytes: [u8; 32] = hex_decode(hash_hex)?;
+        builder
+            .with_server_certificate_hashes(vec![wtransport::tls::Sha256Digest::new(hash_bytes)])
+            .build()
+    } else {
+        builder.with_native_certs().build()
+    };
+
+    Ok(config)
+}
+
+fn hex_decode(hex: &str) -> Result<[u8; 32]> {
+    let hex = hex.trim();
+    if hex.len() != 64 {
+        bail!(
+            "cert-hash must be 64 hex chars (32 bytes), got {}",
+            hex.len()
+        );
+    }
+    let mut bytes = [0u8; 32];
+    for (i, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
+            .map_err(|e| anyhow::anyhow!("invalid cert-hash hex at position {}: {e}", i * 2))?;
+    }
+    Ok(bytes)
+}
+
+/// `$XDG_RUNTIME_DIR/cairn`, else `$TMPDIR/cairn`, else `/tmp/cairn` —
+/// identical to the daemon's runtime directory.
+fn runtime_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    base.join("cairn")
 }
 
 /// `$XDG_RUNTIME_DIR/cairn/cairn.sock`, else `$TMPDIR/cairn/cairn.sock`, else
 /// `/tmp/cairn/cairn.sock` — identical to the daemon's default.
 fn default_socket() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("TMPDIR").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    base.join("cairn").join("cairn.sock")
+    runtime_dir().join("cairn.sock")
 }
 
 #[cfg(test)]
@@ -97,39 +223,83 @@ mod tests {
 
     #[test]
     fn default_resolves_to_unix_with_cairn_sock_suffix() {
-        match Endpoint::resolve(None).unwrap() {
+        match Endpoint::resolve(None, None).unwrap() {
             Endpoint::Unix(p) => assert!(p.ends_with("cairn/cairn.sock"), "got {p:?}"),
+            _ => panic!("expected Unix"),
         }
     }
 
     #[test]
     fn unix_uri_yields_its_path() {
-        match Endpoint::resolve(Some("unix:///run/cairn/x.sock")).unwrap() {
+        match Endpoint::resolve(Some("unix:///run/cairn/x.sock"), None).unwrap() {
             Endpoint::Unix(p) => assert_eq!(p, Path::new("/run/cairn/x.sock")),
+            _ => panic!("expected Unix"),
         }
     }
 
     #[test]
     fn bare_absolute_path_is_accepted() {
-        match Endpoint::resolve(Some("/tmp/y.sock")).unwrap() {
+        match Endpoint::resolve(Some("/tmp/y.sock"), None).unwrap() {
             Endpoint::Unix(p) => assert_eq!(p, Path::new("/tmp/y.sock")),
+            _ => panic!("expected Unix"),
         }
     }
 
     #[test]
     fn websocket_endpoints_are_rejected() {
-        let err = Endpoint::resolve(Some("wss://host:443")).unwrap_err();
-        assert!(err.to_string().contains("not yet supported"), "got {err}");
+        let err = Endpoint::resolve(Some("wss://host:443"), None).unwrap_err();
+        assert!(err.to_string().contains("not supported"), "got {err}");
     }
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        assert!(Endpoint::resolve(Some("http://host")).is_err());
+        assert!(Endpoint::resolve(Some("http://host"), None).is_err());
     }
 
     #[test]
     fn label_renders_unix_uri() {
-        let ep = Endpoint::resolve(Some("/tmp/y.sock")).unwrap();
+        let ep = Endpoint::resolve(Some("/tmp/y.sock"), None).unwrap();
         assert_eq!(ep.label(), "unix:///tmp/y.sock");
+    }
+
+    #[test]
+    fn wt_uri_yields_webtransport_endpoint() {
+        let ep = Endpoint::resolve(Some("wt://192.168.1.10:4433"), None).unwrap();
+        assert!(matches!(ep, Endpoint::WebTransport { .. }));
+        assert_eq!(ep.label(), "wt://192.168.1.10:4433");
+    }
+
+    #[test]
+    fn https_uri_aliases_to_wt() {
+        let ep = Endpoint::resolve(Some("https://10.0.0.1:4433"), None).unwrap();
+        assert!(matches!(ep, Endpoint::WebTransport { .. }));
+    }
+
+    #[test]
+    fn wt_is_gone_always_returns_false() {
+        let ep = Endpoint::resolve(Some("wt://192.168.1.10:4433"), None).unwrap();
+        assert!(!ep.is_gone());
+    }
+
+    #[test]
+    fn wt_with_cert_hash() {
+        let hash = "a".repeat(64);
+        let ep = Endpoint::resolve(Some("wt://10.0.0.1:4433"), Some(hash.clone())).unwrap();
+        match ep {
+            Endpoint::WebTransport { cert_hash, .. } => assert_eq!(cert_hash, Some(hash)),
+            _ => panic!("expected WebTransport"),
+        }
+    }
+
+    #[test]
+    fn hex_decode_valid() {
+        let hex = "aa".repeat(32);
+        let bytes = hex_decode(&hex).unwrap();
+        assert!(bytes.iter().all(|&b| b == 0xaa));
+    }
+
+    #[test]
+    fn hex_decode_wrong_length() {
+        assert!(hex_decode("aabb").is_err());
     }
 }

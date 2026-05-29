@@ -6,29 +6,25 @@ use cairn_protocol::cairn::daemon::types::SessionInfo;
 use cairn_protocol::client::cairn::daemon::sessions;
 
 use crate::cli::SessionTarget;
-use crate::connect::Endpoint;
+use crate::connect::Client;
 use crate::targets;
 
-pub async fn run(endpoint: &Endpoint, target: &SessionTarget) -> Result<i32> {
-    let resolved = match targets::resolve_one(endpoint, target).await {
+pub async fn run(client: &Client, target: &SessionTarget) -> Result<i32> {
+    let resolved = match targets::resolve_one(client, target).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
             return Ok(1);
         }
     };
-    let client = endpoint.client();
-    let info = match sessions::inspect(&client, (), &resolved.id).await {
+    let info = match sessions::inspect(client, (), &resolved.id).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
             eprintln!("error: {}: {}", e.code, e.message);
             return Ok(1);
         }
         Err(e) => {
-            eprintln!(
-                "error: cannot reach cairn-daemon at {}: {e}",
-                endpoint.label()
-            );
+            eprintln!("error: cannot reach cairn-daemon: {e}");
             return Ok(1);
         }
     };
