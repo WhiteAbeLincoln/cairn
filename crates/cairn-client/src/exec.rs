@@ -58,11 +58,16 @@ pub async fn run_exec(
 ) -> Result<i32> {
     let tty = args.tty_with_default(default_tty);
     let stdin = args.interactive_with_default(default_interactive);
-    let workdir = match &args.workdir {
-        Some(w) => Some(w.to_string_lossy().into_owned()),
-        None => std::env::current_dir()
+    // Auto-populate workdir from the client's cwd only when the endpoint is
+    // local — over UDS, client and daemon share a filesystem so the path is
+    // meaningful. Over WebTransport the daemon is on a different machine and
+    // the client's cwd almost never exists there (`session.spawn_failed`).
+    let workdir = match (&args.workdir, endpoint) {
+        (Some(w), _) => Some(w.to_string_lossy().into_owned()),
+        (None, Endpoint::Unix(_)) => std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().into_owned()),
+        (None, Endpoint::WebTransport { .. }) => None,
     };
 
     let spec = SessionSpec {
@@ -99,6 +104,7 @@ pub async fn run_exec(
         no_stdin: !stdin,
         detach_keys: DetachKeys::parse_or_default(args.detach_keys.as_deref())
             .map_err(|e| anyhow::anyhow!(e))?,
+        pty: tty,
     };
     attach::run(endpoint, &info.id, opts).await
 }

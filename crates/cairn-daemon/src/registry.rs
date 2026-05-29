@@ -159,7 +159,15 @@ impl SessionRegistry {
             None => Some(self.inferred_unique_name(&spec, default_shell, &id)),
         };
         let opts = options_from(spec.clone(), default_shell);
-        let handle = GhosttyPty::spawn(opts).map_err(|_| DaemonError::SpawnFailed)?;
+        let handle = GhosttyPty::spawn(opts).map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                command = ?spec.command,
+                workdir = ?spec.workdir,
+                "session spawn failed"
+            );
+            DaemonError::SpawnFailed
+        })?;
         let pid = None; // pid surfaced via inspect later if cairn-pty exposes it; None for v0
         let entry = Arc::new(SessionEntry {
             id: id.clone(),
@@ -225,7 +233,16 @@ impl SessionRegistry {
             return Err(DaemonError::Running);
         }
         let opts = options_from(entry.spec.clone(), default_shell);
-        let handle = GhosttyPty::spawn(opts).map_err(|_| DaemonError::SpawnFailed)?;
+        let handle = GhosttyPty::spawn(opts).map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                session_id = %entry.id,
+                command = ?entry.spec.command,
+                workdir = ?entry.spec.workdir,
+                "session restart spawn failed"
+            );
+            DaemonError::SpawnFailed
+        })?;
         entry.swap_running(Arc::new(handle), None); // old handle dropped -> Drop kills old child
         Ok(())
     }

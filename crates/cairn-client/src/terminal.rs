@@ -7,17 +7,29 @@ use nix::sys::termios::{self, SetArg, SpecialCharacterIndices, Termios};
 
 /// RAII guard that puts stdin into raw mode and restores it on drop. If stdin
 /// is not a TTY, this is a no-op guard (output still streams; no raw munging).
+///
+/// `reset_on_drop` controls whether the guard emits a full terminal reset
+/// (RIS, `\x1bc`) on drop. Set it for sessions attached to a PTY — the
+/// inferior may have entered alt-screen, enabled mouse tracking, etc., and
+/// RIS undoes all of that. Leave it off for non-PTY sessions: there's
+/// nothing to clean up, and RIS would clear the screen.
 pub struct RawGuard {
     original: Option<Termios>,
+    reset_on_drop: bool,
 }
 
 impl RawGuard {
-    pub fn engage() -> io::Result<Self> {
+    pub fn engage(reset_on_drop: bool) -> io::Result<Self> {
         let stdin = io::stdin();
         // tcgetattr fails (ENOTTY) when stdin isn't a terminal — degrade.
         let original = match termios::tcgetattr(stdin.as_fd()) {
             Ok(t) => t,
-            Err(_) => return Ok(Self { original: None }),
+            Err(_) => {
+                return Ok(Self {
+                    original: None,
+                    reset_on_drop,
+                });
+            }
         };
         let mut raw = original.clone();
         termios::cfmakeraw(&mut raw); // clears ISIG/IEXTEN/ICANON/ECHO; sets VMIN=1/VTIME=0
@@ -28,6 +40,7 @@ impl RawGuard {
             .map_err(|e| io::Error::from_raw_os_error(e as i32))?;
         Ok(Self {
             original: Some(original),
+            reset_on_drop,
         })
     }
 
@@ -41,11 +54,16 @@ impl Drop for RawGuard {
         if let Some(orig) = &self.original {
             let stdin = io::stdin();
             let _ = termios::tcsetattr(stdin.as_fd(), SetArg::TCSAFLUSH, orig);
-            // RIS: reset the outer terminal out of alt-screen / mouse / paste modes
-            // the inferior may have set.
-            let mut out = io::stdout();
-            let _ = out.write_all(b"\x1bc");
-            let _ = out.flush();
+            // RIS resets the outer terminal out of alt-screen / mouse / paste
+            // modes the inferior may have set. We only emit it when the
+            // session was attached to a PTY — without a PTY the inferior
+            // can't have set those modes, and RIS would clear the screen as
+            // a side effect (wiping output like `ls` results).
+            if self.reset_on_drop {
+                let mut out = io::stdout();
+                let _ = out.write_all(b"\x1bc");
+                let _ = out.flush();
+            }
         }
     }
 }

@@ -79,6 +79,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
                 no_stdin: *no_stdin,
                 detach_keys: DetachKeys::parse_or_default(detach_keys.as_deref())
                     .map_err(|e| anyhow::anyhow!(e))?,
+                pty: target.info.spec.tty,
             };
             attach::run(&endpoint, &target.id, opts).await
         }

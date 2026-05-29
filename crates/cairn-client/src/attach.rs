@@ -21,6 +21,12 @@ use crate::terminal::{self, RawGuard};
 pub struct AttachOptions {
     pub no_stdin: bool,
     pub detach_keys: DetachKeys,
+    /// Whether the session was spawned with a PTY. Controls whether the
+    /// terminal is fully reset (RIS) on detach to undo alt-screen / mouse /
+    /// paste modes that a TUI inferior may have set. Non-PTY sessions emit
+    /// plain bytes and don't need (and shouldn't get) the screen-clearing
+    /// reset.
+    pub pty: bool,
 }
 
 enum Outcome {
@@ -37,7 +43,7 @@ enum Outcome {
 /// Attach to `id` and run until detach, child-exit, fatal error, or giving up
 /// on reconnect. Returns the process exit code.
 pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i32> {
-    let guard = RawGuard::engage()?;
+    let guard = RawGuard::engage(opts.pty)?;
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         eprintln!("cairn: stdout is not a terminal; output will include raw escape sequences");
     }
@@ -77,7 +83,12 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
             Ok((mut server, io)) => {
                 deadline = None; // connected: reset the give-up clock
                 backoff = Duration::from_millis(100);
-                {
+                // Clear the viewport before snapshot replay so the daemon's
+                // screen state lands on a clean canvas — but only for PTY
+                // sessions. Non-PTY sessions have nothing TUI-like to restore;
+                // clearing would just wipe the user's prior prompt out of view
+                // when they ran `cairn exec ls`.
+                if opts.pty {
                     let mut out = std::io::stdout().lock();
                     let _ = terminal::clear_screen(&mut out);
                 }

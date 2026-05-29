@@ -367,9 +367,11 @@ pub struct ExecArgs {
     pub timeout: Option<Duration>,
     /// Working directory for the child process.
     ///
-    /// If unset, uses the client's cwd when running on the same
-    /// machine as the daemon, or the daemon's configured default
-    /// otherwise.
+    /// If unset and `--daemon` is a unix socket, the client's cwd is
+    /// forwarded (same filesystem as the daemon). If unset for a
+    /// WebTransport (`https://`) daemon, no workdir is sent — the
+    /// daemon's child inherits the daemon's own cwd. Set this flag
+    /// explicitly to pin a path on the daemon's filesystem.
     #[clap(long, short = 'w')]
     pub workdir: Option<PathBuf>,
     /// Set an environment variable (`KEY=VALUE`). Repeatable.
