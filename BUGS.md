@@ -1,31 +1,8 @@
 # Bugs
 
-## ~~1. `whoami` always returns 501~~ FIXED
+## Misleading error message after app close (not an error)
 
-Implemented passwd lookup via `nix::unistd::User::from_uid()`.
-
-## ~~2. Version output isn't helpful~~ FIXED
-
-Reformatted to `daemon: cairn-daemon/0.1.0 (protocol cairn:daemon@0.1.0)`.
-
-## ~~3. Daemon logs get stuck / no "listening at" event~~ FIXED
-
-Added `tracing::info!` after socket bind in `serve()`.
-
-## ~~4. Kick message not visible on kicked client~~ FIXED
-
-`RawGuard::drop` sent RIS (`\x1bc`) which cleared the terminal *after* the
-message was printed — wiping it. Fix: explicitly drop the guard before
-printing the fatal message.
-
-## ~~5. Global args mixed in with subcommand help~~ FIXED
-
-Added `help_heading = "Global options"` to `--daemon`, `--token`,
-`--verbose`, `--color` so they group separately in subcommand `--help`.
-
-## ~~6. Attached clients list unsorted in inspect output~~ FIXED
-
-Sort client IDs before displaying.
+2026-05-29T06:41:43.374099Z ERROR wrpc_transport_web: ingress failed err=Custom { kind: NotConnected, error: ConnectionLost(ApplicationClosed(ApplicationClose { error_code: 0, reason: b"" })) }
 
 ## pid line in cairn inspect is empty
 
@@ -47,20 +24,12 @@ before the prompt (as expected, this is the same issue zmx documents).
 However, after this we can't disconnect using ctrl-q ctrl-q, keyboard input doesn't work (expected without a pty).
 The cairn client is unresponsive to keystrokes (but responds when an external `cairn kill` occurs)
 
-## log message to client when process is killed
+## version command should show which transport is being used
 
-If the process is externally killed (through `cairn kill`), log a message on
-attached clients similar to `cairn kick` - how feasible is this?
+User might not know if it's set in a config file or env var
+(not the case right now).
 
-## ~~7. Esc in vim requires two key-presses~~ FIXED
-
-The detach matcher withheld bare `0x1b` as a partial CSI-u prefix match,
-blocking until the next keystroke disambiguated it. Added a 50ms flush
-timeout — if no follow-up byte arrives, withheld bytes are released as
-normal input. Kitty-aware terminals are unaffected (Esc arrives as a
-multi-byte CSI-u sequence resolved in one pass).
-
-## 8. Attach on running session doesn't place cursor correctly
+## Attach on running session doesn't place cursor correctly
 
 **Known cairn-pty snapshot gap.** The daemon sends `clear_screen()` then the
 snapshot bytes, but `format_snapshot` doesn't emit a CUP sequence to restore
@@ -71,7 +40,20 @@ scrolling-region gaps compound this for TUI apps. Pinned by
 `snapshot_preserves_cursor_position` (and 10 other `#[should_panic]` tests)
 in `cairn-pty/tests/snapshot_completeness.rs`.
 
-## 9. Ghostty + Terminal.app cross-terminal rendering
+## `--daemon wt://` rejects hostnames
+
+`connect.rs::parse_wt()` parses the address as `SocketAddr`, which only
+accepts IP:port. `--daemon wt://myhost.ts.net:4433` fails with a parse
+error. Needs `tokio::net::lookup_host()` to resolve DNS, keeping the
+original hostname as the `host` field for TLS SNI.
+
+## Tailscale auth backend not implemented on Linux
+
+`TailscaleBackend::new()` bails on non-macOS. The Tailscale LocalAPI on
+Linux listens on a Unix domain socket (`/var/run/tailscale/tailscaled.sock`),
+which needs a hyper UDS connector instead of the TCP `HttpConnector`.
+
+## Ghostty + Terminal.app cross-terminal rendering
 
 **Multi-client size disagreement + snapshot gaps.** The leader-wins resize
 model means only the first interactive client controls the PTY size. When
