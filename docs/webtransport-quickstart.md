@@ -30,6 +30,23 @@ cargo run -p cairn -- list
 
 ## With Tailscale certificates (remote, cross-machine)
 
+Prerequisites on the daemon host (one-time):
+
+```bash
+# Grant the user that will run cairn-daemon access to the Tailscale LocalAPI.
+# Without this, the daemon's calls to /localapi/v0/whois come back 403 and
+# every incoming WebTransport connection is rejected with "access denied by
+# tailscaled". tailscaled only grants LocalAPI read permission to uid 0 or
+# the configured operator.
+sudo tailscale set --operator=$(whoami)
+```
+
+> macOS: the GUI Tailscale app from the App Store uses a different LocalAPI
+> path (a localhost TCP listener with a `sameuserproof` token under
+> `/Library/Tailscale/`) and does not need `--operator`. The daemon detects
+> which install you have at startup. If you installed `tailscaled` via
+> Homebrew on macOS, you still need `--operator`.
+
 On the machine running the daemon:
 ```bash
 # Get your Tailscale hostname

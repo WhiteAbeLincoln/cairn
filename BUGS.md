@@ -44,12 +44,6 @@ scrolling-region gaps compound this for TUI apps. Pinned by
 `snapshot_preserves_cursor_position` (and 10 other `#[should_panic]` tests)
 in `cairn-pty/tests/snapshot_completeness.rs`.
 
-## Tailscale auth backend not implemented on Linux
-
-`TailscaleBackend::new()` bails on non-macOS. The Tailscale LocalAPI on
-Linux listens on a Unix domain socket (`/var/run/tailscale/tailscaled.sock`),
-which needs a hyper UDS connector instead of the TCP `HttpConnector`.
-
 ## Ghostty + Terminal.app cross-terminal rendering
 
 **Multi-client size disagreement + snapshot gaps.** The leader-wins resize
