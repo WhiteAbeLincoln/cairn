@@ -15,9 +15,9 @@ pub struct Cli {
     /// `SO_PEERCRED` plus filesystem permissions on the socket, so
     /// `--token` is not consulted for this transport.
     ///
-    /// `ws://host:port` and `wss://host:port` connect to a remote
-    /// daemon over (TLS-secured) websockets. `--token` (or
-    /// `CAIRN_TOKEN`) is required for these transports.
+    /// `wt://host:port` and `https://host:port` connect to a remote
+    /// daemon over WebTransport (QUIC). `--cert-hash` (or
+    /// `CAIRN_CERT_HASH`) is used to pin self-signed certificates.
     ///
     /// If unset, defaults to the platform-standard local socket
     /// (`$XDG_RUNTIME_DIR/cairn/cairn.sock` on Linux,
@@ -29,6 +29,16 @@ pub struct Cli {
         help_heading = "Global options"
     )]
     pub daemon: Option<String>,
+
+    /// SPKI hash of the server certificate for WebTransport pinning.
+    /// Used when connecting to a daemon with a self-signed certificate.
+    #[clap(
+        long,
+        env = "CAIRN_CERT_HASH",
+        global = true,
+        help_heading = "Global options"
+    )]
+    pub cert_hash: Option<String>,
 
     /// Bearer token for authenticating to a remote daemon.
     ///

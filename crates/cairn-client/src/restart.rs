@@ -15,7 +15,7 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget, force: bool) -> Re
             return Ok(1);
         }
     };
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     match sessions::restart(&client, (), &resolved.id, force).await {
         Ok(Ok(())) => Ok(0),
         Ok(Err(e)) => {

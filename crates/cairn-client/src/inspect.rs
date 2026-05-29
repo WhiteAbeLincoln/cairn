@@ -17,7 +17,7 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget) -> Result<i32> {
             return Ok(1);
         }
     };
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     let info = match sessions::inspect(&client, (), &resolved.id).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {

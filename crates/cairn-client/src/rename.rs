@@ -15,7 +15,7 @@ pub async fn run(endpoint: &Endpoint, target: &SessionTarget, new_name: &str) ->
             return Ok(1);
         }
     };
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     match sessions::rename(&client, (), &resolved.id, new_name).await {
         Ok(Ok(())) => Ok(0),
         Ok(Err(e)) => {

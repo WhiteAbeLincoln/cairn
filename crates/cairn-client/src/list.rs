@@ -8,7 +8,7 @@ use cairn_protocol::client::cairn::daemon::sessions;
 use crate::connect::Endpoint;
 
 pub async fn run(endpoint: &Endpoint) -> Result<i32> {
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     let mut sessions = match sessions::list_all(&client, ()).await {
         Ok(s) => s,
         Err(e) => {

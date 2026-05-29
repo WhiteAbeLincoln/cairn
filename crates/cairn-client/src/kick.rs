@@ -31,7 +31,7 @@ pub async fn run(
         eprintln!("no sessions matched");
         return Ok(2);
     }
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     let mut tasks = FuturesUnordered::new();
     for t in &resolved.matched {
         let client = client.clone();

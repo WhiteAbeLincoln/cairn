@@ -36,7 +36,7 @@ pub async fn run(
         let chunk = argv_to_chunk(input, raw);
         Box::pin(futures::stream::iter(vec![vec![chunk]]))
     };
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     // `sessions::send` returns `Result<(Result<(), Error>, Option<io_future>)>`;
     // the io future drives the underlying transport and must be spawned.
     match sessions::send(&client, (), &resolved.id, chunks).await {

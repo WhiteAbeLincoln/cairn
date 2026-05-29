@@ -25,7 +25,7 @@ pub async fn run(
             return Ok(1);
         }
     };
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     // `sessions::wait` returns `Result<(future, Option<io_future>)>`: the
     // first future yields the ExitStatus, the second drives the underlying
     // transport and must be spawned for the call to make progress.

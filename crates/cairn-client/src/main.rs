@@ -66,7 +66,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             no_stdin,
             detach_keys,
         } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             let target = targets::resolve_one(&endpoint, session).await?;
             let opts = AttachOptions {
                 no_stdin: *no_stdin,
@@ -78,31 +78,31 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
         Command::Exec(args) => exec::run_exec(&cli, args, false, false).await,
         Command::Run(args) => exec::run_exec(&cli, args, true, true).await,
         Command::Whoami => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             meta::whoami(&endpoint).await
         }
         Command::Version => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             meta::version(&endpoint).await
         }
         Command::List => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             list::run(&endpoint).await
         }
         Command::Inspect { session } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             inspect::run(&endpoint, session).await
         }
         Command::Rename { session, new_name } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             rename::run(&endpoint, session, new_name).await
         }
         Command::Restart { session, force } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             restart::run(&endpoint, session, *force).await
         }
         Command::Send { latest, raw, args } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             // Split the positional vector into (session-selector, input).
             // `required_unless_present = "latest"` on `args` guarantees
             // the non-`--latest` branch sees at least one element.
@@ -129,7 +129,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             send::run(&endpoint, &target, *raw, input).await
         }
         Command::Kick { sessions, client } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             kick::run(&endpoint, sessions, client.as_deref()).await
         }
         Command::Kill {
@@ -138,11 +138,11 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             timeout,
             sessions,
         } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             kill::run(&endpoint, sessions, *signal, *no_wait, *timeout).await
         }
         Command::Wait { session, timeout } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             wait::run(&endpoint, session, *timeout).await
         }
         Command::Logs {
@@ -152,7 +152,7 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             follow,
             tail,
         } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
+            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             logs::run(&endpoint, sessions, *strip, *prefix, *follow, *tail).await
         }
         Command::Completion { .. } => Ok(0), // handled before the runtime

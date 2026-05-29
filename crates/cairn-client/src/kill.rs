@@ -37,7 +37,7 @@ pub async fn run(
     }
     let grace_ms = grace_ms(timeout);
     let wire_sig = into_wire_signal(signal);
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     let mut tasks = FuturesUnordered::new();
     for t in &resolved.matched {
         let client = client.clone();

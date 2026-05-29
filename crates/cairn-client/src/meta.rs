@@ -6,7 +6,7 @@ use cairn_protocol::client::cairn::daemon::meta;
 use crate::connect::Endpoint;
 
 pub async fn whoami(endpoint: &Endpoint) -> Result<i32> {
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     match meta::whoami(&client, ()).await {
         Ok(Ok(identity)) => {
             println!("{identity}");
@@ -28,7 +28,7 @@ pub async fn whoami(endpoint: &Endpoint) -> Result<i32> {
 
 pub async fn version(endpoint: &Endpoint) -> Result<i32> {
     println!("cairn {}", env!("CARGO_PKG_VERSION"));
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     match meta::version(&client, ()).await {
         Ok(v) => println!("daemon: {} (protocol {})", v.daemon, v.protocol),
         Err(e) => println!("daemon: unreachable: {e}"),

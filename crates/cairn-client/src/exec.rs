@@ -55,8 +55,8 @@ pub async fn run_exec(
     default_tty: bool,
     default_interactive: bool,
 ) -> Result<i32> {
-    let endpoint = Endpoint::resolve(cli.daemon.as_deref())?;
-    let client = endpoint.client();
+    let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
+    let client = endpoint.client().await?;
 
     let tty = args.tty_with_default(default_tty);
     let stdin = args.interactive_with_default(default_interactive);

@@ -42,7 +42,7 @@ pub async fn run(
         .unwrap_or(LogWindow::All);
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    let client = endpoint.client();
+    let client = endpoint.client().await?;
     let mut stream_tasks = Vec::new();
     for t in &resolved.matched {
         let id = t.id.clone();
