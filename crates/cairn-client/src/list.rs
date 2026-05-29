@@ -5,17 +5,13 @@ use anyhow::Result;
 use cairn_protocol::cairn::daemon::types::SessionInfo;
 use cairn_protocol::client::cairn::daemon::sessions;
 
-use crate::connect::Endpoint;
+use crate::connect::Client;
 
-pub async fn run(endpoint: &Endpoint) -> Result<i32> {
-    let client = endpoint.client().await?;
-    let mut sessions = match sessions::list_all(&client, ()).await {
+pub async fn run(client: &Client) -> Result<i32> {
+    let mut sessions = match sessions::list_all(client, ()).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "error: cannot reach cairn-daemon at {}: {e}",
-                endpoint.label()
-            );
+            eprintln!("error: cannot reach cairn-daemon: {e}");
             return Ok(1);
         }
     };

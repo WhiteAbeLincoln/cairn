@@ -12,18 +12,18 @@ use futures::Stream;
 use tokio::io::AsyncReadExt as _;
 
 use crate::cli::SessionTarget;
-use crate::connect::Endpoint;
+use crate::connect::Client;
 use crate::targets;
 
 const CHUNK_SIZE: usize = 8 * 1024;
 
 pub async fn run(
-    endpoint: &Endpoint,
+    client: &Client,
     target: &SessionTarget,
     raw: bool,
     input: &[String],
 ) -> Result<i32> {
-    let resolved = match targets::resolve_one(endpoint, target).await {
+    let resolved = match targets::resolve_one(client, target).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -36,10 +36,9 @@ pub async fn run(
         let chunk = argv_to_chunk(input, raw);
         Box::pin(futures::stream::iter(vec![vec![chunk]]))
     };
-    let client = endpoint.client().await?;
     // `sessions::send` returns `Result<(Result<(), Error>, Option<io_future>)>`;
     // the io future drives the underlying transport and must be spawned.
-    match sessions::send(&client, (), &resolved.id, chunks).await {
+    match sessions::send(client, (), &resolved.id, chunks).await {
         Ok((wire, io)) => {
             if let Some(io) = io {
                 tokio::spawn(async move {
@@ -55,10 +54,7 @@ pub async fn run(
             }
         }
         Err(e) => {
-            eprintln!(
-                "error: cannot reach cairn-daemon at {}: {e}",
-                endpoint.label()
-            );
+            eprintln!("error: cannot reach cairn-daemon: {e}");
             Ok(1)
         }
     }

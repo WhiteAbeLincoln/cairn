@@ -26,10 +26,12 @@ impl Accept for &PeerCredListener {
 
     async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
         let (stream, _addr) = self.0.accept().await?;
-        let uid = stream.peer_cred().ok().map(|c| c.uid()).unwrap_or(u32::MAX);
-        let identity = crate::identity::Identity::Unix {
-            uid,
-            username: username_for(uid),
+        let identity = match stream.peer_cred().ok().map(|c| c.uid()) {
+            Some(uid) => crate::identity::Identity::Unix {
+                uid,
+                username: None,
+            },
+            None => crate::identity::Identity::Anonymous,
         };
         let (rx, tx) = stream.into_split();
         Ok((ConnCtx { identity }, tx, rx))
@@ -394,7 +396,7 @@ fn resolve_tls(
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-fn username_for(uid: u32) -> Option<String> {
+pub(crate) fn username_for(uid: u32) -> Option<String> {
     nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
         .ok()
         .flatten()
@@ -423,7 +425,8 @@ mod tests {
         match &ctx.identity {
             crate::identity::Identity::Unix { uid, username } => {
                 assert_eq!(*uid, nix_geteuid());
-                assert!(username.is_some());
+                // Username is resolved lazily in whoami, not at accept time.
+                assert!(username.is_none());
             }
             other => panic!("expected Unix identity, got {other:?}"),
         }

@@ -22,7 +22,9 @@ pub fn authenticate(_token: String) -> Result<(), WireError> {
 pub fn whoami(ctx: &ConnCtx) -> Result<String, WireError> {
     use crate::identity::Identity;
     let name = match &ctx.identity {
-        Identity::Unix { uid, username } => username.clone().unwrap_or_else(|| uid.to_string()),
+        Identity::Unix { uid, username } => username
+            .clone()
+            .unwrap_or_else(|| crate::serve::username_for(*uid).unwrap_or_else(|| uid.to_string())),
         other => {
             let dn = other.display_name();
             if dn.is_empty() {

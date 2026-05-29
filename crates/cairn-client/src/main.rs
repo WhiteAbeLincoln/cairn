@@ -21,7 +21,7 @@ mod wait;
 
 use attach::AttachOptions;
 use cli::{Cli, Command, SessionTarget};
-use connect::Endpoint;
+use connect::{Client, Endpoint};
 use detach::DetachKeys;
 
 fn main() -> anyhow::Result<()> {
@@ -60,6 +60,9 @@ fn init_tracing(verbose: u8) {
 }
 
 async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
+    // `Attach` keeps its own client lifecycle (reconnect loop), so it only
+    // needs the endpoint. All other commands build the client once here and
+    // share it, avoiding a redundant QUIC handshake on WebTransport.
     match &cli.command {
         Command::Attach {
             session,
@@ -67,7 +70,11 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             detach_keys,
         } => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            let target = targets::resolve_one(&endpoint, session).await?;
+            // attach needs a client for the initial target resolution but
+            // builds its own inside the reconnect loop — resolve the target
+            // with a dedicated client here.
+            let client = endpoint.client().await?;
+            let target = targets::resolve_one(&client, session).await?;
             let opts = AttachOptions {
                 no_stdin: *no_stdin,
                 detach_keys: DetachKeys::parse_or_default(detach_keys.as_deref())
@@ -75,34 +82,34 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
             };
             attach::run(&endpoint, &target.id, opts).await
         }
-        Command::Exec(args) => exec::run_exec(&cli, args, false, false).await,
-        Command::Run(args) => exec::run_exec(&cli, args, true, true).await,
-        Command::Whoami => {
+        Command::Exec(args) => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            meta::whoami(&endpoint).await
+            let client = endpoint.client().await?;
+            exec::run_exec(args, false, false, &endpoint, &client).await
         }
-        Command::Version => {
+        Command::Run(args) => {
             let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            meta::version(&endpoint).await
+            let client = endpoint.client().await?;
+            exec::run_exec(args, true, true, &endpoint, &client).await
         }
-        Command::List => {
+        _ => {
+            // All remaining commands share a single client.
             let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            list::run(&endpoint).await
+            let client = endpoint.client().await?;
+            dispatch_with_client(&cli, &client).await
         }
-        Command::Inspect { session } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            inspect::run(&endpoint, session).await
-        }
-        Command::Rename { session, new_name } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            rename::run(&endpoint, session, new_name).await
-        }
-        Command::Restart { session, force } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            restart::run(&endpoint, session, *force).await
-        }
+    }
+}
+
+async fn dispatch_with_client(cli: &Cli, client: &Client) -> anyhow::Result<i32> {
+    match &cli.command {
+        Command::Whoami => meta::whoami(client).await,
+        Command::Version => meta::version(client).await,
+        Command::List => list::run(client).await,
+        Command::Inspect { session } => inspect::run(client, session).await,
+        Command::Rename { session, new_name } => rename::run(client, session, new_name).await,
+        Command::Restart { session, force } => restart::run(client, session, *force).await,
         Command::Send { latest, raw, args } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
             // Split the positional vector into (session-selector, input).
             // `required_unless_present = "latest"` on `args` guarantees
             // the non-`--latest` branch sees at least one element.
@@ -126,35 +133,30 @@ async fn dispatch(cli: Cli) -> anyhow::Result<i32> {
                     rest,
                 )
             };
-            send::run(&endpoint, &target, *raw, input).await
+            send::run(client, &target, *raw, input).await
         }
-        Command::Kick { sessions, client } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            kick::run(&endpoint, sessions, client.as_deref()).await
-        }
+        Command::Kick {
+            sessions,
+            client: client_filter,
+        } => kick::run(client, sessions, client_filter.as_deref()).await,
         Command::Kill {
             signal,
             no_wait,
             timeout,
             sessions,
-        } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            kill::run(&endpoint, sessions, *signal, *no_wait, *timeout).await
-        }
-        Command::Wait { session, timeout } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            wait::run(&endpoint, session, *timeout).await
-        }
+        } => kill::run(client, sessions, *signal, *no_wait, *timeout).await,
+        Command::Wait { session, timeout } => wait::run(client, session, *timeout).await,
         Command::Logs {
             sessions,
             strip,
             prefix,
             follow,
             tail,
-        } => {
-            let endpoint = Endpoint::resolve(cli.daemon.as_deref(), cli.cert_hash.clone())?;
-            logs::run(&endpoint, sessions, *strip, *prefix, *follow, *tail).await
-        }
-        Command::Completion { .. } => Ok(0), // handled before the runtime
+        } => logs::run(client, sessions, *strip, *prefix, *follow, *tail).await,
+        // These are handled in `dispatch` before reaching here.
+        Command::Attach { .. }
+        | Command::Exec(_)
+        | Command::Run(_)
+        | Command::Completion { .. } => Ok(0),
     }
 }

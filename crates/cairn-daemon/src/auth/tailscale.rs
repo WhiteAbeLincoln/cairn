@@ -20,9 +20,9 @@ impl TailscaleBackend {
         let base_url = if cfg!(target_os = "macos") {
             "http://127.0.0.1:41112".to_string()
         } else {
-            // TODO: Linux uses a Unix domain socket at /var/run/tailscale/tailscaled.sock
-            // which requires hyper-util's UDS connector. For now, fall through to TCP.
-            "http://localhost".to_string()
+            anyhow::bail!(
+                "tailscale auth on Linux requires the LocalAPI Unix socket; not yet implemented"
+            );
         };
         let client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())

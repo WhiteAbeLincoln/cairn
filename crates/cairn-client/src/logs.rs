@@ -9,18 +9,18 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
 
 use crate::cli::SessionTargets;
-use crate::connect::Endpoint;
+use crate::connect::Client;
 use crate::targets;
 
 pub async fn run(
-    endpoint: &Endpoint,
+    client: &Client,
     sessions_arg: &SessionTargets,
     strip: bool,
     prefix: bool,
     follow: bool,
     tail: Option<usize>,
 ) -> Result<i32> {
-    let resolved = match targets::resolve_many(endpoint, sessions_arg).await {
+    let resolved = match targets::resolve_many(client, sessions_arg).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -42,7 +42,6 @@ pub async fn run(
         .unwrap_or(LogWindow::All);
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(64);
 
-    let client = endpoint.client().await?;
     let mut stream_tasks = Vec::new();
     for t in &resolved.matched {
         let id = t.id.clone();

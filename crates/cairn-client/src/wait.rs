@@ -8,28 +8,27 @@ use cairn_protocol::cairn::daemon::types::ExitStatus;
 use cairn_protocol::client::cairn::daemon::sessions;
 
 use crate::cli::SessionTarget;
-use crate::connect::Endpoint;
+use crate::connect::Client;
 use crate::targets;
 
 const TIMEOUT_EXIT_CODE: i32 = 124;
 
 pub async fn run(
-    endpoint: &Endpoint,
+    client: &Client,
     target: &SessionTarget,
     timeout: Option<Duration>,
 ) -> Result<i32> {
-    let resolved = match targets::resolve_one(endpoint, target).await {
+    let resolved = match targets::resolve_one(client, target).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
             return Ok(1);
         }
     };
-    let client = endpoint.client().await?;
     // `sessions::wait` returns `Result<(future, Option<io_future>)>`: the
     // first future yields the ExitStatus, the second drives the underlying
     // transport and must be spawned for the call to make progress.
-    let (future, io) = match sessions::wait(&client, (), &resolved.id).await {
+    let (future, io) = match sessions::wait(client, (), &resolved.id).await {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("error: {e}");

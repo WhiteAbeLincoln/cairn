@@ -37,7 +37,6 @@ enum Outcome {
 /// Attach to `id` and run until detach, child-exit, fatal error, or giving up
 /// on reconnect. Returns the process exit code.
 pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i32> {
-    let client = endpoint.client().await?;
     let guard = RawGuard::engage()?;
     if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         eprintln!("cairn: stdout is not a terminal; output will include raw escape sequences");
@@ -62,6 +61,7 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
     let mut deadline: Option<Instant> = None;
 
     loop {
+        let client = endpoint.client().await?;
         let (cols, rows) = terminal::window_size().unwrap_or((80, 24));
         let init = AttachInit {
             cols,

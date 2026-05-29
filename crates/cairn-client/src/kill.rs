@@ -9,17 +9,17 @@ use cairn_protocol::client::cairn::daemon::sessions;
 use futures::stream::{FuturesUnordered, StreamExt as _};
 
 use crate::cli::{SessionTargets, Signal, SignalName};
-use crate::connect::Endpoint;
+use crate::connect::Client;
 use crate::targets;
 
 pub async fn run(
-    endpoint: &Endpoint,
+    client: &Client,
     sessions_arg: &SessionTargets,
     signal: Signal,
     no_wait: bool,
     timeout: Option<Duration>,
 ) -> Result<i32> {
-    let resolved = match targets::resolve_many(endpoint, sessions_arg).await {
+    let resolved = match targets::resolve_many(client, sessions_arg).await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -37,7 +37,6 @@ pub async fn run(
     }
     let grace_ms = grace_ms(timeout);
     let wire_sig = into_wire_signal(signal);
-    let client = endpoint.client().await?;
     let mut tasks = FuturesUnordered::new();
     for t in &resolved.matched {
         let client = client.clone();
