@@ -18,7 +18,16 @@ path = "src/lib.rs"
 cairn-pty = { path = "../cairn-pty" }
 cairn-protocol = { path = "../cairn-protocol" }
 wrpc-transport.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time", "io-util"] }
+wrpc-transport-web.workspace = true
+wtransport.workspace = true
+rustls.workspace = true
+rcgen.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy"] }
+http-body-util = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 futures.workspace = true
 anyhow.workspace = true

@@ -25,6 +25,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "
 nix = { version = "0.29", features = ["term", "ioctl"] }
 cairn-protocol = { path = "../cairn-protocol" }
 wrpc-transport.workspace = true
+wrpc-transport-web.workspace = true
+wtransport.workspace = true
+rustls.workspace = true
 time = { version = "0.3", default-features = false, features = ["formatting", "std"] }
 strip-ansi-escapes = "0.2"
 
