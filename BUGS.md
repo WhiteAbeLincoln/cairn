@@ -44,6 +44,30 @@ scrolling-region gaps compound this for TUI apps. Pinned by
 `snapshot_preserves_cursor_position` (and 10 other `#[should_panic]` tests)
 in `cairn-pty/tests/snapshot_completeness.rs`.
 
+## (Low Priority) 50ms post-reap drain in cairn-pty worker feels hacky
+
+`crates/cairn-pty/src/ghostty/worker.rs` reaps the child via a
+`child.wait()` arm racing `pty.read()` in tokio::select!, then drains the
+master PTY for up to 50ms (`EXIT_DRAIN`) before dropping the broadcast
+sender. This works in practice but the timeout constant is a heuristic,
+not a guarantee — on a sufficiently slow / loaded system the kernel
+might still have queued slave-side output past the window, and we'd
+lose those tail bytes from the live broadcast (they still flow into
+terminal state for future snapshots).
+
+The principled alternative (zmx-style: reap only after `pty.read`
+returns EOF/Err, no race, no timeout) is documented on the
+`pty-exit-hang-fix-zmx-style` branch. It doesn't work today because
+tokio's `AsyncFd` doesn't propagate POLLHUP-only events on Linux
+master PTYs — the `readable` future stays pending forever when the
+slave closes with no further data. zmx avoids this because its
+`posix.poll` call asks for `POLL.HUP` in the events bitmap explicitly.
+
+Revisit if/when we move off tokio's `AsyncFd` (e.g. to nix/rustix
+with custom epoll registration that includes POLLHUP), or if upstream
+tokio exposes a HUP interest. Until then the drain stays. Not blocking
+anything; low priority unless we observe lost bytes in the wild.
+
 ## Ghostty + Terminal.app cross-terminal rendering
 
 **Multi-client size disagreement + snapshot gaps.** The leader-wins resize
