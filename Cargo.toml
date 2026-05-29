@@ -11,6 +11,7 @@ exclude = [".worktrees"]
 # Shared third-party dependencies. Crate-specific feature sets are layered on at
 # the member with `features = [...]` (additive with whatever is declared here).
 anyhow = { version = "1", default-features = false, features = ["std"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 bytes = { version = "1", default-features = false }
 chrono = { version = "0.4.44", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help", "env"] }

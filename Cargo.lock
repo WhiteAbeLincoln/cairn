@@ -329,6 +329,7 @@ name = "cairn-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "bytes",
  "cairn-protocol",
  "cairn-pty",

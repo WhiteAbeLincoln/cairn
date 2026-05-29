@@ -12,22 +12,79 @@ type HttpClient = hyper_util::client::legacy::Client<
 
 pub struct TailscaleBackend {
     base_url: String,
+    auth_token: Option<String>,
     client: HttpClient,
+}
+
+/// Credentials for connecting to the Tailscale LocalAPI.
+struct LocalApiCreds {
+    port: u16,
+    token: String,
 }
 
 impl TailscaleBackend {
     pub fn new() -> anyhow::Result<Self> {
-        let base_url = if cfg!(target_os = "macos") {
-            "http://127.0.0.1:41112".to_string()
-        } else {
+        let (base_url, auth_token) = if cfg!(target_os = "macos") {
+            let creds = Self::read_macos_creds()?;
+            (
+                format!("http://127.0.0.1:{}", creds.port),
+                Some(creds.token),
+            )
+        } else if cfg!(target_os = "linux") {
             anyhow::bail!(
                 "tailscale auth on Linux requires the LocalAPI Unix socket; not yet implemented"
             );
+        } else {
+            anyhow::bail!("tailscale auth is not supported on this platform");
         };
         let client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
                 .build_http();
-        Ok(Self { base_url, client })
+        Ok(Self {
+            base_url,
+            auth_token,
+            client,
+        })
+    }
+
+    /// Read LocalAPI port and auth token from `/Library/Tailscale/`.
+    ///
+    /// The standalone macOS Tailscale app writes:
+    /// - `/Library/Tailscale/ipnport` — symlink whose target is the port number
+    /// - `/Library/Tailscale/sameuserproof-{port}` — file containing the auth token
+    ///
+    /// The proof file is `root:admin 0640`, so this works for any process whose
+    /// effective user is in the `admin` group (the common case today). Under a
+    /// future multi-user model the master process runs as root, so access is free.
+    fn read_macos_creds() -> anyhow::Result<LocalApiCreds> {
+        use std::fs;
+        use std::path::Path;
+
+        let ipnport_path = Path::new("/Library/Tailscale/ipnport");
+        let target = fs::read_link(ipnport_path).map_err(|e| {
+            anyhow::anyhow!(
+                "cannot read /Library/Tailscale/ipnport: {e} \
+                 (is Tailscale running?)"
+            )
+        })?;
+        let port: u16 = target
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("ipnport symlink target is not UTF-8"))?
+            .parse()
+            .map_err(|e| anyhow::anyhow!("ipnport symlink target is not a valid port: {e}"))?;
+
+        let proof_path = format!("/Library/Tailscale/sameuserproof-{port}");
+        let token = fs::read_to_string(&proof_path)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "cannot read {proof_path}: {e} \
+                     (daemon user may need to be in the admin group)"
+                )
+            })?
+            .trim()
+            .to_string();
+
+        Ok(LocalApiCreds { port, token })
     }
 }
 
@@ -73,7 +130,13 @@ impl TailscaleBackend {
     async fn http_get(&self, url: &str) -> Result<String, WhoisError> {
         use http_body_util::BodyExt as _;
 
-        let req = hyper::Request::get(url)
+        let mut builder = hyper::Request::get(url);
+        if let Some(token) = &self.auth_token {
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(format!(":{token}"));
+            builder = builder.header("Authorization", format!("Basic {encoded}"));
+        }
+        let req = builder
             .body(http_body_util::Empty::new())
             .map_err(|e| WhoisError::Unavailable(e.to_string()))?;
 

@@ -35,6 +35,7 @@ clap.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v7"] }
+base64.workspace = true
 bytes.workspace = true
 libc = "0.2"
 nix = { version = "0.29", features = ["signal", "user"] }
