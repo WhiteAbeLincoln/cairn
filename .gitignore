@@ -39,3 +39,4 @@ web/dist
 
 # Local npm global prefix (nix dev shell)
 .npm-global/
+.pre-commit-config.yaml

@@ -1,0 +1,40 @@
+{
+  pkgs,
+  git-hooks,
+  system,
+  rustToolchain,
+}:
+  git-hooks.lib.${system}.run {
+    src = ../.;
+    package = pkgs.prek;
+    hooks = {
+      cargo-fmt = {
+        enable = true;
+        name = "cargo-fmt";
+        description = "Format Rust code.";
+        package = rustToolchain;
+        entry = builtins.toString (pkgs.writeShellScript "cargo-fmt-hook" ''
+          check_flag="--check"
+          if [ "''${VALIDATE_FIX:-}" = "1" ]; then check_flag=""; fi
+          # shellcheck disable=SC2086
+          ${rustToolchain}/bin/cargo fmt $check_flag
+        '');
+        files = "\\.rs$";
+        pass_filenames = false;
+        require_serial = true;
+      };
+
+      cargo-clippy = {
+        enable = true;
+        name = "cargo-clippy";
+        description = "Lint Rust code.";
+        package = rustToolchain;
+        entry = builtins.toString (pkgs.writeShellScript "cargo-clippy-hook" ''
+          ${rustToolchain}/bin/cargo clippy --all-targets -- -D warnings
+        '');
+        files = "\\.rs$";
+        pass_filenames = false;
+        require_serial = true;
+      };
+    };
+  }
