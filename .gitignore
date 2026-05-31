@@ -43,3 +43,4 @@ web/dist
 
 # certs when running out of the dev dir
 /certs
+/docs/ideas
