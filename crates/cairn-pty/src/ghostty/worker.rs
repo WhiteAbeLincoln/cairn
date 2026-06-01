@@ -480,7 +480,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     Ok(e) => e,
                     Err(_) => break, // all GhosttyPty handles dropped
                 };
-                let Envelope { cmd, trace_id: _trace_id } = envelope;
+                let Envelope { cmd, trace_id } = envelope;
                 if exit_published {
                     // Post-exit normalisation: reply Closed to writes/resizes.
                     // Shutdown (no-op), Subscribe (final state), and Size (the
@@ -535,6 +535,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         break;
                     }
                     Command::Subscribe { client_id, reply } => {
+                        let _span = make_cmd_span("subscribe", &trace_id);
                         let snapshot = match format_snapshot(&terminal.borrow()) {
                             Ok(bytes) => bytes,
                             Err(e) => { let _ = reply.send(Err(e)); continue; }
@@ -559,6 +560,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(Ok(sub));
                     }
                     Command::Resize { client_id, size, reply } => {
+                        let _span = make_cmd_span("resize", &trace_id);
                         // Election: empty seat promotes; non-leader rejects.
                         match leader {
                             None => {
@@ -603,6 +605,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(Ok(current_size.get()));
                     }
                     Command::Write { client_id, data, reply } => {
+                        let _span = make_cmd_span("write", &trace_id);
                         if is_user_input(&data) {
                             _last_input_at = Some(std::time::Instant::now());
                             if leader != Some(client_id) {
@@ -621,6 +624,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(res);
                     }
                     Command::Signal { sig, reason, reply } => {
+                        let _span = make_cmd_span("signal", &trace_id);
                         if reason.is_some() {
                             s.exit_reason = reason;
                         }
@@ -644,6 +648,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(res);
                     }
                     Command::Inject { data, reply } => {
+                        let _span = make_cmd_span("inject", &trace_id);
                         // No leader election: identity-less injection.
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
@@ -835,6 +840,44 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
             source: Box::new(e),
         })?;
     Ok(Bytes::copy_from_slice(&vt_bytes))
+}
+
+/// Parse a W3C `traceparent` header value (e.g.
+/// `00-<trace_id>-<span_id>-<flags>`) into an OTel `SpanContext`, then add it
+/// as a span link on `span`. Falls back to recording the raw traceparent as a
+/// span attribute if parsing fails, so correlation is never silently lost.
+fn add_trace_link(span: &tracing::Span, traceparent: &str) {
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let parts: Vec<&str> = traceparent.split('-').collect();
+    if parts.len() == 4
+        && let (Ok(trace_id), Ok(span_id), Ok(flags)) = (
+            TraceId::from_hex(parts[1]),
+            SpanId::from_hex(parts[2]),
+            u8::from_str_radix(parts[3], 16),
+        )
+    {
+        let sc = SpanContext::new(
+            trace_id,
+            span_id,
+            TraceFlags::new(flags),
+            true,
+            TraceState::NONE,
+        );
+        span.add_link(sc);
+        return;
+    }
+    // Fallback: record the raw traceparent so it's still queryable in Tempo.
+    span.record("linked_trace", traceparent);
+}
+
+fn make_cmd_span(name: &'static str, trace_id: &Option<String>) -> tracing::span::EnteredSpan {
+    let span = tracing::info_span!(target: "cairn_pty::cmd", "cmd", op = name);
+    if let Some(tp) = trace_id {
+        add_trace_link(&span, tp);
+    }
+    span.entered()
 }
 
 /// Construct a synthetic `std::process::ExitStatus` with the given exit code.
