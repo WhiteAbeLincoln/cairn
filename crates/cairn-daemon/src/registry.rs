@@ -186,6 +186,14 @@ impl SessionRegistry {
             .write()
             .expect("sessions lock")
             .insert(id, entry);
+
+        tracing::info!(
+            session_id = %info.id,
+            name = ?info.name,
+            command = ?info.spec.command,
+            "session created"
+        );
+
         Ok(info)
     }
 

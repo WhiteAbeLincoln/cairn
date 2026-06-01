@@ -18,6 +18,76 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+/// Extract a remote OTel context from a [`CallContext`], if present.
+///
+/// Parses the `trace_context` field as a W3C `traceparent` header
+/// (`00-<trace_id>-<span_id>-<flags>`) and returns an [`opentelemetry::Context`]
+/// carrying the decoded `SpanContext`.  Returns `None` when the call context is
+/// absent, the trace-context string is missing, or the traceparent is malformed.
+pub fn extract_remote_context(
+    ctx: &Option<cairn_protocol::cairn::daemon::types::CallContext>,
+) -> Option<opentelemetry::Context> {
+    use opentelemetry::trace::{
+        SpanContext, SpanId, TraceContextExt as _, TraceFlags, TraceId, TraceState,
+    };
+
+    let traceparent = ctx.as_ref()?.trace_context.as_deref()?;
+    let parts: Vec<&str> = traceparent.split('-').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let trace_id = TraceId::from_hex(parts[1]).ok()?;
+    let span_id = SpanId::from_hex(parts[2]).ok()?;
+    let flags = u8::from_str_radix(parts[3], 16).ok()?;
+
+    let sc = SpanContext::new(
+        trace_id,
+        span_id,
+        TraceFlags::new(flags),
+        true, // remote
+        TraceState::NONE,
+    );
+
+    // Build an OTel Context with this remote span as the "current" span.
+    let remote_ctx = opentelemetry::Context::new().with_remote_span_context(sc);
+    Some(remote_ctx)
+}
+
+/// Add a span link from `span` to the remote parent encoded in `call_ctx`.
+///
+/// This is the daemon-side equivalent of cairn-pty's `add_trace_link`:
+/// it parses the traceparent, builds a `SpanContext`, and attaches it as
+/// a link so distributed-trace tooling can correlate client ↔ daemon spans.
+pub fn link_remote_context(
+    span: &tracing::Span,
+    call_ctx: &Option<cairn_protocol::cairn::daemon::types::CallContext>,
+) {
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let Some(traceparent) = call_ctx.as_ref().and_then(|c| c.trace_context.as_deref()) else {
+        return;
+    };
+
+    let parts: Vec<&str> = traceparent.split('-').collect();
+    if parts.len() == 4
+        && let (Ok(trace_id), Ok(span_id), Ok(flags)) = (
+            TraceId::from_hex(parts[1]),
+            SpanId::from_hex(parts[2]),
+            u8::from_str_radix(parts[3], 16),
+        )
+    {
+        let sc = SpanContext::new(
+            trace_id,
+            span_id,
+            TraceFlags::new(flags),
+            true,
+            TraceState::NONE,
+        );
+        span.add_link(sc);
+    }
+}
+
 /// Concrete OTel layer type produced by [`build_otel_layer`].
 type OtelLayer =
     tracing_opentelemetry::OpenTelemetryLayer<Registry, opentelemetry_sdk::trace::SdkTracer>;
