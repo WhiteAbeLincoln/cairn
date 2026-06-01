@@ -40,6 +40,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let broadcast_capacity = opts.broadcast_capacity.max(1);
     let initial_size = opts.size;
     let scrollback_lines = opts.scrollback_lines;
+    let session_id = opts.session_id.clone();
 
     // pty_process::Pty::new() wraps the PTY master fd in
     // tokio::io::unix::AsyncFd, which requires an active tokio runtime
@@ -161,6 +162,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     initial_size,
                     scrollback_lines,
                     exit_reason: None,
+                    session_id,
                 })
                 .await;
             });
@@ -209,6 +211,7 @@ where
     let broadcast_capacity = opts.broadcast_capacity.max(1);
     let initial_size = opts.size;
     let scrollback_lines = opts.scrollback_lines;
+    let session_id = opts.session_id.clone();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -229,6 +232,7 @@ where
                     initial_size,
                     scrollback_lines,
                     exit_reason: None,
+                    session_id,
                 })
                 .await;
             });
@@ -248,6 +252,7 @@ struct SessionState<P: Pty, C: ChildProcess> {
     initial_size: TermSize,
     scrollback_lines: usize,
     exit_reason: Option<String>,
+    session_id: String,
 }
 
 /// Main session loop. Runs inside the LocalSet on the dedicated thread.
@@ -257,6 +262,18 @@ struct SessionState<P: Pty, C: ChildProcess> {
 ///   - cmd_rx.recv_async()         (external commands → dispatch)
 ///   - child.wait()                (child exit → publish status + tear down)
 async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
+    let _session_span = tracing::info_span!(
+        "pty_session",
+        session_id = %s.session_id,
+    )
+    .entered();
+
+    tracing::info!(
+        cols = s.initial_size.cols,
+        rows = s.initial_size.rows,
+        "session started"
+    );
+
     // Pending writes from the libghostty-vt PtyWriteFn callback. The callback
     // is synchronous (fires inside terminal.vt_write); pty.write_all is async.
     // We queue bytes in the callback and drain them on the same task after
@@ -423,6 +440,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         // subscribers observe Closed; await child exit if
                         // not already published. Loop continues so callers
                         // can still receive Closed replies via cmd_rx.
+                        tracing::debug!("pty eof");
                         pty_closed = true;
                         *bcast_tx.borrow_mut() = None;
                         if !exit_published
@@ -577,6 +595,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         })();
                         if res.is_ok() {
                             current_size.set(size);
+                            tracing::debug!(cols = size.cols, rows = size.rows, "resized");
                         }
                         let _ = reply.send(res);
                     }
@@ -668,7 +687,13 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
             // broadcast that ends here.
             status = s.child.wait(), if !exit_published => {
                 match status {
-                    Ok(s_val) => { let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms(), s.exit_reason.take()))); }
+                    Ok(s_val) => {
+                        use std::os::unix::process::ExitStatusExt as _;
+                        let exit_code = s_val.code();
+                        let exit_signal = s_val.signal();
+                        let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms(), s.exit_reason.take())));
+                        tracing::info!(exit_code = ?exit_code, signal = ?exit_signal, "child exited");
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
                         let _ = s.exit_tx.send(Some(crate::ExitStatus::synthetic(1, crate::types::now_unix_ms())));
@@ -694,6 +719,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     //    disconnect before EOF, e.g. GhosttyPty dropped while child alive.)
     //  - cmd_rx falls out of scope when SessionState drops → cmd_tx sends fail
     //    on the GhosttyPty side, which we map to PtyError::Closed.
+    tracing::info!("session ended");
     *bcast_tx.borrow_mut() = None;
 }
 
@@ -1521,6 +1547,36 @@ mod tests {
         assert!(
             !buf_lines_since(start, "leader vacated").is_empty(),
             "vacation event should have been emitted"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn session_lifecycle_emits_started_and_ended() {
+        let start = buf_snapshot();
+
+        let session = MockSession::new(default_opts());
+
+        // "session started" is emitted immediately on worker startup.
+        // Give the worker a moment to initialise.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            !buf_lines_since(start, "session started").is_empty(),
+            "\"session started\" event should have been emitted"
+        );
+
+        // Trigger shutdown via kill(), which sends Command::Shutdown.
+        session.pty.kill().expect("kill");
+
+        // Wait for the worker to finish.
+        session.pty.wait().await;
+        // Small grace period for the final tracing event to flush.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            !buf_lines_since(start, "session ended").is_empty(),
+            "\"session ended\" event should have been emitted"
         );
     }
 }
