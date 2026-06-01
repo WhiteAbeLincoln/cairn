@@ -34,12 +34,19 @@ impl std::fmt::Display for AuthError {
     }
 }
 
+/// Transport-specific connection material, produced by the listener that
+/// accepted the connection. Each variant carries exactly the material
+/// available on that transport.
+#[derive(Debug)]
+pub enum TransportContext {
+    WebTransport { peer_addr: SocketAddr },
+}
+
 /// Information available to auth backends for identity resolution.
+/// Created by the transport layer, enriched by the first-message phase.
 #[derive(Debug)]
 pub struct AuthContext {
-    /// Peer's source address (used by Tailscale whois).
-    pub peer_addr: SocketAddr,
-    /// First-message token, populated after `meta.authenticate` is called.
+    pub transport: TransportContext,
     pub token: Option<String>,
 }
 
@@ -138,7 +145,9 @@ mod tests {
 
     fn test_ctx() -> AuthContext {
         AuthContext {
-            peer_addr: "127.0.0.1:1234".parse().unwrap(),
+            transport: TransportContext::WebTransport {
+                peer_addr: "127.0.0.1:1234".parse().unwrap(),
+            },
             token: None,
         }
     }

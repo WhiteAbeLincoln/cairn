@@ -27,7 +27,9 @@ mod tests {
     async fn accepts_any_connection() {
         let backend = NoneBackend;
         let ctx = AuthContext {
-            peer_addr: "192.168.1.50:9999".parse().unwrap(),
+            transport: crate::auth::TransportContext::WebTransport {
+                peer_addr: "192.168.1.50:9999".parse().unwrap(),
+            },
             token: None,
         };
         let result = backend.authenticate(&ctx).await;

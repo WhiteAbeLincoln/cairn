@@ -287,7 +287,7 @@ async fn serve_wt_connection(
 ) {
     let peer_addr = conn.remote_address();
     let ctx = crate::auth::AuthContext {
-        peer_addr,
+        transport: crate::auth::TransportContext::WebTransport { peer_addr },
         token: None,
     };
 
