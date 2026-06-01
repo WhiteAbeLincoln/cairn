@@ -128,30 +128,35 @@ cairn-daemon --listen https://0.0.0.0:9443 --auth tailscale
 cairn-daemon --listen unix --listen https://0.0.0.0:9443 --auth tailscale
 ```
 
-### Config validation
+### Validation chokepoint: `Daemon::new`
 
-`DaemonConfig` gains a `validate() -> Result<()>` method for hard errors.
-The existing `warn_on_misconfig()` retains soft warnings.
+Validation lives in `Daemon::new(cfg) -> Result<Self>`, not on `DaemonConfig`
+or in any conversion trait. This is the single chokepoint that every config
+source (CLI args today, config file tomorrow) must pass through. There is no
+valid `Daemon` with an invalid config, and you can't forget to validate because
+construction is the only entry point.
 
-Called explicitly in `main.rs` after `DaemonConfig::from(args)` (not inside
-`From`, which is infallible, and not before tracing is initialized).
+`From<Args> for DaemonConfig` stays infallible — it's pure field mapping. A
+future config file parser would also produce a `DaemonConfig` that gets
+validated at `Daemon::new`.
 
-Hard errors (in `validate`):
+Hard errors (in `Daemon::new`):
 - Network listener configured + `auth` is empty
 
-Soft warnings (in `warn_on_misconfig`):
+Soft warnings (also in `Daemon::new`, after tracing is initialized):
 - `--auth` provided but no network listener configured
 - `--dir-mode`/`--socket-mode` without a UDS listener
 - WT listener without `--wt-cert`/`--wt-key`
 
 The auth=none + non-loopback WT warning is removed (the condition can no longer
-arise).
+arise). The existing `DaemonConfig::warn_on_misconfig()` is removed — its
+contents move into `Daemon::new`.
 
 ### `build_auth_chain`
 
 Returns `Option<AuthChain>` — `None` when no network listeners are configured,
-`Some(chain)` when they are. The empty-backends case is caught earlier by
-`validate()`.
+`Some(chain)` when they are. The empty-backends case is caught by
+`Daemon::new` before this is ever called.
 
 ### Serve wiring
 
@@ -176,9 +181,10 @@ UDS path (`PeerCredListener::accept`) is completely unchanged — it resolves
 | `auth/mod.rs` | Add `TransportContext` enum. Replace `AuthContext` fields. |
 | `auth/none.rs` | Delete. |
 | `auth/tailscale.rs` | Match on `ctx.transport` to extract `peer_addr`. |
-| `config/mod.rs` | Remove `AuthBackendKind::None`. Add `DaemonConfig::validate()`. Remove auth=none warning from `warn_on_misconfig()`. |
+| `config/mod.rs` | Remove `AuthBackendKind::None`. Remove `DaemonConfig::warn_on_misconfig()`. |
 | `config/args.rs` | Remove `default_value = "none"` from `--auth`. |
-| `daemon.rs` | `build_auth_chain` returns `Option<AuthChain>`. |
+| `daemon.rs` | `Daemon::new` becomes fallible (`-> Result<Self>`), absorbs validation and warnings. `build_auth_chain` returns `Option<AuthChain>`. |
+| `main.rs` | Remove `cfg.warn_on_misconfig()` call (moved into `Daemon::new`). |
 | `serve.rs` | Construct `AuthContext` with `TransportContext::WebTransport`. Handle `Option<AuthChain>`. |
 | `identity.rs` | No changes. `Anonymous` stays for UDS `peer_cred()` fallback. |
 
