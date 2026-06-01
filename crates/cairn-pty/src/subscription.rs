@@ -7,7 +7,7 @@ use tokio::sync::broadcast;
 pub use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 
 use crate::ClientId;
-use crate::ghostty::Command;
+use crate::ghostty::{Command, Envelope};
 
 /// Result of a successful [`crate::PtySession::subscribe`] call.
 ///
@@ -56,7 +56,7 @@ impl Subscription {
         stream: broadcast::Receiver<Bytes>,
         primary_count: Arc<AtomicUsize>,
         client_id: ClientId,
-        cmd_tx: flume::Sender<Command>,
+        cmd_tx: flume::Sender<Envelope>,
     ) -> Self {
         primary_count.fetch_add(1, Ordering::Relaxed);
         Self {
@@ -91,16 +91,20 @@ impl Subscription {
 struct SubscriptionGuard {
     client_id: ClientId,
     primary_count: Arc<AtomicUsize>,
-    cmd_tx: flume::Sender<Command>,
+    cmd_tx: flume::Sender<Envelope>,
 }
 
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         self.primary_count.fetch_sub(1, Ordering::Relaxed);
         // Best-effort. If `cmd_tx` is closed, the worker has already
-        // shut down and there's no leader state to clear.
-        let _ = self.cmd_tx.send(Command::Detach {
-            client_id: self.client_id,
+        // shut down and there's no leader state to clear. trace_id is
+        // None because Drop has no meaningful caller span to propagate.
+        let _ = self.cmd_tx.send(Envelope {
+            cmd: Command::Detach {
+                client_id: self.client_id,
+            },
+            trace_id: None,
         });
     }
 }
@@ -113,8 +117,8 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::sync::broadcast;
 
-    fn dummy_channel() -> flume::Sender<Command> {
-        let (tx, _rx) = flume::unbounded::<Command>();
+    fn dummy_channel() -> flume::Sender<Envelope> {
+        let (tx, _rx) = flume::unbounded::<Envelope>();
         tx
     }
 
@@ -178,12 +182,12 @@ mod tests {
     fn drop_sends_detach_command() {
         let counter = Arc::new(AtomicUsize::new(0));
         let (_tx, rx) = broadcast::channel::<Bytes>(1);
-        let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+        let (cmd_tx, cmd_rx) = flume::unbounded::<Envelope>();
         let client_id = ClientId::from_u64(0);
         let sub = Subscription::new(Bytes::new(), rx, counter, client_id, cmd_tx);
         drop(sub);
         let received = cmd_rx.try_recv().expect("Detach should have been sent");
-        match received {
+        match received.cmd {
             Command::Detach { client_id: id } => assert_eq!(id, client_id),
             other => panic!("expected Detach, got {:?}", std::mem::discriminant(&other)),
         }

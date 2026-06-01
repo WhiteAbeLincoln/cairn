@@ -16,6 +16,32 @@ use tokio::sync::oneshot;
 
 use super::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
+/// Wraps a [`Command`] with the caller's current OTel trace context, so
+/// the worker can create span links that bridge the async→thread boundary.
+pub(crate) struct Envelope {
+    pub cmd: Command,
+    pub trace_id: Option<String>,
+}
+
+/// Extract the current OTel span's trace-id + span-id as a W3C `traceparent`
+/// string, or `None` if no valid OTel context is active.
+fn current_trace_id() -> Option<String> {
+    use opentelemetry::trace::TraceContextExt as _;
+    let cx = tracing_opentelemetry::OpenTelemetrySpanExt::context(&tracing::Span::current());
+    let span_ref = cx.span();
+    let sc = span_ref.span_context();
+    if sc.is_valid() {
+        Some(format!(
+            "00-{}-{}-{:02x}",
+            sc.trace_id(),
+            sc.span_id(),
+            sc.trace_flags().to_u8(),
+        ))
+    } else {
+        None
+    }
+}
+
 /// Commands the public API sends to the session worker thread.
 pub(crate) enum Command {
     Subscribe {
@@ -59,7 +85,7 @@ pub(crate) enum Command {
 ///
 /// Construct via [`GhosttyPty::spawn`]. Send + Sync — share across tasks.
 pub struct GhosttyPty {
-    cmd_tx: flume::Sender<Command>,
+    cmd_tx: flume::Sender<Envelope>,
     exit_rx: tokio::sync::watch::Receiver<Option<crate::ExitStatus>>,
 }
 
@@ -89,7 +115,10 @@ impl GhosttyPty {
     /// `wait()` will resolve shortly after.
     pub fn kill(&self) -> Result<(), PtyError> {
         self.cmd_tx
-            .send(Command::Shutdown)
+            .send(Envelope {
+                cmd: Command::Shutdown,
+                trace_id: current_trace_id(),
+            })
             .map_err(|_| PtyError::Closed)
     }
 
@@ -128,10 +157,13 @@ impl GhosttyPty {
     ) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Signal {
-                sig,
-                reason,
-                reply: tx,
+            .send_async(Envelope {
+                cmd: Command::Signal {
+                    sig,
+                    reason,
+                    reply: tx,
+                },
+                trace_id: current_trace_id(),
             })
             .await
             .map_err(|_| PtyError::Closed)?;
@@ -142,7 +174,10 @@ impl GhosttyPty {
     pub async fn inject(&self, data: Bytes) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Inject { data, reply: tx })
+            .send_async(Envelope {
+                cmd: Command::Inject { data, reply: tx },
+                trace_id: current_trace_id(),
+            })
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
@@ -154,7 +189,10 @@ impl super::PtySession for GhosttyPty {
     async fn size(&self) -> Result<super::TermSize, PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Size { reply: tx })
+            .send_async(Envelope {
+                cmd: Command::Size { reply: tx },
+                trace_id: current_trace_id(),
+            })
             .await
             .map_err(|_| PtyError::Closed)?;
         rx.await.map_err(|_| PtyError::Closed)?
@@ -163,10 +201,13 @@ impl super::PtySession for GhosttyPty {
     async fn resize(&self, client_id: ClientId, size: super::TermSize) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Resize {
-                client_id,
-                size,
-                reply: tx,
+            .send_async(Envelope {
+                cmd: Command::Resize {
+                    client_id,
+                    size,
+                    reply: tx,
+                },
+                trace_id: current_trace_id(),
             })
             .await
             .map_err(|_| PtyError::Closed)?;
@@ -176,9 +217,12 @@ impl super::PtySession for GhosttyPty {
     async fn subscribe(&self, client_id: ClientId) -> Result<Subscription, PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Subscribe {
-                client_id,
-                reply: tx,
+            .send_async(Envelope {
+                cmd: Command::Subscribe {
+                    client_id,
+                    reply: tx,
+                },
+                trace_id: current_trace_id(),
             })
             .await
             .map_err(|_| PtyError::Closed)?;
@@ -188,10 +232,13 @@ impl super::PtySession for GhosttyPty {
     async fn write(&self, client_id: ClientId, data: bytes::Bytes) -> Result<(), PtyError> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send_async(Command::Write {
-                client_id,
-                data,
-                reply: tx,
+            .send_async(Envelope {
+                cmd: Command::Write {
+                    client_id,
+                    data,
+                    reply: tx,
+                },
+                trace_id: current_trace_id(),
             })
             .await
             .map_err(|_| PtyError::Closed)?;

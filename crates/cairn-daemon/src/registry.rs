@@ -158,7 +158,7 @@ impl SessionRegistry {
             }
             None => Some(self.inferred_unique_name(&spec, default_shell, &id)),
         };
-        let opts = options_from(spec.clone(), default_shell);
+        let opts = options_from(spec.clone(), default_shell, id.clone());
         let handle = GhosttyPty::spawn(opts).map_err(|e| {
             tracing::warn!(
                 error = %e,
@@ -232,7 +232,7 @@ impl SessionRegistry {
         if entry.handle().try_exit_status().is_none() && !force {
             return Err(DaemonError::Running);
         }
-        let opts = options_from(entry.spec.clone(), default_shell);
+        let opts = options_from(entry.spec.clone(), default_shell, entry.id.clone());
         let handle = GhosttyPty::spawn(opts).map_err(|e| {
             tracing::warn!(
                 error = %e,

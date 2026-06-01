@@ -16,14 +16,14 @@ use bytes::Bytes;
 use libghostty_vt::{Terminal, TerminalOptions};
 use tokio::sync::broadcast;
 
-use super::Command;
 use super::input_classifier::is_user_input;
 use super::process::{ChildProcess, Pty};
+use super::{Command, Envelope};
 use crate::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
 /// State shared between the worker thread's setup phase and the caller.
 pub(super) struct WorkerHandles {
-    pub cmd_tx: flume::Sender<Command>,
+    pub cmd_tx: flume::Sender<Envelope>,
     pub exit_rx: tokio::sync::watch::Receiver<Option<crate::ExitStatus>>,
 }
 
@@ -31,7 +31,7 @@ pub(super) struct WorkerHandles {
 ///
 /// Returns the channels external callers use to interact with the session.
 pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
-    let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<Envelope>();
     let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<crate::ExitStatus>>(None);
 
@@ -202,7 +202,7 @@ where
     P: Pty,
     C: ChildProcess,
 {
-    let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<Envelope>();
     let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<crate::ExitStatus>>(None);
 
@@ -241,8 +241,8 @@ where
 struct SessionState<P: Pty, C: ChildProcess> {
     pty: P,
     child: C,
-    cmd_rx: flume::Receiver<Command>,
-    cmd_tx: flume::Sender<Command>,
+    cmd_rx: flume::Receiver<Envelope>,
+    cmd_tx: flume::Sender<Envelope>,
     exit_tx: tokio::sync::watch::Sender<Option<crate::ExitStatus>>,
     broadcast_capacity: usize,
     initial_size: TermSize,
@@ -458,10 +458,11 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
 
             // ── External command
             recv = s.cmd_rx.recv_async() => {
-                let cmd = match recv {
-                    Ok(c) => c,
+                let envelope = match recv {
+                    Ok(e) => e,
                     Err(_) => break, // all GhosttyPty handles dropped
                 };
+                let Envelope { cmd, trace_id: _trace_id } = envelope;
                 if exit_published {
                     // Post-exit normalisation: reply Closed to writes/resizes.
                     // Shutdown (no-op), Subscribe (final state), and Size (the
@@ -754,12 +755,12 @@ async fn drain_pty_after_exit<P: Pty>(
 /// Reply Closed (via Backend wrapping a synthetic IO error) to any commands
 /// the caller has queued before they discover the worker has failed to start.
 /// Called from the Terminal-construction error paths.
-fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
+fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Envelope>) {
     let make_err = || PtyError::Backend {
         source: Box::new(std::io::Error::other("VT terminal construction failed")),
     };
-    while let Ok(cmd) = cmd_rx.try_recv() {
-        match cmd {
+    while let Ok(envelope) = cmd_rx.try_recv() {
+        match envelope.cmd {
             Command::Shutdown => {}
             Command::Subscribe { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
