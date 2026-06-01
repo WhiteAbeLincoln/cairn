@@ -68,29 +68,26 @@ input bytes** — see Privacy below.
 
 `tracing` is on the dependency graph at the workspace root
 (`Cargo.toml:14`) and re-exported into `cairn-pty`
-(`crates/cairn-pty/Cargo.toml:12`). No `tracing_subscriber` is wired
-anywhere in the workspace today — events flow into the global
-dispatcher and, with no subscriber installed, are silently dropped.
-Installing a subscriber is a host-process responsibility (the future
-`cairn` daemon binary, `cairn-cli`, or a test harness); the worker
-library deliberately stays neutral.
+(`crates/cairn-pty/Cargo.toml:12`). The daemon binary installs
+`tracing_subscriber::fmt` with `EnvFilter` from the `--log` /
+`CAIRN_LOG` flag (default `"info,cairn_daemon=info,cairn_pty=info"`),
+outputting to stderr. The `--log-format` flag selects format; see
+[Subscriber and transport](#subscriber-and-transport) below.
 
-Today's full inventory of `tracing` calls in the PTY layer
+The worker library deliberately does not install a subscriber — that
+is the host binary's job.
+
+Existing `tracing` call sites in the PTY layer
 (`crates/cairn-pty/src/pty/ghostty/worker.rs`):
 
-- `worker.rs:217` — `error!` on `Terminal::new` failure.
-- `worker.rs:229` — `error!` on `on_pty_write` callback install failure.
-- `worker.rs:339` — `warn!` when `child.start_kill()` fails on shutdown.
-- `worker.rs:410` — `warn!` when `child.wait()` fails (synthetic exit 1).
-- `worker.rs:442` — `warn!` when flushing a PtyWriteFn response to the master fails.
+- `error!` on Terminal/callback construction failures.
+- `warn!` on `child.start_kill()` failure, `child.wait()` failure,
+  PtyWriteFn flush failure.
+- `info!` on leader promotion / vacation (election events).
 
-Every call uses field syntax (`error = ?e` or `error = %e`), so the
-events are already structured — `tracing-subscriber` with `fmt::layer`
-will emit them as `error=...` key/value or JSON depending on layer
-config. No `info`/`debug` events, no spans, no
-[[backpressure]]/[[client-attach-and-election]]/[[resize-semantics]]
-observability surface yet. **Currently we log only the error-recovery
-paths inside the worker; everything else is dark.**
+The daemon layer (`crates/cairn-daemon/`) has additional tracing in
+the registry (spawn failures), serve (listener lifecycle, WT auth),
+and auth backends. All calls use structured field syntax.
 
 ## Recommended event surface
 
@@ -150,107 +147,76 @@ output, and arbitrary secrets that happen to land on stderr.
 already trips this wire at `main.zig:888` and `:898` — debug logs
 contain hex-encoded PTY input, and the default log level is debug.
 
-Cairn's stance should be:
-
-- No byte-level events at `info` or `debug`. Reserve `trace` for
-  hex/length-prefixed payload logging, and document explicitly that
-  enabling `trace` for `cairn_pty::pty=trace` exposes PTY contents.
-- Add a build-time feature `unsafe-trace-bytes` (default off) gating
-  even the `trace!` macro on payload bytes, so a release build cannot
-  emit them no matter how the operator configures `RUST_LOG`.
-- Where lengths are useful for debugging without payload (the common
-  case), emit `debug!(bytes = data.len(), "vt_write")` not the bytes
-  themselves.
+Cairn's stance: **never log PTY bytes.** No `trace!` macro on payload
+bytes at any level or behind any feature flag. The data is not
+necessary for debugging — byte counts and event types are sufficient.
+Where lengths are useful for debugging without payload (the common
+case), emit `debug!(bytes = data.len(), "vt_write")` not the bytes
+themselves.
 
 ## Subscriber and transport
 
 The library deliberately does not install a subscriber. The host
-binary (the daemon) should install `tracing_subscriber::fmt` with:
+binary (the daemon) installs `tracing_subscriber::fmt` with:
 
-- `EnvFilter::from_default_env().with_default("info,cairn_pty::pty=info")`.
-- For dev: pretty layer to stderr.
-- For production: JSON layer to a file under
-  `${XDG_STATE_HOME:-$HOME/.local/state}/cairn/cairn.log`, with a
-  rotation policy. `tracing-appender`'s `RollingFileAppender` (daily +
-  size-bounded) is the obvious fit; it sidesteps zmx's bespoke
-  rotator (`src/log.zig:82–101`).
-- When run under systemd, default to stderr with no timestamp prefix
-  (journald supplies one) and rely on the unit's `StandardError=journal`.
+- `EnvFilter` from `--log` / `CAIRN_LOG` (default
+  `"info,cairn_daemon=info,cairn_pty=info"`).
+- `--log-format` selects the stderr output format. Supported values:
 
-The library should not depend on `tracing-subscriber` — only the
-host binary picks the transport.
+  | Format    | Description                                       |
+  | --------- | ------------------------------------------------- |
+  | `pretty`  | Multi-line, thread ids+names, line numbers (default) |
+  | `compact` | Condensed single-line                             |
+  | `json`    | Single-line JSON for log aggregation              |
+  | `full`    | Single-line with all metadata                     |
+  | `off`     | Disable stderr logs entirely                      |
+
+  Modeled on another project:
+  serde-derived `LogFormat` enum with `#[serde(rename_all = "lowercase")]`,
+  `match` arms building boxed `Layer` variants.
+
+- Output is always stderr. No file transport — systemd / container
+  log drivers capture stderr. If OTLP export is added later, it runs
+  as an independent layer alongside the stderr layer, not instead of it.
+
+The library (`cairn-pty`) must not depend on `tracing-subscriber` —
+only the host binary picks the transport.
 
 ## Metrics
 
-A separate surface from logs; the daemon process is the natural
-owner. Minimum useful set:
+Deferred. When metrics are added, the transport will be **OTLP push**
+(via `opentelemetry-otlp` + `tracing-opentelemetry`), not a
+Prometheus scrape endpoint. This avoids adding an HTTP listener and
+aligns with cairn's eventual deployment behind Tailscale / reverse
+proxies where pull-based scraping is awkward.
 
-- Gauges: `cairn_sessions_total`, `cairn_clients_total`,
-  `cairn_clients_per_session{session_id}` (avoid high-cardinality —
-  consider quantiles instead),
-  `cairn_scrollback_bytes{session_id}`.
+Minimum useful set when implemented:
+
+- Gauges: `cairn_sessions_total`, `cairn_clients_total`.
 - Counters: `cairn_pty_bytes_in_total`, `cairn_pty_bytes_out_total`,
-  `cairn_client_lag_events_total`, `cairn_auth_failures_total`,
-  `cairn_protocol_errors_total`.
+  `cairn_client_lag_events_total`, `cairn_auth_failures_total`.
 - Histograms: `cairn_child_runtime_seconds`,
-  `cairn_resize_latency_ms`, `cairn_snapshot_serialize_ms`
-  (per `format_snapshot`, `worker.rs:356`).
+  `cairn_snapshot_serialize_ms`.
 
-Recommended exposure: Prometheus text format at
-`GET /metrics` on a small HTTP listener bound alongside the wRPC
-endpoints (loopback by default, gated by [[authentication]]).
-OpenTelemetry is
-plausible but adds a heavy dep tree for a self-hosted daemon; defer
-unless an integration partner demands it.
+## State inspection
 
-## State inspection (debug endpoint)
-
-Operators occasionally need to ask "what is session X actually
-doing?" without attaching a real client. zmx answers this by
-attaching and inspecting; cairn can do better because sessions
-already live as named objects in a registry. Recommendation:
-
-- `GET /debug/sessions` → list `{session_id, child_pid, cols, rows,
-  attached_clients, leader_id, scrollback_lines, pending_writes,
-  created_at, last_resize_at}`.
-- `GET /debug/sessions/{id}/state` → the same plus the serialised
-  scrollback (large; cap at request param or stream).
-- `GET /debug/sessions/{id}/clients` → per-client `{id, peer_addr,
-  attached_since, lag_frames, last_recv_at}`.
-
-The endpoint is admin-only ([[authentication]]) and disabled unless
-`CAIRN_DEBUG_ENDPOINT=1` (or equivalent in [[configuration]]).
-A separate CLI (`cairn inspect <id>`) is a thin wrapper over the
-HTTP surface — easier to operate than embedding a debug REPL.
+No dedicated debug HTTP endpoint. The planned web UI provides
+session inspection (scrollback, attached clients, session metadata)
+through the same wRPC interface used by the CLI. `cairn inspect <id>`
+already exposes `{session_id, pid, cols, rows, attached_clients,
+created_at, exit, spec}` via the `sessions.inspect` RPC.
 
 ## Open Questions
 
 - **Span propagation across the `flume` channel.** `cmd_rx.recv_async`
-  in `worker.rs:309` consumes commands from other tasks. Should the
+  in `worker.rs` consumes commands from other tasks. Should the
   sender attach its `tracing::Span` to the `Command` enum so that
   "client X requested resize" shows the client's span as the parent
   of the resize event?
-- **PII redaction at trace level.** Even with `unsafe-trace-bytes`
-  gated, an operator may turn it on once and forget. Should the
-  `trace!` payload emitter run a simple regex against common secret
-  shapes (`AKIA...`, `ssh-rsa ...`, `Bearer ey...`) and zero them?
-- **Per-session vs. shared log file.** zmx writes one log per session
-  (`main.zig:838`); cairn's single-daemon model wants one file with
-  `session_id` as a span field. Confirm operators prefer the spans
-  approach over `tail -f .../sessions/<id>.log`.
-- **Metrics cardinality.** Tagging counters by `session_id` explodes
-  Prometheus cardinality for long-lived daemons. Drop the label and
-  rely on logs for per-session detail, or accept the cost?
-- **OpenTelemetry traces vs. logs.** `tracing-opentelemetry` makes
-  spans into OTel traces "for free", but for a daemon with one
-  long-running task per session, do trace exports add value?
-- **Log rotation strategy.** `tracing-appender` daily + 7-day
-  retention vs. zmx-style 5 MiB + one generation (`src/log.zig:7`,
-  `:82–101`). Daily aligns with journald; size-based is friendlier to
-  high-traffic sessions. Likely both, configurable.
+- **OTLP integration.** `tracing-opentelemetry` makes spans into OTel
+  traces and feeds an OTLP exporter. For a daemon with one
+  long-running task per session, do trace exports add value, or are
+  structured logs + future metrics sufficient?
 - **Cross-process correlation.** If the daemon spawns helper
   processes ([[query-response-delegation]] envisioned an external
   delegator), `trace_id` as an env var with W3C traceparent semantics?
-- **Debug-endpoint dump format.** Scrollback can be megabytes:
-  streaming NDJSON, `text/plain` with a truncation header? Resolve
-  once [[terminal-state-and-replay]] settles the schema.
