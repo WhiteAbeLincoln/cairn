@@ -13,10 +13,13 @@ pub fn version() -> VersionInfo {
     }
 }
 
-/// UDS is pre-authenticated by the kernel; first-message auth is a
-/// WebTransport concern. Accept any token unconditionally on this transport.
+/// UDS is pre-authenticated by the kernel by user id;
+/// WebTransport can currently authenticate using Tailscale, but first-message authentication (i.e. JWT token) is not implemented yet.
 pub fn authenticate(_token: String) -> Result<(), WireError> {
-    Ok(())
+    Err(WireError {
+        code: "unimplemented".to_string(),
+        message: "first-message authentication is not implemented yet".to_string(),
+    })
 }
 
 pub fn whoami(ctx: &ConnCtx) -> Result<String, WireError> {
