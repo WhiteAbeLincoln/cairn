@@ -3,7 +3,9 @@
 
 use std::sync::Arc;
 
-use cairn_protocol::cairn::daemon::types::{Error as WireError, SessionInfo, SessionSpec, Signal};
+use cairn_protocol::cairn::daemon::types::{
+    CallContext, Error as WireError, SessionInfo, SessionSpec, Signal,
+};
 use cairn_protocol::exports::cairn::daemon::meta::VersionInfo;
 
 use crate::config::DaemonConfig;
@@ -52,13 +54,18 @@ impl Daemon {
 // ── sessions::Handler<ConnCtx> ────────────────────────────────────────────
 
 impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daemon {
-    async fn list_all(&self, _ctx: ConnCtx) -> anyhow::Result<Vec<SessionInfo>> {
+    async fn list_all(
+        &self,
+        _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Vec<SessionInfo>> {
         Ok(sess::list_all(self).await)
     }
 
     async fn inspect(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
     ) -> anyhow::Result<Result<SessionInfo, WireError>> {
         Ok(sess::inspect(self, id).await)
@@ -67,6 +74,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn create(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         spec: SessionSpec,
     ) -> anyhow::Result<Result<SessionInfo, WireError>> {
         Ok(sess::create(self, spec).await)
@@ -75,6 +83,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn rename(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         new_name: String,
     ) -> anyhow::Result<Result<(), WireError>> {
@@ -84,6 +93,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn restart(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         force: bool,
     ) -> anyhow::Result<Result<(), WireError>> {
@@ -93,6 +103,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn kill(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         sig: Signal,
         grace_ms: Option<u32>,
@@ -103,6 +114,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn kick(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         client: Option<String>,
     ) -> anyhow::Result<Result<(), WireError>> {
@@ -114,6 +126,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn wait(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
     ) -> anyhow::Result<
         std::pin::Pin<
@@ -130,6 +143,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn logs(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         window: cairn_protocol::cairn::daemon::types::LogWindow,
         follow: bool,
@@ -142,6 +156,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn attach(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         init: cairn_protocol::cairn::daemon::types::AttachInit,
         events: std::pin::Pin<
@@ -166,6 +181,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn send(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         id: String,
         chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     ) -> anyhow::Result<Result<(), WireError>> {
@@ -176,19 +192,28 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
 // ── meta::Handler<ConnCtx> ────────────────────────────────────────────────
 
 impl cairn_protocol::exports::cairn::daemon::meta::Handler<ConnCtx> for Daemon {
-    async fn version(&self, _ctx: ConnCtx) -> anyhow::Result<VersionInfo> {
+    async fn version(
+        &self,
+        _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<VersionInfo> {
         Ok(handlers::meta::version())
     }
 
     async fn authenticate(
         &self,
         _ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
         token: String,
     ) -> anyhow::Result<Result<(), WireError>> {
         Ok(handlers::meta::authenticate(token))
     }
 
-    async fn whoami(&self, ctx: ConnCtx) -> anyhow::Result<Result<String, WireError>> {
+    async fn whoami(
+        &self,
+        ctx: ConnCtx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Result<String, WireError>> {
         Ok(handlers::meta::whoami(&ctx))
     }
 }

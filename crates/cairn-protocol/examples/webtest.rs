@@ -157,16 +157,16 @@ struct RenameForm {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 async fn home(State(st): State<AppState>) -> Html<String> {
-    let version = match api::meta::version(&wc(&st), ()).await {
+    let version = match api::meta::version(&wc(&st), (), None).await {
         Ok(v) => format!("{} · {}", h(&v.daemon), h(&v.protocol)),
         Err(e) => return err_page("version", e),
     };
-    let who = match api::meta::whoami(&wc(&st), ()).await {
+    let who = match api::meta::whoami(&wc(&st), (), None).await {
         Ok(Ok(s)) => h(&s),
         Ok(Err(e)) => format!("err {}", h(&e.code)),
         Err(e) => return err_page("whoami", e),
     };
-    let sessions = match api::sessions::list_all(&wc(&st), ()).await {
+    let sessions = match api::sessions::list_all(&wc(&st), (), None).await {
         Ok(v) => v,
         Err(e) => return err_page("list", e),
     };
@@ -229,7 +229,7 @@ async fn create(State(st): State<AppState>, Form(f): Form<CreateForm>) -> impl I
         idle_timeout_secs: None,
         scrollback_lines: 1000,
     };
-    match api::sessions::create(&wc(&st), (), &spec).await {
+    match api::sessions::create(&wc(&st), (), None, &spec).await {
         Ok(Ok(info)) => Redirect::to(&format!("/s/{}", info.id)).into_response(),
         Ok(Err(e)) => err_page("create", format!("{}: {}", e.code, e.message)).into_response(),
         Err(e) => err_page("create", e).into_response(),
@@ -237,7 +237,7 @@ async fn create(State(st): State<AppState>, Form(f): Form<CreateForm>) -> impl I
 }
 
 async fn session(State(st): State<AppState>, Path(id): Path<String>) -> Html<String> {
-    let info = match api::sessions::inspect(&wc(&st), (), &id).await {
+    let info = match api::sessions::inspect(&wc(&st), (), None, &id).await {
         Ok(Ok(i)) => i,
         Ok(Err(e)) => return err_page("inspect", format!("{}: {}", e.code, e.message)),
         Err(e) => return err_page("inspect", e),
@@ -299,7 +299,7 @@ fn state_str(i: &t::SessionInfo) -> String {
 /// Current state line for a session (`running` / `exited …`). Polled by the
 /// detail page so the header reflects exit without a reload.
 async fn state(State(st): State<AppState>, Path(id): Path<String>) -> String {
-    match api::sessions::inspect(&wc(&st), (), &id).await {
+    match api::sessions::inspect(&wc(&st), (), None, &id).await {
         Ok(Ok(i)) => state_str(&i),
         Ok(Err(e)) => format!("err {}", e.code),
         Err(e) => format!("error: {e}"),
@@ -316,7 +316,7 @@ async fn stream(State(st): State<AppState>, Path(id): Path<String>) -> axum::res
     use axum::response::sse::{Event, KeepAlive, Sse};
     use std::convert::Infallible;
 
-    match api::sessions::logs(&wc(&st), (), &id, &t::LogWindow::All, true).await {
+    match api::sessions::logs(&wc(&st), (), None, &id, &t::LogWindow::All, true).await {
         Ok((stream, io)) => {
             if let Some(io) = io {
                 tokio::spawn(async move {
@@ -358,7 +358,7 @@ async fn send(
     let chunk: Bytes = Bytes::from(f.input.into_bytes());
     let chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<Bytes>> + Send>> =
         Box::pin(futures::stream::iter(vec![vec![chunk]]));
-    let _ = api::sessions::send(&wc(&st), (), &id, chunks).await;
+    let _ = api::sessions::send(&wc(&st), (), None, &id, chunks).await;
     Redirect::to(&format!("/s/{id}"))
 }
 
@@ -367,23 +367,23 @@ async fn kill(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoRe
     // shells (a blank command → default shell on a PTY) ignore SIGTERM, so a
     // bare TERM would leave the session running — the grace makes "kill" stick.
     let sig = t::Signal::Named(t::SignalName::Term);
-    let _ = api::sessions::kill(&wc(&st), (), &id, &sig, Some(1500)).await;
+    let _ = api::sessions::kill(&wc(&st), (), None, &id, &sig, Some(1500)).await;
     Redirect::to(&format!("/s/{id}"))
 }
 
 async fn killnow(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
     let sig = t::Signal::Named(t::SignalName::Kill);
-    let _ = api::sessions::kill(&wc(&st), (), &id, &sig, None).await;
+    let _ = api::sessions::kill(&wc(&st), (), None, &id, &sig, None).await;
     Redirect::to(&format!("/s/{id}"))
 }
 
 async fn restart(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    let _ = api::sessions::restart(&wc(&st), (), &id, true).await;
+    let _ = api::sessions::restart(&wc(&st), (), None, &id, true).await;
     Redirect::to(&format!("/s/{id}"))
 }
 
 async fn kick(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
-    let _ = api::sessions::kick(&wc(&st), (), &id, None).await;
+    let _ = api::sessions::kick(&wc(&st), (), None, &id, None).await;
     Redirect::to(&format!("/s/{id}"))
 }
 
@@ -392,6 +392,6 @@ async fn rename(
     Path(id): Path<String>,
     Form(f): Form<RenameForm>,
 ) -> impl IntoResponse {
-    let _ = api::sessions::rename(&wc(&st), (), &id, &f.new_name).await;
+    let _ = api::sessions::rename(&wc(&st), (), None, &id, &f.new_name).await;
     Redirect::to(&format!("/s/{id}"))
 }

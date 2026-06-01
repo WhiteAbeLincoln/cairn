@@ -28,7 +28,7 @@ async fn binary_starts_and_serves_version() {
     assert!(ready, "daemon did not create its socket");
 
     let client = wrpc_transport::unix::Client::from(socket.clone());
-    let info = cairn_protocol::client::cairn::daemon::meta::version(&client, ())
+    let info = cairn_protocol::client::cairn::daemon::meta::version(&client, (), None)
         .await
         .expect("version invocation");
     assert!(info.daemon.starts_with("cairn-daemon/"));

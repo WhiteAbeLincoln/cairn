@@ -38,7 +38,7 @@ pub async fn run(
     };
     // `sessions::send` returns `Result<(Result<(), Error>, Option<io_future>)>`;
     // the io future drives the underlying transport and must be spawned.
-    match sessions::send(client, (), &resolved.id, chunks).await {
+    match sessions::send(client, (), None, &resolved.id, chunks).await {
         Ok((wire, io)) => {
             if let Some(io) = io {
                 tokio::spawn(async move {

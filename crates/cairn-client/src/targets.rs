@@ -144,7 +144,7 @@ fn build_glob(pat: &str) -> Result<globset::GlobMatcher, globset::Error> {
 
 async fn list_all(client: &Client) -> Result<Vec<SessionInfo>> {
     use cairn_protocol::client::cairn::daemon::sessions;
-    sessions::list_all(client, ())
+    sessions::list_all(client, (), None)
         .await
         .map_err(|e| anyhow::anyhow!("cannot reach cairn-daemon: {e}"))
 }

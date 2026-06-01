@@ -43,12 +43,12 @@ pub async fn run(
         let id = t.id.clone();
         let token = t.name.clone().unwrap_or_else(|| t.id.clone());
         tasks.push(async move {
-            let sig_result = sessions::kill(&client, (), &id, &wire_sig, grace_ms).await;
+            let sig_result = sessions::kill(&client, (), None, &id, &wire_sig, grace_ms).await;
             let wait_result = if no_wait {
                 Ok(())
             } else {
                 // `wait` returns (future, Option<io_future>); drive both.
-                match sessions::wait(&client, (), &id).await {
+                match sessions::wait(&client, (), None, &id).await {
                     Ok((future, io)) => {
                         if let Some(io) = io {
                             tokio::spawn(async move {

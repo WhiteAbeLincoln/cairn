@@ -20,7 +20,7 @@ use tempfile::TempDir;
 
 use cairn_protocol as bindings;
 
-use bindings::cairn::daemon::types::{Error, SessionInfo, SessionSpec, Signal};
+use bindings::cairn::daemon::types::{CallContext, Error, SessionInfo, SessionSpec, Signal};
 use bindings::exports::cairn::daemon::meta::VersionInfo;
 
 /// Per-connection context the wRPC unix-socket server hands to handlers.
@@ -187,7 +187,11 @@ impl StubHandler {
 }
 
 impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
-    async fn list_all(&self, ctx: Ctx) -> anyhow::Result<Vec<SessionInfo>> {
+    async fn list_all(
+        &self,
+        ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Vec<SessionInfo>> {
         match &self.list_all {
             Some(f) => Ok(f(ctx)),
             None => unimplemented!("sessions.list-all not stubbed in this test"),
@@ -197,6 +201,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn kill(
         &self,
         ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         id: String,
         sig: Signal,
         grace_ms: Option<u32>,
@@ -207,13 +212,19 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         }
     }
 
-    async fn inspect(&self, _ctx: Ctx, _id: String) -> anyhow::Result<Result<SessionInfo, Error>> {
+    async fn inspect(
+        &self,
+        _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+        _id: String,
+    ) -> anyhow::Result<Result<SessionInfo, Error>> {
         unimplemented!("sessions.inspect not stubbed in this test")
     }
 
     async fn create(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _spec: SessionSpec,
     ) -> anyhow::Result<Result<SessionInfo, Error>> {
         unimplemented!("sessions.create not stubbed in this test")
@@ -222,6 +233,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn rename(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
         _new_name: String,
     ) -> anyhow::Result<Result<(), Error>> {
@@ -231,6 +243,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn restart(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
         _force: bool,
     ) -> anyhow::Result<Result<(), Error>> {
@@ -240,6 +253,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn kick(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
         _client: Option<String>,
     ) -> anyhow::Result<Result<(), Error>> {
@@ -249,6 +263,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn wait(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
     ) -> anyhow::Result<
         std::pin::Pin<
@@ -265,6 +280,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn logs(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
         _window: bindings::cairn::daemon::types::LogWindow,
         _follow: bool,
@@ -277,6 +293,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn attach(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
         _init: bindings::cairn::daemon::types::AttachInit,
         _events: std::pin::Pin<
@@ -301,6 +318,7 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
     async fn send(
         &self,
         _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
         _id: String,
         _chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     ) -> anyhow::Result<Result<(), Error>> {
@@ -309,21 +327,34 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
 }
 
 impl bindings::exports::cairn::daemon::meta::Handler<Ctx> for StubHandler {
-    async fn version(&self, ctx: Ctx) -> anyhow::Result<VersionInfo> {
+    async fn version(
+        &self,
+        ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<VersionInfo> {
         match &self.version {
             Some(f) => Ok(f(ctx)),
             None => unimplemented!("meta.version not stubbed in this test"),
         }
     }
 
-    async fn authenticate(&self, ctx: Ctx, token: String) -> anyhow::Result<Result<(), Error>> {
+    async fn authenticate(
+        &self,
+        ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+        token: String,
+    ) -> anyhow::Result<Result<(), Error>> {
         match &self.authenticate {
             Some(f) => Ok(f(ctx, token)),
             None => unimplemented!("meta.authenticate not stubbed in this test"),
         }
     }
 
-    async fn whoami(&self, _ctx: Ctx) -> anyhow::Result<Result<String, Error>> {
+    async fn whoami(
+        &self,
+        _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Result<String, Error>> {
         unimplemented!("meta.whoami not stubbed in this test")
     }
 }

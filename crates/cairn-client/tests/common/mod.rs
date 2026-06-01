@@ -120,13 +120,13 @@ impl Harness {
     }
 
     pub async fn list_all(&self) -> anyhow::Result<Vec<SessionInfo>> {
-        api::sessions::list_all(&self.client(), ())
+        api::sessions::list_all(&self.client(), (), None)
             .await
             .map_err(|e| anyhow::anyhow!("list_all: {e}"))
     }
 
     pub async fn inspect(&self, id: &str) -> anyhow::Result<SessionInfo> {
-        let r = api::sessions::inspect(&self.client(), (), id)
+        let r = api::sessions::inspect(&self.client(), (), None, id)
             .await
             .map_err(|e| anyhow::anyhow!("inspect: {e}"))?;
         r.map_err(|e| anyhow::anyhow!("inspect wire-err: {} {}", e.code, e.message))

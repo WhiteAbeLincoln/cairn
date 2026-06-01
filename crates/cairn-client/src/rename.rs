@@ -15,7 +15,7 @@ pub async fn run(client: &Client, target: &SessionTarget, new_name: &str) -> Res
             return Ok(1);
         }
     };
-    match sessions::rename(client, (), &resolved.id, new_name).await {
+    match sessions::rename(client, (), None, &resolved.id, new_name).await {
         Ok(Ok(())) => Ok(0),
         Ok(Err(e)) => {
             eprintln!("error: {}: {}", e.code, e.message);

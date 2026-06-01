@@ -28,7 +28,7 @@ pub async fn run(
     // `sessions::wait` returns `Result<(future, Option<io_future>)>`: the
     // first future yields the ExitStatus, the second drives the underlying
     // transport and must be spawned for the call to make progress.
-    let (future, io) = match sessions::wait(client, (), &resolved.id).await {
+    let (future, io) = match sessions::wait(client, (), None, &resolved.id).await {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("error: {e}");

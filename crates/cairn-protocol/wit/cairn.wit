@@ -71,6 +71,10 @@ interface types {
         error(error),
     }
 
+    record call-context {
+        trace-context: option<string>,
+    }
+
     record error {
         code: string,
         message: string,
@@ -81,42 +85,42 @@ interface sessions {
     use types.{
         session-id, client-id, session-spec, session-info, signal,
         log-window, attach-init, client-event, server-event,
-        exit-status, error,
+        exit-status, error, call-context,
     };
 
-    list-all: func() -> list<session-info>;
-    inspect:  func(id: session-id) -> result<session-info, error>;
+    list-all: func(ctx: option<call-context>) -> list<session-info>;
+    inspect:  func(ctx: option<call-context>, id: session-id) -> result<session-info, error>;
 
-    create:  func(spec: session-spec) -> result<session-info, error>;
-    rename:  func(id: session-id, new-name: string) -> result<_, error>;
-    restart: func(id: session-id, force: bool) -> result<_, error>;
-    kill:    func(id: session-id, sig: signal, grace-ms: option<u32>) -> result<_, error>;
-    kick:    func(id: session-id, client: option<client-id>) -> result<_, error>;
+    create:  func(ctx: option<call-context>, spec: session-spec) -> result<session-info, error>;
+    rename:  func(ctx: option<call-context>, id: session-id, new-name: string) -> result<_, error>;
+    restart: func(ctx: option<call-context>, id: session-id, force: bool) -> result<_, error>;
+    kill:    func(ctx: option<call-context>, id: session-id, sig: signal, grace-ms: option<u32>) -> result<_, error>;
+    kick:    func(ctx: option<call-context>, id: session-id, client: option<client-id>) -> result<_, error>;
 
-    wait:    func(id: session-id) -> future<exit-status>;
+    wait:    func(ctx: option<call-context>, id: session-id) -> future<exit-status>;
 
-    logs:    func(id: session-id, window: log-window, follow: bool)
+    logs:    func(ctx: option<call-context>, id: session-id, window: log-window, follow: bool)
              -> stream<list<u8>>;
 
-    attach:  func(id: session-id, init: attach-init,
+    attach:  func(ctx: option<call-context>, id: session-id, init: attach-init,
                   events: stream<client-event>) -> stream<server-event>;
 
-    send:    func(id: session-id, chunks: stream<list<u8>>)
+    send:    func(ctx: option<call-context>, id: session-id, chunks: stream<list<u8>>)
              -> result<_, error>;
 }
 
 interface meta {
-    use types.{error};
+    use types.{error, call-context};
 
     record version-info {
         daemon: string,
         protocol: string,    // "cairn:daemon@0.1.0"
     }
 
-    authenticate: func(token: string) -> result<_, error>;
+    authenticate: func(ctx: option<call-context>, token: string) -> result<_, error>;
 
-    whoami:  func() -> result<string, error>;
-    version: func() -> version-info;
+    whoami:  func(ctx: option<call-context>) -> result<string, error>;
+    version: func(ctx: option<call-context>) -> version-info;
 }
 
 world daemon {

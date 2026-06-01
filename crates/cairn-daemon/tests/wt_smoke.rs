@@ -38,7 +38,7 @@ async fn wt_version_round_trip() {
 
     let wt_client = build_wt_client(wt_addr, cert_hash).await;
 
-    let info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, ())
+    let info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, (), None)
         .await
         .expect("version via WT");
     assert!(
@@ -57,13 +57,13 @@ async fn uds_and_wt_coexist() {
 
     // Query version over UDS.
     let uds_client = harness.client();
-    let uds_info = cairn_protocol::client::cairn::daemon::meta::version(&uds_client, ())
+    let uds_info = cairn_protocol::client::cairn::daemon::meta::version(&uds_client, (), None)
         .await
         .expect("version via UDS");
 
     // Query version over WebTransport.
     let wt_client = build_wt_client(wt_addr, cert_hash).await;
-    let wt_info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, ())
+    let wt_info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, (), None)
         .await
         .expect("version via WT");
 

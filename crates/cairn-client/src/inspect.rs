@@ -17,7 +17,7 @@ pub async fn run(client: &Client, target: &SessionTarget) -> Result<i32> {
             return Ok(1);
         }
     };
-    let info = match sessions::inspect(client, (), &resolved.id).await {
+    let info = match sessions::inspect(client, (), None, &resolved.id).await {
         Ok(Ok(info)) => info,
         Ok(Err(e)) => {
             eprintln!("error: {}: {}", e.code, e.message);
