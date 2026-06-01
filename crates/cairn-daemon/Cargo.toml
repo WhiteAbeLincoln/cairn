@@ -33,7 +33,11 @@ futures.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tracing.workspace = true
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic"] }
+tracing-opentelemetry = { version = "0.33", default-features = false }
 uuid = { version = "1", features = ["v7"] }
 base64.workspace = true
 bytes.workspace = true

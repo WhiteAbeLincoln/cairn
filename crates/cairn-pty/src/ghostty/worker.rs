@@ -16,14 +16,14 @@ use bytes::Bytes;
 use libghostty_vt::{Terminal, TerminalOptions};
 use tokio::sync::broadcast;
 
-use super::Command;
 use super::input_classifier::is_user_input;
 use super::process::{ChildProcess, Pty};
+use super::{Command, Envelope};
 use crate::{ClientId, PtyError, SpawnOptions, Subscription, TermSize};
 
 /// State shared between the worker thread's setup phase and the caller.
 pub(super) struct WorkerHandles {
-    pub cmd_tx: flume::Sender<Command>,
+    pub cmd_tx: flume::Sender<Envelope>,
     pub exit_rx: tokio::sync::watch::Receiver<Option<crate::ExitStatus>>,
 }
 
@@ -31,7 +31,7 @@ pub(super) struct WorkerHandles {
 ///
 /// Returns the channels external callers use to interact with the session.
 pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
-    let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<Envelope>();
     let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<crate::ExitStatus>>(None);
 
@@ -40,6 +40,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
     let broadcast_capacity = opts.broadcast_capacity.max(1);
     let initial_size = opts.size;
     let scrollback_lines = opts.scrollback_lines;
+    let session_id = opts.session_id.clone();
 
     // pty_process::Pty::new() wraps the PTY master fd in
     // tokio::io::unix::AsyncFd, which requires an active tokio runtime
@@ -161,6 +162,7 @@ pub(super) fn spawn(opts: SpawnOptions) -> Result<WorkerHandles, PtyError> {
                     initial_size,
                     scrollback_lines,
                     exit_reason: None,
+                    session_id,
                 })
                 .await;
             });
@@ -202,13 +204,14 @@ where
     P: Pty,
     C: ChildProcess,
 {
-    let (cmd_tx, cmd_rx) = flume::unbounded::<Command>();
+    let (cmd_tx, cmd_rx) = flume::unbounded::<Envelope>();
     let cmd_tx_for_worker = cmd_tx.clone();
     let (exit_tx, exit_rx) = tokio::sync::watch::channel::<Option<crate::ExitStatus>>(None);
 
     let broadcast_capacity = opts.broadcast_capacity.max(1);
     let initial_size = opts.size;
     let scrollback_lines = opts.scrollback_lines;
+    let session_id = opts.session_id.clone();
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -229,6 +232,7 @@ where
                     initial_size,
                     scrollback_lines,
                     exit_reason: None,
+                    session_id,
                 })
                 .await;
             });
@@ -241,13 +245,14 @@ where
 struct SessionState<P: Pty, C: ChildProcess> {
     pty: P,
     child: C,
-    cmd_rx: flume::Receiver<Command>,
-    cmd_tx: flume::Sender<Command>,
+    cmd_rx: flume::Receiver<Envelope>,
+    cmd_tx: flume::Sender<Envelope>,
     exit_tx: tokio::sync::watch::Sender<Option<crate::ExitStatus>>,
     broadcast_capacity: usize,
     initial_size: TermSize,
     scrollback_lines: usize,
     exit_reason: Option<String>,
+    session_id: String,
 }
 
 /// Main session loop. Runs inside the LocalSet on the dedicated thread.
@@ -257,6 +262,18 @@ struct SessionState<P: Pty, C: ChildProcess> {
 ///   - cmd_rx.recv_async()         (external commands → dispatch)
 ///   - child.wait()                (child exit → publish status + tear down)
 async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
+    let _session_span = tracing::info_span!(
+        "pty_session",
+        session_id = %s.session_id,
+    )
+    .entered();
+
+    tracing::info!(
+        cols = s.initial_size.cols,
+        rows = s.initial_size.rows,
+        "session started"
+    );
+
     // Pending writes from the libghostty-vt PtyWriteFn callback. The callback
     // is synchronous (fires inside terminal.vt_write); pty.write_all is async.
     // We queue bytes in the callback and drain them on the same task after
@@ -423,6 +440,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         // subscribers observe Closed; await child exit if
                         // not already published. Loop continues so callers
                         // can still receive Closed replies via cmd_rx.
+                        tracing::debug!("pty eof");
                         pty_closed = true;
                         *bcast_tx.borrow_mut() = None;
                         if !exit_published
@@ -458,10 +476,11 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
 
             // ── External command
             recv = s.cmd_rx.recv_async() => {
-                let cmd = match recv {
-                    Ok(c) => c,
+                let envelope = match recv {
+                    Ok(e) => e,
                     Err(_) => break, // all GhosttyPty handles dropped
                 };
+                let Envelope { cmd, trace_id } = envelope;
                 if exit_published {
                     // Post-exit normalisation: reply Closed to writes/resizes.
                     // Shutdown (no-op), Subscribe (final state), and Size (the
@@ -516,6 +535,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         break;
                     }
                     Command::Subscribe { client_id, reply } => {
+                        let _span = make_cmd_span("subscribe", &trace_id);
                         let snapshot = match format_snapshot(&terminal.borrow()) {
                             Ok(bytes) => bytes,
                             Err(e) => { let _ = reply.send(Err(e)); continue; }
@@ -540,6 +560,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(Ok(sub));
                     }
                     Command::Resize { client_id, size, reply } => {
+                        let _span = make_cmd_span("resize", &trace_id);
                         // Election: empty seat promotes; non-leader rejects.
                         match leader {
                             None => {
@@ -576,6 +597,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         })();
                         if res.is_ok() {
                             current_size.set(size);
+                            tracing::debug!(cols = size.cols, rows = size.rows, "resized");
                         }
                         let _ = reply.send(res);
                     }
@@ -583,6 +605,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(Ok(current_size.get()));
                     }
                     Command::Write { client_id, data, reply } => {
+                        let _span = make_cmd_span("write", &trace_id);
                         if is_user_input(&data) {
                             _last_input_at = Some(std::time::Instant::now());
                             if leader != Some(client_id) {
@@ -601,6 +624,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(res);
                     }
                     Command::Signal { sig, reason, reply } => {
+                        let _span = make_cmd_span("signal", &trace_id);
                         if reason.is_some() {
                             s.exit_reason = reason;
                         }
@@ -624,6 +648,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                         let _ = reply.send(res);
                     }
                     Command::Inject { data, reply } => {
+                        let _span = make_cmd_span("inject", &trace_id);
                         // No leader election: identity-less injection.
                         let res = s.pty.write_all(&data).await.map_err(PtyError::from);
                         let _ = reply.send(res);
@@ -667,7 +692,13 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
             // broadcast that ends here.
             status = s.child.wait(), if !exit_published => {
                 match status {
-                    Ok(s_val) => { let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms(), s.exit_reason.take()))); }
+                    Ok(s_val) => {
+                        use std::os::unix::process::ExitStatusExt as _;
+                        let exit_code = s_val.code();
+                        let exit_signal = s_val.signal();
+                        let _ = s.exit_tx.send(Some(crate::ExitStatus::from_std(s_val, crate::types::now_unix_ms(), s.exit_reason.take())));
+                        tracing::info!(exit_code = ?exit_code, signal = ?exit_signal, "child exited");
+                    }
                     Err(e) => {
                         tracing::warn!(error = %e, "child wait failed; reporting synthetic exit code 1");
                         let _ = s.exit_tx.send(Some(crate::ExitStatus::synthetic(1, crate::types::now_unix_ms())));
@@ -693,6 +724,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
     //    disconnect before EOF, e.g. GhosttyPty dropped while child alive.)
     //  - cmd_rx falls out of scope when SessionState drops → cmd_tx sends fail
     //    on the GhosttyPty side, which we map to PtyError::Closed.
+    tracing::info!("session ended");
     *bcast_tx.borrow_mut() = None;
 }
 
@@ -754,12 +786,12 @@ async fn drain_pty_after_exit<P: Pty>(
 /// Reply Closed (via Backend wrapping a synthetic IO error) to any commands
 /// the caller has queued before they discover the worker has failed to start.
 /// Called from the Terminal-construction error paths.
-fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Command>) {
+fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Envelope>) {
     let make_err = || PtyError::Backend {
         source: Box::new(std::io::Error::other("VT terminal construction failed")),
     };
-    while let Ok(cmd) = cmd_rx.try_recv() {
-        match cmd {
+    while let Ok(envelope) = cmd_rx.try_recv() {
+        match envelope.cmd {
             Command::Shutdown => {}
             Command::Subscribe { reply, .. } => {
                 let _ = reply.send(Err(make_err()));
@@ -808,6 +840,44 @@ fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError
             source: Box::new(e),
         })?;
     Ok(Bytes::copy_from_slice(&vt_bytes))
+}
+
+/// Parse a W3C `traceparent` header value (e.g.
+/// `00-<trace_id>-<span_id>-<flags>`) into an OTel `SpanContext`, then add it
+/// as a span link on `span`. Falls back to recording the raw traceparent as a
+/// span attribute if parsing fails, so correlation is never silently lost.
+fn add_trace_link(span: &tracing::Span, traceparent: &str) {
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+
+    let parts: Vec<&str> = traceparent.split('-').collect();
+    if parts.len() == 4
+        && let (Ok(trace_id), Ok(span_id), Ok(flags)) = (
+            TraceId::from_hex(parts[1]),
+            SpanId::from_hex(parts[2]),
+            u8::from_str_radix(parts[3], 16),
+        )
+    {
+        let sc = SpanContext::new(
+            trace_id,
+            span_id,
+            TraceFlags::new(flags),
+            true,
+            TraceState::NONE,
+        );
+        span.add_link(sc);
+        return;
+    }
+    // Fallback: record the raw traceparent so it's still queryable in Tempo.
+    span.record("linked_trace", traceparent);
+}
+
+fn make_cmd_span(name: &'static str, trace_id: &Option<String>) -> tracing::span::EnteredSpan {
+    let span = tracing::info_span!(target: "cairn_pty::cmd", "cmd", op = name);
+    if let Some(tp) = trace_id {
+        add_trace_link(&span, tp);
+    }
+    span.entered()
 }
 
 /// Construct a synthetic `std::process::ExitStatus` with the given exit code.
@@ -1520,6 +1590,36 @@ mod tests {
         assert!(
             !buf_lines_since(start, "leader vacated").is_empty(),
             "vacation event should have been emitted"
+        );
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn session_lifecycle_emits_started_and_ended() {
+        let start = buf_snapshot();
+
+        let session = MockSession::new(default_opts());
+
+        // "session started" is emitted immediately on worker startup.
+        // Give the worker a moment to initialise.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            !buf_lines_since(start, "session started").is_empty(),
+            "\"session started\" event should have been emitted"
+        );
+
+        // Trigger shutdown via kill(), which sends Command::Shutdown.
+        session.pty.kill().expect("kill");
+
+        // Wait for the worker to finish.
+        session.pty.wait().await;
+        // Small grace period for the final tracing event to flush.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(
+            !buf_lines_since(start, "session ended").is_empty(),
+            "\"session ended\" event should have been emitted"
         );
     }
 }

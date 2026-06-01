@@ -263,7 +263,7 @@ async fn read_snapshot(h: &Harness, target: &str) -> anyhow::Result<String> {
         .find(|s| s.name.as_deref() == Some(target))
         .map(|s| s.id.clone())
         .ok_or_else(|| anyhow::anyhow!("no session named {target}"))?;
-    let (mut stream, io) = sessions::logs(&h.client(), (), &id, &LogWindow::All, false)
+    let (mut stream, io) = sessions::logs(&h.client(), (), None, &id, &LogWindow::All, false)
         .await
         .map_err(|e| anyhow::anyhow!("logs: {e}"))?;
     if let Some(io) = io {

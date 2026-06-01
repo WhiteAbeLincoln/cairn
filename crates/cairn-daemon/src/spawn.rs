@@ -5,7 +5,7 @@ use cairn_pty::SpawnOptions;
 
 /// Translate a `session-spec` into spawn options. An empty `command` falls
 /// back to `default_shell`. `env-inherit=false` clears the inherited env.
-pub fn options_from(spec: SessionSpec, default_shell: &str) -> SpawnOptions {
+pub fn options_from(spec: SessionSpec, default_shell: &str, session_id: String) -> SpawnOptions {
     let mut argv = spec.command.into_iter();
     let program = argv.next().unwrap_or_else(|| default_shell.to_string());
 
@@ -21,7 +21,9 @@ pub fn options_from(spec: SessionSpec, default_shell: &str) -> SpawnOptions {
         cmd.current_dir(dir);
     }
 
-    SpawnOptions::new(cmd).with_scrollback_lines(spec.scrollback_lines as usize)
+    SpawnOptions::new(cmd)
+        .with_scrollback_lines(spec.scrollback_lines as usize)
+        .with_session_id(session_id)
 }
 
 #[cfg(test)]
@@ -45,7 +47,7 @@ mod tests {
 
     #[test]
     fn empty_command_uses_default_shell() {
-        let opts = options_from(base_spec(), "/bin/zsh");
+        let opts = options_from(base_spec(), "/bin/zsh", String::new());
         let std = opts.command.as_std();
         assert_eq!(std.get_program(), std::ffi::OsStr::new("/bin/zsh"));
         assert_eq!(opts.scrollback_lines, 500);
@@ -57,11 +59,12 @@ mod tests {
         spec.command = vec!["echo".into(), "hi".into()];
         spec.env = vec![("FOO".into(), "bar".into())];
         spec.workdir = Some("/tmp".into());
-        let opts = options_from(spec, "/bin/sh");
+        let opts = options_from(spec, "/bin/sh", "test-id".to_string());
         let std = opts.command.as_std();
         assert_eq!(std.get_program(), std::ffi::OsStr::new("echo"));
         let args: Vec<_> = std.get_args().collect();
         assert_eq!(args, vec![std::ffi::OsStr::new("hi")]);
         assert_eq!(std.get_current_dir(), Some(std::path::Path::new("/tmp")));
+        assert_eq!(opts.session_id, "test-id");
     }
 }

@@ -75,15 +75,17 @@ struct Args {
         default_value = "info,cairn_daemon=info,cairn_pty=info"
     )]
     log: String,
+
+    /// Stderr log format (pretty, compact, json, full, off).
+    #[arg(long, env = "CAIRN_LOG_FORMAT", default_value = "pretty", value_enum)]
+    log_format: cairn_daemon::config::LogFormat,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(args.log.clone()))
-        .with_writer(std::io::stderr)
-        .init();
+    // Hold the provider until process exit so OTLP spans are flushed.
+    let _otel_provider = cairn_daemon::telemetry::init_tracing(&args.log, args.log_format)?;
 
     let mut cfg = cairn_daemon::config::DaemonConfig::default();
 

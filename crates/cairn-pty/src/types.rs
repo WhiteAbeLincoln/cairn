@@ -94,6 +94,9 @@ pub struct SpawnOptions {
     /// Maximum scrollback lines retained by the VT emulator. The snapshot
     /// returned by `subscribe()` includes these rows. Default: 1000.
     pub scrollback_lines: usize,
+    /// Opaque session identifier (typically the daemon's UUIDv7 id). Carried
+    /// through to the worker for span correlation. Default: empty string.
+    pub session_id: String,
 }
 
 impl SpawnOptions {
@@ -103,6 +106,7 @@ impl SpawnOptions {
             size: TermSize::default(),
             broadcast_capacity: 1024,
             scrollback_lines: 1000,
+            session_id: String::new(),
         }
     }
 
@@ -118,6 +122,11 @@ impl SpawnOptions {
 
     pub fn with_scrollback_lines(mut self, lines: usize) -> Self {
         self.scrollback_lines = lines;
+        self
+    }
+
+    pub fn with_session_id(mut self, id: String) -> Self {
+        self.session_id = id;
         self
     }
 }

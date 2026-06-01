@@ -78,7 +78,7 @@ pub async fn run(endpoint: &Endpoint, id: &str, opts: AttachOptions) -> Result<i
         let events: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<ClientEvent>> + Send>> =
             Box::pin(events_rx);
 
-        let outcome = match sessions::attach(&client, (), id, &init, events).await {
+        let outcome = match sessions::attach(&client, (), None, id, &init, events).await {
             Err(_e) => Outcome::Reconnect, // couldn't establish the stream
             Ok((mut server, io)) => {
                 deadline = None; // connected: reset the give-up clock

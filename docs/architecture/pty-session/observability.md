@@ -68,34 +68,88 @@ input bytes** — see Privacy below.
 
 `tracing` is on the dependency graph at the workspace root
 (`Cargo.toml:14`) and re-exported into `cairn-pty`
-(`crates/cairn-pty/Cargo.toml:12`). The daemon binary installs
-`tracing_subscriber::fmt` with `EnvFilter` from the `--log` /
-`CAIRN_LOG` flag (default `"info,cairn_daemon=info,cairn_pty=info"`),
-outputting to stderr. The `--log-format` flag selects format; see
-[Subscriber and transport](#subscriber-and-transport) below.
+(`crates/cairn-pty/Cargo.toml:12`). The daemon binary installs a
+layered `tracing_subscriber::Registry` via `init_tracing()` in
+`crates/cairn-daemon/src/telemetry.rs`:
 
-The worker library deliberately does not install a subscriber — that
-is the host binary's job.
+- **Stderr fmt layer** — `EnvFilter` from `--log` / `CAIRN_LOG`
+  (default `"info,cairn_daemon=info,cairn_pty=info"`), outputting to
+  stderr. The `--log-format` flag selects the format
+  (pretty/compact/json/full/off); see
+  [Subscriber and transport](#subscriber-and-transport) below.
+- **OTLP trace layer** — activated when `OTEL_EXPORTER_OTLP_ENDPOINT`
+  or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is set. Uses
+  `tracing-opentelemetry` to bridge `tracing` spans into OTel traces
+  and export via `opentelemetry-otlp`. The caller holds the returned
+  `SdkTracerProvider` to ensure graceful flush on shutdown.
 
-Existing `tracing` call sites in the PTY layer
-(`crates/cairn-pty/src/pty/ghostty/worker.rs`):
+The worker library (`cairn-pty`) deliberately does not install a
+subscriber — that is the host binary's job.
 
-- `error!` on Terminal/callback construction failures.
-- `warn!` on `child.start_kill()` failure, `child.wait()` failure,
-  PtyWriteFn flush failure.
-- `info!` on leader promotion / vacation (election events).
+### Spans
 
-The daemon layer (`crates/cairn-daemon/`) has additional tracing in
-the registry (spawn failures), serve (listener lifecycle, WT auth),
-and auth backends. All calls use structured field syntax.
+- **`pty_session`** — top-level `info_span!` opened by `run_session`
+  in `worker.rs`, scoped to the lifetime of the session task. Carries
+  `session_id` and `child_pid` (recorded after spawn).
+- **`cmd`** — per-command `info_span!` created by `make_cmd_span()` in
+  `worker.rs` for each `Command` dispatched to the worker. When the
+  `Envelope` carries a `trace_id` (W3C traceparent from the caller's
+  OTel context), `add_trace_link()` adds an OTel span link bridging
+  the async→thread boundary.
+- **`rpc`** — per-invocation `info_span!` in each `Daemon` handler
+  method (`daemon.rs`), recording `method` (e.g. `"sessions.create"`).
+  `link_remote_context()` parses the `CallContext.trace_context`
+  traceparent and adds it as an OTel span link.
+- **`attach`** — per-attach `info_span!` in the attach handler
+  (`handlers/attach.rs`), carrying `session_id`, `client_id`, and
+  `transport`. Lifecycle events (detach, disconnect, lagged, kicked,
+  session ended) are emitted as `info!`/`warn!` inside this span.
+
+### Trace context propagation
+
+- **`call-context`** record on every WIT operation
+  (`option<call-context>` parameter). The `trace-context` field
+  carries a W3C traceparent string
+  (`00-<trace_id>-<span_id>-<flags>`), parsed by the daemon to create
+  OTel span links that correlate client-initiated RPCs with their
+  daemon-side processing.
+- **`Envelope`** wraps each `Command` sent across the `flume` channel
+  boundary with the sender's current OTel `trace_id`
+  (`ghostty/mod.rs:current_trace_id()`), so the worker thread can
+  link its per-command span back to the daemon handler span that
+  initiated the operation.
+
+### Lifecycle events
+
+Emitted at `info!` level unless noted:
+
+| Event | Location | Fields |
+| --- | --- | --- |
+| Session started | `worker.rs` | `cmd`, `child_pid`, `cols`, `rows` |
+| Session ended | `worker.rs` | — |
+| Child exited | `worker.rs` | `exit_code`, `signal` |
+| PTY EOF | `worker.rs` | — (`debug!`) |
+| Resized | `worker.rs` | `cols`, `rows` (`debug!`) |
+| Session created | `registry.rs` | `session_id`, `name`, `cmd` |
+| Client attached | `handlers/attach.rs` | `session_id`, `client_id`, `transport` |
+| Client detached | `handlers/attach.rs` | — |
+| Client disconnected | `handlers/attach.rs` | — |
+| Client lagged | `handlers/attach.rs` | — (`warn!`) |
+| Client kicked | `handlers/attach.rs` | — |
+
+### What's deferred
+
+- CLI-side OTLP export (client sends traceparent but doesn't export
+  its own spans).
+- OTLP push metrics (gauges, counters, histograms described in
+  [Metrics](#metrics) below).
+- `/debug/sessions` introspection endpoint.
 
 ## Recommended event surface
 
-The lift from "library that emits five `warn!`s" to "operable system"
-is concentrated in two pieces: (a) per-session spans so every event
-carries a session id, and (b) explicit info-level events at session
-lifecycle boundaries. Concrete recommendations below; they slot into
-the existing `run_session` task in `worker.rs:200–427`.
+The original recommendations below remain relevant for events not yet
+implemented. Many have been addressed (per-session spans, lifecycle
+boundaries). Remaining gaps are noted inline.
 
 **Spans.** `run_session` should open a top-level
 `info_span!("pty_session", session_id, child_pid)` `.entered()` for
@@ -208,15 +262,17 @@ created_at, exit, spec}` via the `sessions.inspect` RPC.
 
 ## Open Questions
 
-- **Span propagation across the `flume` channel.** `cmd_rx.recv_async`
-  in `worker.rs` consumes commands from other tasks. Should the
-  sender attach its `tracing::Span` to the `Command` enum so that
-  "client X requested resize" shows the client's span as the parent
-  of the resize event?
-- **OTLP integration.** `tracing-opentelemetry` makes spans into OTel
-  traces and feeds an OTLP exporter. For a daemon with one
-  long-running task per session, do trace exports add value, or are
-  structured logs + future metrics sufficient?
+- ~~**Span propagation across the `flume` channel.**~~ **Resolved.**
+  The `Envelope` struct wraps each `Command` with the sender's OTel
+  `trace_id` (W3C traceparent). The worker's `make_cmd_span()` +
+  `add_trace_link()` create a span link from the per-command `cmd`
+  span back to the originating daemon handler span, bridging the
+  async→thread boundary without reparenting.
+- ~~**OTLP integration.**~~ **Resolved.** An OTLP trace layer is
+  installed when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Per-session
+  and per-RPC spans export as OTel traces. Metrics export is deferred.
 - **Cross-process correlation.** If the daemon spawns helper
   processes ([[query-response-delegation]] envisioned an external
   delegator), `trace_id` as an env var with W3C traceparent semantics?
+  The `call-context` mechanism on WIT operations provides the
+  client→daemon leg; daemon→subprocess is not yet wired.

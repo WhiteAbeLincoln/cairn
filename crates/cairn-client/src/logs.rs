@@ -49,7 +49,7 @@ pub async fn run(
         let out_tx = out_tx.clone();
         let client = client.clone();
         stream_tasks.push(tokio::spawn(async move {
-            let result = sessions::logs(&client, (), &id, &window, follow).await;
+            let result = sessions::logs(&client, (), None, &id, &window, follow).await;
             let (mut stream, io) = match result {
                 Ok(pair) => pair,
                 Err(e) => {

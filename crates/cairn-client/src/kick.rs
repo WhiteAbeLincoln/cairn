@@ -38,7 +38,7 @@ pub async fn run(
         let token = t.name.clone().unwrap_or_else(|| t.id.clone());
         let client_filter = client_filter.map(|s| s.to_string());
         tasks.push(async move {
-            let result = sessions::kick(&client, (), &id, client_filter).await;
+            let result = sessions::kick(&client, (), None, &id, client_filter).await;
             (token, result)
         });
     }

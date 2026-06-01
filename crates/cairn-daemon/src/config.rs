@@ -5,6 +5,22 @@ use std::time::Duration;
 
 use crate::listen::ListenerConfig;
 
+/// Controls the stderr log output format.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum LogFormat {
+    /// Human-friendly coloured output (default).
+    #[default]
+    Pretty,
+    /// One-line-per-event, no ANSI colours.
+    Compact,
+    /// Newline-delimited JSON objects.
+    Json,
+    /// The `tracing-subscriber` "full" format (like compact but with span context).
+    Full,
+    /// Suppress stderr logging entirely.
+    Off,
+}
+
 /// Resolved daemon configuration.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -74,6 +90,19 @@ mod tests {
         assert_eq!(parse_octal_mode("0o750").unwrap(), 0o750);
         assert_eq!(parse_octal_mode("750").unwrap(), 0o750);
         assert!(parse_octal_mode("nonsense").is_err());
+    }
+
+    #[test]
+    fn log_format_round_trips_through_value_enum() {
+        use clap::ValueEnum;
+        for variant in LogFormat::value_variants() {
+            let name = variant
+                .to_possible_value()
+                .map(|v| v.get_name().to_owned())
+                .unwrap_or_default();
+            let parsed = LogFormat::from_str(&name, /* ignore_case */ true);
+            assert_eq!(parsed, Ok(*variant), "round-trip failed for {name:?}");
+        }
     }
 
     #[test]

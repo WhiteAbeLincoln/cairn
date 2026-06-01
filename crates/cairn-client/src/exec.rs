@@ -82,7 +82,7 @@ pub async fn run_exec(
         scrollback_lines: 1000,
     };
 
-    let info = match sessions::create(client, (), &spec)
+    let info = match sessions::create(client, (), None, &spec)
         .await
         .context("create session")?
     {

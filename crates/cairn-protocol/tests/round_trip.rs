@@ -20,7 +20,7 @@ async fn meta_version_round_trips_record_fields() {
         });
     let harness = spawn_server(stub).await.expect("spawn_server");
 
-    let info = bindings::client::cairn::daemon::meta::version(&harness.unix_client(), ())
+    let info = bindings::client::cairn::daemon::meta::version(&harness.unix_client(), (), None)
         .await
         .expect("version invocation");
 
@@ -38,9 +38,10 @@ async fn sessions_list_all_round_trips_two_entries_with_optional_fields() {
     });
     let harness = spawn_server(stub).await.expect("spawn_server");
 
-    let result = bindings::client::cairn::daemon::sessions::list_all(&harness.unix_client(), ())
-        .await
-        .expect("list_all invocation");
+    let result =
+        bindings::client::cairn::daemon::sessions::list_all(&harness.unix_client(), (), None)
+            .await
+            .expect("list_all invocation");
 
     assert_eq!(result.len(), 2);
 
@@ -125,6 +126,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     let ok = bindings::client::cairn::daemon::meta::authenticate(
         &harness.unix_client(),
         (),
+        None,
         "valid-token",
     )
     .await
@@ -135,6 +137,7 @@ async fn meta_authenticate_round_trips_error_variant() {
     let err = bindings::client::cairn::daemon::meta::authenticate(
         &harness.unix_client(),
         (),
+        None,
         "wrong-token",
     )
     .await
@@ -163,6 +166,7 @@ async fn sessions_kill_round_trips_grace_ms() {
     let res = bindings::client::cairn::daemon::sessions::kill(
         &harness.unix_client(),
         (),
+        None,
         "dev",
         &sig,
         Some(5000u32),

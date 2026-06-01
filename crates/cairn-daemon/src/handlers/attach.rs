@@ -4,6 +4,7 @@ use cairn_pty::TermSize;
 use futures::{Stream, StreamExt as _};
 use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument as _;
 
 use cairn_protocol::cairn::daemon::types::{
     AttachInit, ClientEvent, Error as WireError, ServerEvent,
@@ -50,75 +51,100 @@ pub async fn attach(
     };
     let (mut kick_rx, guard) = entry.attach(client_id);
 
+    tracing::info!(
+        session_id = %id,
+        client_id = %client_id,
+        no_stdin = init.no_stdin,
+        "client attached"
+    );
+
+    let attach_span = tracing::info_span!(
+        "attach",
+        session_id = %id,
+        client_id = %client_id,
+    );
+
     let no_stdin = init.no_stdin;
     let (tx, out) = tokio::sync::mpsc::channel::<Vec<ServerEvent>>(32);
 
-    tokio::spawn(async move {
-        // Hold the attach guard (deregisters on drop) and the Subscription
-        // (clears leadership + primary-count on drop) for the task's lifetime.
-        let _guard = guard;
-        let mut sub = sub;
-        let mut events = events;
+    tokio::spawn(
+        async move {
+            // Hold the attach guard (deregisters on drop) and the Subscription
+            // (clears leadership + primary-count on drop) for the task's lifetime.
+            let _guard = guard;
+            let mut sub = sub;
+            let mut events = events;
 
-        if tx
-            .send(vec![ServerEvent::Snapshot(sub.snapshot.clone())])
-            .await
-            .is_err()
-        {
-            return; // client already gone
-        }
+            if tx
+                .send(vec![ServerEvent::Snapshot(sub.snapshot.clone())])
+                .await
+                .is_err()
+            {
+                return; // client already gone
+            }
 
-        loop {
-            tokio::select! {
-                ev = events.next() => match ev {
-                    Some(batch) => {
-                        for e in batch {
-                            match e {
-                                ClientEvent::Input(b) if !no_stdin => {
-                                    if handle.write(client_id, b).await.is_err() { return; }
+            loop {
+                tokio::select! {
+                    ev = events.next() => match ev {
+                        Some(batch) => {
+                            for e in batch {
+                                match e {
+                                    ClientEvent::Input(b) if !no_stdin => {
+                                        if handle.write(client_id, b).await.is_err() { return; }
+                                    }
+                                    ClientEvent::Resize((c, r)) => {
+                                        let _ = handle.resize(client_id, TermSize { cols: c, rows: r }).await;
+                                    }
+                                    ClientEvent::Detach => {
+                                        tracing::info!("client detached");
+                                        return;
+                                    }
+                                    _ => {} // Input while no_stdin: ignore
                                 }
-                                ClientEvent::Resize((c, r)) => {
-                                    let _ = handle.resize(client_id, TermSize { cols: c, rows: r }).await;
-                                }
-                                ClientEvent::Detach => return,
-                                _ => {} // Input while no_stdin: ignore
                             }
                         }
-                    }
-                    None => return, // client closed the inbound stream
-                },
-                out_chunk = sub.recv() => match out_chunk {
-                    Ok(bytes) => {
-                        if tx.send(vec![ServerEvent::Output(bytes)]).await.is_err() { return; }
-                    }
-                    Err(RecvError::Lagged(_)) => {
-                        // lag-kick: tell the client this is recoverable so it reattaches fresh.
+                        None => {
+                            tracing::info!("client disconnected");
+                            return;
+                        }
+                    },
+                    out_chunk = sub.recv() => match out_chunk {
+                        Ok(bytes) => {
+                            if tx.send(vec![ServerEvent::Output(bytes)]).await.is_err() { return; }
+                        }
+                        Err(RecvError::Lagged(_)) => {
+                            tracing::warn!("client lagged");
+                            // lag-kick: tell the client this is recoverable so it reattaches fresh.
+                            let _ = tx.send(vec![ServerEvent::Error(WireError {
+                                code: cairn_protocol::error_codes::CLIENT_LAGGED.to_string(),
+                                message: "client fell behind output; reattach for a fresh snapshot".to_string(),
+                            })]).await;
+                            return;
+                        }
+                        Err(RecvError::Closed) => {
+                            tracing::info!("session ended under attached client");
+                            // Session ended. Subscription joins broadcast-close
+                            // and exit-publication internally; wait() resolves
+                            // immediately because exit_status is already set.
+                            let exit = wire_exit(handle.wait().await);
+                            let _ = tx.send(vec![ServerEvent::Exited(exit)]).await;
+                            return;
+                        }
+                    },
+                    _ = &mut kick_rx => {
+                        tracing::info!("client kicked");
+                        // evicted by the `kick` op: terminal, client must not reconnect.
                         let _ = tx.send(vec![ServerEvent::Error(WireError {
-                            code: cairn_protocol::error_codes::CLIENT_LAGGED.to_string(),
-                            message: "client fell behind output; reattach for a fresh snapshot".to_string(),
+                            code: cairn_protocol::error_codes::CLIENT_KICKED.to_string(),
+                            message: "detached by operator".to_string(),
                         })]).await;
                         return;
                     }
-                    Err(RecvError::Closed) => {
-                        // Session ended. Subscription joins broadcast-close
-                        // and exit-publication internally; wait() resolves
-                        // immediately because exit_status is already set.
-                        let exit = wire_exit(handle.wait().await);
-                        let _ = tx.send(vec![ServerEvent::Exited(exit)]).await;
-                        return;
-                    }
-                },
-                _ = &mut kick_rx => {
-                    // evicted by the `kick` op: terminal, client must not reconnect.
-                    let _ = tx.send(vec![ServerEvent::Error(WireError {
-                        code: cairn_protocol::error_codes::CLIENT_KICKED.to_string(),
-                        message: "detached by operator".to_string(),
-                    })]).await;
-                    return;
                 }
             }
         }
-    });
+        .instrument(attach_span),
+    );
 
     Box::pin(ReceiverStream::new(out))
 }

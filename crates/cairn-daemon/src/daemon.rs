@@ -3,12 +3,15 @@
 
 use std::sync::Arc;
 
-use cairn_protocol::cairn::daemon::types::{Error as WireError, SessionInfo, SessionSpec, Signal};
+use cairn_protocol::cairn::daemon::types::{
+    CallContext, Error as WireError, SessionInfo, SessionSpec, Signal,
+};
 use cairn_protocol::exports::cairn::daemon::meta::VersionInfo;
 
 use crate::config::DaemonConfig;
 use crate::registry::SessionRegistry;
 use crate::serve::ConnCtx;
+use crate::telemetry::link_remote_context;
 use crate::{handlers, handlers::sessions as sess};
 
 /// The daemon root: a cheaply-cloneable handle that carries the registry and
@@ -52,60 +55,91 @@ impl Daemon {
 // ── sessions::Handler<ConnCtx> ────────────────────────────────────────────
 
 impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daemon {
-    async fn list_all(&self, _ctx: ConnCtx) -> anyhow::Result<Vec<SessionInfo>> {
+    async fn list_all(
+        &self,
+        _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Vec<SessionInfo>> {
+        let span = tracing::info_span!("rpc", method = "sessions.list_all");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::list_all(self).await)
     }
 
     async fn inspect(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
     ) -> anyhow::Result<Result<SessionInfo, WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.inspect");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::inspect(self, id).await)
     }
 
     async fn create(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         spec: SessionSpec,
     ) -> anyhow::Result<Result<SessionInfo, WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.create");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::create(self, spec).await)
     }
 
     async fn rename(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         new_name: String,
     ) -> anyhow::Result<Result<(), WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.rename");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::rename(self, id, new_name).await)
     }
 
     async fn restart(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         force: bool,
     ) -> anyhow::Result<Result<(), WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.restart");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::restart(self, id, force).await)
     }
 
     async fn kill(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         sig: Signal,
         grace_ms: Option<u32>,
     ) -> anyhow::Result<Result<(), WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.kill");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::kill(self, id, sig, grace_ms).await)
     }
 
     async fn kick(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         client: Option<String>,
     ) -> anyhow::Result<Result<(), WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.kick");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(sess::kick(self, id, client).await)
     }
 
@@ -114,6 +148,7 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     async fn wait(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
     ) -> anyhow::Result<
         std::pin::Pin<
@@ -124,24 +159,32 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
             >,
         >,
     > {
+        let span = tracing::info_span!("rpc", method = "sessions.wait");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         crate::handlers::wait::wait(self, id).await
     }
 
     async fn logs(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         window: cairn_protocol::cairn::daemon::types::LogWindow,
         follow: bool,
     ) -> anyhow::Result<
         std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     > {
+        let span = tracing::info_span!("rpc", method = "sessions.logs");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         crate::handlers::logs::logs(self, id, window, follow).await
     }
 
     async fn attach(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         init: cairn_protocol::cairn::daemon::types::AttachInit,
         events: std::pin::Pin<
@@ -160,15 +203,22 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
             >,
         >,
     > {
+        let span = tracing::info_span!("rpc", method = "sessions.attach");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(crate::handlers::attach::attach(self, id, init, events).await)
     }
 
     async fn send(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         id: String,
         chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     ) -> anyhow::Result<Result<(), WireError>> {
+        let span = tracing::info_span!("rpc", method = "sessions.send");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(crate::handlers::send::send(self, id, chunks).await)
     }
 }
@@ -176,19 +226,37 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
 // ── meta::Handler<ConnCtx> ────────────────────────────────────────────────
 
 impl cairn_protocol::exports::cairn::daemon::meta::Handler<ConnCtx> for Daemon {
-    async fn version(&self, _ctx: ConnCtx) -> anyhow::Result<VersionInfo> {
+    async fn version(
+        &self,
+        _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<VersionInfo> {
+        let span = tracing::info_span!("rpc", method = "meta.version");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(handlers::meta::version())
     }
 
     async fn authenticate(
         &self,
         _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
         token: String,
     ) -> anyhow::Result<Result<(), WireError>> {
+        let span = tracing::info_span!("rpc", method = "meta.authenticate");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(handlers::meta::authenticate(token))
     }
 
-    async fn whoami(&self, ctx: ConnCtx) -> anyhow::Result<Result<String, WireError>> {
+    async fn whoami(
+        &self,
+        ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Result<String, WireError>> {
+        let span = tracing::info_span!("rpc", method = "meta.whoami");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
         Ok(handlers::meta::whoami(&ctx))
     }
 }
