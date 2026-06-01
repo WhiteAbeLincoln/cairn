@@ -134,37 +134,61 @@ git commit -m "refactor(auth): TailscaleBackend matches on TransportContext"
 
 ---
 
-### Task 3: Delete `NoneBackend`
+### Task 3: Decouple `NoneBackend` from CLI (keep for tests)
+
+`NoneBackend` stays as a public module — it's a valid `AuthBackend` impl that
+tests use directly. It's just not wired to any `AuthBackendKind` variant, so
+users can't select it from the CLI.
 
 **Files:**
-- Delete: `crates/cairn-daemon/src/auth/none.rs`
-- Modify: `crates/cairn-daemon/src/auth/mod.rs`
+- Modify: `crates/cairn-daemon/src/auth/none.rs`
 
-- [ ] **Step 1: Remove the `none` module declaration**
+- [ ] **Step 1: Update the module doc comment**
 
-In `crates/cairn-daemon/src/auth/mod.rs`, remove the line:
+In `crates/cairn-daemon/src/auth/none.rs`, update the module doc:
 
 ```rust
-pub mod none;
+//! The `none` auth backend: accepts all connections as anonymous.
+//!
+//! Not selectable via `--auth`. Used by the test harness to provide an auth
+//! chain for WT smoke tests that exercise transport, not authentication.
 ```
 
-- [ ] **Step 2: Delete the file**
+- [ ] **Step 2: Update the test to use `TransportContext`**
 
-```
-rm crates/cairn-daemon/src/auth/none.rs
+In `crates/cairn-daemon/src/auth/none.rs`, update the test:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn accepts_any_connection() {
+        let backend = NoneBackend;
+        let ctx = AuthContext {
+            transport: crate::auth::TransportContext::WebTransport {
+                peer_addr: "192.168.1.50:9999".parse().unwrap(),
+            },
+            token: None,
+        };
+        let result = backend.authenticate(&ctx).await;
+        assert!(matches!(result, Ok(Identity::Anonymous)));
+    }
+}
 ```
 
-- [ ] **Step 3: Verify auth tests still pass**
+- [ ] **Step 3: Run auth tests**
 
 Run: `cargo nextest run -p cairn-daemon -E 'test(~auth::)'`
 
-Expected: PASS — the chain tests use inline `AlwaysAnon`/`AlwaysReject`/`SkipBackend` structs, not `NoneBackend`. The `none::tests` module is gone.
+Expected: PASS — all auth tests pass, including the updated `none::tests`.
 
 - [ ] **Step 4: Commit**
 
 ```
-git add -A crates/cairn-daemon/src/auth/
-git commit -m "refactor(auth): delete NoneBackend"
+git add crates/cairn-daemon/src/auth/none.rs
+git commit -m "refactor(auth): decouple NoneBackend from CLI, keep for tests"
 ```
 
 ---
@@ -359,9 +383,15 @@ git commit -m "refactor(daemon): Daemon::new validates config, absorbs warnings"
 
 ### Task 6: Update `build_auth_chain` and `serve` wiring
 
+`serve()` gains an optional `auth_chain` parameter so tests can inject a
+`NoneBackend`-based chain without going through `build_auth_chain` (which
+would require tailscaled). Production code passes `None` and the chain is
+built from config as before.
+
 **Files:**
 - Modify: `crates/cairn-daemon/src/daemon.rs`
 - Modify: `crates/cairn-daemon/src/serve.rs`
+- Modify: `crates/cairn-daemon/src/main.rs`
 
 - [ ] **Step 1: Update `build_auth_chain` to return `Option<AuthChain>`**
 
@@ -399,15 +429,29 @@ use crate::config::{AuthBackendKind, DaemonConfig};
 
 (Replace the existing `use crate::config::DaemonConfig;` line.)
 
-- [ ] **Step 2: Update `serve()` to handle `Option<AuthChain>`**
+- [ ] **Step 2: Add `auth_chain` parameter to `serve()`**
 
-In `crates/cairn-daemon/src/serve.rs`, replace the `auth_chain` line at the top of `serve()`:
+In `crates/cairn-daemon/src/serve.rs`, change the signature of `serve()`:
 
 ```rust
-let auth_chain = daemon.build_auth_chain()?.map(Arc::new);
+pub async fn serve(
+    daemon: crate::daemon::Daemon,
+    shutdown: CancellationToken,
+    auth_chain: Option<crate::auth::AuthChain>,
+) -> anyhow::Result<()> {
 ```
 
-Then in the WT listener block (inside `if let Some(addr) = wt_addr`), the auth chain must exist for WT. Replace the `Arc::clone(&auth_chain)` usage at the two sites inside the WT block. Wrap the WT block in an auth chain check:
+Replace the `auth_chain` construction at the top of the function body:
+
+```rust
+let auth_chain = match auth_chain {
+    Some(chain) => Some(Arc::new(chain)),
+    None => daemon.build_auth_chain()?.map(Arc::new),
+};
+```
+
+Then in the WT listener block (inside `if let Some(addr) = wt_addr`), the auth
+chain must exist for WT. Add at the top of that block:
 
 ```rust
 if let Some(addr) = wt_addr {
@@ -416,11 +460,22 @@ if let Some(addr) = wt_addr {
         .expect("WT listener requires auth chain; validated by Daemon::new");
 ```
 
-Then change the two `Arc::clone(&auth_chain)` inside the WT spawn to just `Arc::clone(&auth_chain)` — they reference the local `auth_chain` binding which is now `Arc<AuthChain>`.
+The two `Arc::clone(&auth_chain)` sites inside the WT spawn now reference
+the local `auth_chain` binding which is `Arc<AuthChain>` — no changes needed
+to those lines.
 
-- [ ] **Step 3: Update `AuthContext` construction in `serve_wt_connection`**
+- [ ] **Step 3: Update `main.rs` to pass `None`**
 
-In `crates/cairn-daemon/src/serve.rs`, in the `serve_wt_connection` function, replace:
+In `crates/cairn-daemon/src/main.rs`, update the `serve` call:
+
+```rust
+cairn_daemon::serve::serve(daemon, shutdown, None).await
+```
+
+- [ ] **Step 4: Update `AuthContext` construction in `serve_wt_connection`**
+
+In `crates/cairn-daemon/src/serve.rs`, in the `serve_wt_connection` function,
+replace:
 
 ```rust
 let ctx = crate::auth::AuthContext {
@@ -438,22 +493,26 @@ let ctx = crate::auth::AuthContext {
 };
 ```
 
-- [ ] **Step 4: Build and run full test suite**
+- [ ] **Step 5: Verify it compiles**
 
-Run: `cargo build && cargo nextest run -p cairn-daemon`
+Run: `cargo build`
 
-Expected: all tests PASS. The UDS integration tests (`daemon_unary`, `daemon_streaming`, `daemon_meta`) never touch the auth chain. The WT integration tests (`wt_smoke`) use `DaemonConfig::default()` which has `auth_backends: vec![]`, but `start_with_wt()` in the test harness builds a config with a WT listener — this will fail because auth_backends is empty. We fix that in the next task.
+Expected: compiles. Integration tests will fail until we update the harness in the next task.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```
-git add crates/cairn-daemon/src/daemon.rs crates/cairn-daemon/src/serve.rs
-git commit -m "refactor(serve): build_auth_chain returns Option, AuthContext uses TransportContext"
+git add crates/cairn-daemon/src/daemon.rs crates/cairn-daemon/src/serve.rs crates/cairn-daemon/src/main.rs
+git commit -m "refactor(serve): auth_chain parameter, build_auth_chain returns Option, TransportContext in AuthContext"
 ```
 
 ---
 
 ### Task 7: Fix test harness and integration tests
+
+The test harness injects a `NoneBackend`-based auth chain via the new
+`serve()` parameter. This lets WT smoke tests run without tailscaled —
+they exercise the transport, not authentication.
 
 **Files:**
 - Modify: `crates/cairn-daemon/tests/common/mod.rs`
@@ -465,27 +524,46 @@ In `crates/cairn-daemon/tests/common/mod.rs`, in the `start()` method, change:
 
 ```rust
 let daemon = Daemon::new(cfg);
+let shutdown = CancellationToken::new();
+let task = tokio::spawn(serve(daemon, shutdown.clone()));
 ```
 
 to:
 
 ```rust
 let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
+let shutdown = CancellationToken::new();
+let task = tokio::spawn(serve(daemon, shutdown.clone(), None));
 ```
 
-- [ ] **Step 2: Update `DaemonHarness::start_with_wt()` for fallible `Daemon::new` and auth**
+- [ ] **Step 2: Update `DaemonHarness::start_with_wt()` to inject `NoneBackend`**
 
-In `crates/cairn-daemon/tests/common/mod.rs`, in `start_with_wt()`, the config now needs an auth backend since it has a WT listener. The WT smoke tests use `NoneBackend` implicitly via the default — but `NoneBackend` is gone. Since these tests run over localhost and Tailscale isn't available in CI, we need a test-only approach.
+In `crates/cairn-daemon/tests/common/mod.rs`, in `start_with_wt()`, the config
+has a WT listener but no `auth_backends` (empty by default). `Daemon::new`
+would reject this, so we need to either add a backend to the config or bypass
+validation. Since we want to use `NoneBackend` (not Tailscale), we set
+`auth_backends` to contain Tailscale to pass validation, then override the
+chain at `serve()` time.
 
-The WT smoke tests currently authenticate via the `NoneBackend` default. With it gone, the WT tests need a backend that will accept the connection. The `auth_chain` in `serve()` must return *some* identity. Add `AuthBackendKind::Tailscale` to the config — but Tailscale won't be running in CI so the WT smoke tests will need to be gated. However, looking at the current WT tests, they connect but the auth chain with `NoneBackend` always succeeds. We need to replace this.
+Actually, simpler: `Daemon::new` validates that network listeners have auth
+backends. We need to satisfy that. But we don't want to actually *use*
+Tailscale. The cleanest approach: add `AuthBackendKind::Tailscale` to satisfy
+`Daemon::new` validation, then pass a `NoneBackend` chain to `serve()` which
+takes precedence over `build_auth_chain`.
 
-The simplest fix: the test harness constructs a `Daemon` whose `auth_chain` will accept localhost connections. Since we can't use Tailscale in tests, and `NoneBackend` is gone, we need a test-only auth backend.
+Add the import at the top:
 
-Actually, re-reading `serve()` more carefully: `build_auth_chain` is called in `serve()`, not `Daemon::new`. And `Daemon` has a public `registry` and `cfg`. We can create the `Daemon` with the auth_backends list empty (for UDS-only tests) or non-empty (for WT tests). But for WT tests, `build_auth_chain` will try to construct `TailscaleBackend::new()` which probes for `tailscaled` and will fail in CI.
+```rust
+use cairn_daemon::{
+    auth::{self, none::NoneBackend},
+    config::{AuthBackendKind, DaemonConfig},
+    daemon::Daemon,
+    listen::ListenerConfig,
+    serve::serve,
+};
+```
 
-The right fix: make `build_auth_chain` a method that can be overridden in tests, or inject the auth chain from outside. But that's a larger refactor. The simpler approach for now: make the WT smoke tests conditional on Tailscale availability (they already need a real tailscaled to authenticate).
-
-Update `start_with_wt()`:
+Update the config and serve call in `start_with_wt()`:
 
 ```rust
 let cfg = DaemonConfig {
@@ -493,12 +571,16 @@ let cfg = DaemonConfig {
         ListenerConfig::Unix(socket_path.clone()),
         ListenerConfig::WebTransport(wt_addr),
     ],
-    auth_backends: vec![cairn_daemon::config::AuthBackendKind::Tailscale],
+    auth_backends: vec![AuthBackendKind::Tailscale],
     wt_cert: Some(cert_path),
     wt_key: Some(key_path),
     ..DaemonConfig::default()
 };
 let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
+let shutdown = CancellationToken::new();
+
+let test_chain = auth::AuthChain::new(vec![Box::new(NoneBackend)]);
+let task = tokio::spawn(serve(daemon, shutdown.clone(), Some(test_chain)));
 ```
 
 - [ ] **Step 3: Update `test_daemon()` in `daemon_streaming.rs`**
@@ -519,23 +601,18 @@ fn test_daemon() -> Daemon {
 }
 ```
 
-- [ ] **Step 4: Run UDS integration tests**
+- [ ] **Step 4: Run full test suite**
 
-Run: `cargo nextest run -p cairn-daemon -E 'test(~daemon_unary) | test(~daemon_streaming) | test(~daemon_meta) | test(~smoke::binary)'`
+Run: `cargo nextest run -p cairn-daemon`
 
-Expected: all PASS — these are UDS-only and don't touch auth.
+Expected: all tests PASS. UDS tests pass as before. WT smoke tests pass
+using the injected `NoneBackend` chain — no tailscaled required.
 
-- [ ] **Step 5: Run WT smoke tests**
-
-Run: `cargo nextest run -p cairn-daemon -E 'test(~wt_smoke)'`
-
-Expected: if tailscaled is running locally, PASS. If not, the tests will fail at `TailscaleBackend::new()` in `build_auth_chain`. This is the expected new behaviour — WT tests require a real auth backend. If they fail, that's correct for CI without tailscaled.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```
 git add crates/cairn-daemon/tests/
-git commit -m "test: update harness for fallible Daemon::new and auth redesign"
+git commit -m "test: inject NoneBackend chain for WT smoke tests, update harness for fallible Daemon::new"
 ```
 
 ---
@@ -561,7 +638,7 @@ Expected: clean.
 
 Run: `cargo nextest run -p cairn-daemon`
 
-Expected: all UDS tests pass (82 minus the deleted `none::tests::accepts_any_connection` = 81, minus any WT tests that now require tailscaled). Check the count and note any expected WT failures.
+Expected: all 82 tests pass (same count — `none::tests` is updated, not deleted; WT smoke tests use the injected `NoneBackend` chain).
 
 - [ ] **Step 4: Verify the binary rejects missing auth for WT**
 

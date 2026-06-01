@@ -179,18 +179,18 @@ UDS path (`PeerCredListener::accept`) is completely unchanged — it resolves
 | File | Change |
 |---|---|
 | `auth/mod.rs` | Add `TransportContext` enum. Replace `AuthContext` fields. |
-| `auth/none.rs` | Delete. |
+| `auth/none.rs` | Keep as public module, not wired to CLI. Used by test harness. Update doc comment. |
 | `auth/tailscale.rs` | Match on `ctx.transport` to extract `peer_addr`. |
 | `config/mod.rs` | Remove `AuthBackendKind::None`. Remove `DaemonConfig::warn_on_misconfig()`. |
 | `config/args.rs` | Remove `default_value = "none"` from `--auth`. |
 | `daemon.rs` | `Daemon::new` becomes fallible (`-> Result<Self>`), absorbs validation and warnings. `build_auth_chain` returns `Option<AuthChain>`. |
-| `main.rs` | Remove `cfg.warn_on_misconfig()` call (moved into `Daemon::new`). |
-| `serve.rs` | Construct `AuthContext` with `TransportContext::WebTransport`. Handle `Option<AuthChain>`. |
+| `main.rs` | Remove `cfg.warn_on_misconfig()` call (moved into `Daemon::new`). Pass `None` to `serve()`. |
+| `serve.rs` | Add `auth_chain: Option<AuthChain>` parameter. Construct `AuthContext` with `TransportContext::WebTransport`. |
 | `identity.rs` | No changes. `Anonymous` stays for UDS `peer_cred()` fallback. |
 
 ## Test impact
 
-- Delete `auth::none::tests`.
-- Update `auth::tests` chain tests to use `TransportContext` in test fixtures.
+- Update `auth::none::tests` and `auth::tests` chain tests to use `TransportContext` in test fixtures.
 - `auth::tailscale::tests` — minimal changes (unit tests exercise `http_get_unix`/`parse_whois_response`, not `AuthContext`).
-- Integration tests (`daemon_meta`, `daemon_streaming`, `wt_smoke`) — UDS tests don't touch auth; WT tests go through the full chain and should pass.
+- Integration tests (`daemon_meta`, `daemon_streaming`) — UDS-only, unaffected.
+- WT smoke tests — test harness injects a `NoneBackend` chain via the `serve()` parameter, bypassing `build_auth_chain`. This avoids a tailscaled dependency in automated tests while still exercising the WT transport path.
