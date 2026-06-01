@@ -46,21 +46,29 @@ pub fn init_tracing(filter: &str, format: LogFormat) -> anyhow::Result<Option<Sd
         LogFormat::Pretty => layers.push(Box::new(
             tracing_subscriber::fmt::layer()
                 .pretty()
+                .with_thread_ids(true)
+                .with_thread_names(true)
                 .with_writer(std::io::stderr),
         )),
         LogFormat::Compact => layers.push(Box::new(
             tracing_subscriber::fmt::layer()
                 .compact()
-                .with_ansi(false)
+                .with_thread_ids(true)
+                .with_thread_names(true)
                 .with_writer(std::io::stderr),
         )),
         LogFormat::Json => layers.push(Box::new(
             tracing_subscriber::fmt::layer()
                 .json()
+                .with_thread_ids(true)
+                .with_thread_names(true)
                 .with_writer(std::io::stderr),
         )),
         LogFormat::Full => layers.push(Box::new(
-            tracing_subscriber::fmt::layer().with_writer(std::io::stderr),
+            tracing_subscriber::fmt::layer()
+                .with_thread_ids(true)
+                .with_thread_names(true)
+                .with_writer(std::io::stderr),
         )),
         LogFormat::Off => {}
     }
