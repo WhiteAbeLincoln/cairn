@@ -35,13 +35,13 @@ impl Harness {
             listeners: vec![ListenerConfig::Unix(socket.clone())],
             ..Default::default()
         };
-        let daemon = Daemon::new(cfg);
+        let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
         let shutdown = CancellationToken::new();
         let serve = {
             let daemon = daemon.clone();
             let shutdown = shutdown.clone();
             tokio::spawn(async move {
-                let _ = cairn_daemon::serve::serve(daemon, shutdown).await;
+                let _ = cairn_daemon::serve::serve(daemon, shutdown, None).await;
             })
         };
         for _ in 0..100 {

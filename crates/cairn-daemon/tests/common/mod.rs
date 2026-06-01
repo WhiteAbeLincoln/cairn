@@ -13,7 +13,13 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use cairn_daemon::{config::DaemonConfig, daemon::Daemon, listen::ListenerConfig, serve::serve};
+use cairn_daemon::{
+    auth::{self, none::NoneBackend},
+    config::{AuthBackendKind, DaemonConfig},
+    daemon::Daemon,
+    listen::ListenerConfig,
+    serve::serve,
+};
 use tokio_util::sync::CancellationToken;
 
 pub struct DaemonHarness {
@@ -36,9 +42,9 @@ impl DaemonHarness {
             listeners: vec![ListenerConfig::Unix(socket_path.clone())],
             ..DaemonConfig::default()
         };
-        let daemon = Daemon::new(cfg);
+        let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
         let shutdown = CancellationToken::new();
-        let task = tokio::spawn(serve(daemon, shutdown.clone()));
+        let task = tokio::spawn(serve(daemon, shutdown.clone(), None));
 
         // Poll until the socket file appears; serve() binds before accepting.
         for _ in 0..100 {
@@ -84,13 +90,16 @@ impl DaemonHarness {
                 ListenerConfig::Unix(socket_path.clone()),
                 ListenerConfig::WebTransport(wt_addr),
             ],
+            auth_backends: vec![AuthBackendKind::Tailscale],
             wt_cert: Some(cert_path),
             wt_key: Some(key_path),
             ..DaemonConfig::default()
         };
-        let daemon = Daemon::new(cfg);
+        let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
         let shutdown = CancellationToken::new();
-        let task = tokio::spawn(serve(daemon, shutdown.clone()));
+
+        let test_chain = auth::AuthChain::new(vec![Box::new(NoneBackend)]);
+        let task = tokio::spawn(serve(daemon, shutdown.clone(), Some(test_chain)));
 
         // Poll until the UDS socket file appears — the WT endpoint binds at
         // roughly the same time.

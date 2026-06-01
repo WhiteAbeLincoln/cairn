@@ -45,14 +45,9 @@ pub struct Args {
     #[arg(long, env = "CAIRN_WT_IDLE_TIMEOUT", value_parser = humantime::parse_duration)]
     pub wt_idle_timeout: Option<std::time::Duration>,
 
-    /// Authentication backends. Repeat or comma-separate (e.g. "none", "tailscale").
-    #[arg(
-        long,
-        env = "CAIRN_AUTH",
-        value_delimiter = ',',
-        default_value = "none",
-        value_enum
-    )]
+    /// Authentication backends for network listeners. Repeat or comma-separate.
+    /// Required when a network listener (https://) is configured.
+    #[arg(long, env = "CAIRN_AUTH", value_delimiter = ',', value_enum)]
     pub auth: Vec<AuthBackendKind>,
 
     /// Timeout for authentication handshakes (e.g. "5s").

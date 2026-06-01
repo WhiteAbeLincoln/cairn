@@ -6,7 +6,7 @@ use cairn_protocol::cairn::daemon::types::{LogWindow, SessionSpec};
 use futures::StreamExt as _;
 
 fn test_daemon() -> Daemon {
-    Daemon::new(DaemonConfig::default())
+    Daemon::new(DaemonConfig::default()).expect("test daemon config should be valid")
 }
 
 async fn create(

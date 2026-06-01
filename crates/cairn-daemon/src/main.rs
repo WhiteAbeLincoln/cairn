@@ -17,13 +17,12 @@ fn main() -> anyhow::Result<()> {
     let _otel_provider = cairn_daemon::telemetry::init_tracing(&args.log, args.log_format)?;
 
     let cfg: DaemonConfig = args.into();
-    cfg.warn_on_misconfig();
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
     rt.block_on(async {
-        let daemon = cairn_daemon::daemon::Daemon::new(cfg);
+        let daemon = cairn_daemon::daemon::Daemon::new(cfg)?;
         let shutdown = CancellationToken::new();
         let sig = shutdown.clone();
         // Install the SIGTERM handler before spawning so an install failure
@@ -37,6 +36,6 @@ fn main() -> anyhow::Result<()> {
             }
             sig.cancel();
         });
-        cairn_daemon::serve::serve(daemon, shutdown).await
+        cairn_daemon::serve::serve(daemon, shutdown, None).await
     })
 }

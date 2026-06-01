@@ -8,7 +8,7 @@ use cairn_protocol::cairn::daemon::types::{
 };
 use cairn_protocol::exports::cairn::daemon::meta::VersionInfo;
 
-use crate::config::DaemonConfig;
+use crate::config::{AuthBackendKind, DaemonConfig};
 use crate::registry::SessionRegistry;
 use crate::serve::ConnCtx;
 use crate::telemetry::link_remote_context;
@@ -23,27 +23,48 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    pub fn new(cfg: DaemonConfig) -> Self {
-        Self {
+    pub fn new(cfg: DaemonConfig) -> anyhow::Result<Self> {
+        let has_network = cfg.listeners.iter().any(|l| !l.is_unix());
+        let has_unix = cfg.listeners.iter().any(|l| l.is_unix());
+
+        if has_network && cfg.auth_backends.is_empty() {
+            anyhow::bail!(
+                "network listener configured but no --auth backend specified; \
+                 authentication is required for non-UDS transports"
+            );
+        }
+
+        if !has_network && !cfg.auth_backends.is_empty() {
+            tracing::warn!("--auth has no effect without a network listener");
+        }
+        if !has_unix && (cfg.dir_mode != 0o700 || cfg.socket_mode != 0o600) {
+            tracing::warn!("--dir-mode / --socket-mode have no effect without a unix:// listener");
+        }
+        if cfg.listeners.iter().any(|l| l.is_wt())
+            && (cfg.wt_cert.is_none() || cfg.wt_key.is_none())
+        {
+            tracing::warn!(
+                "https:// (WebTransport) listener configured but \
+                 --wt-cert / --wt-key not set"
+            );
+        }
+
+        Ok(Self {
             registry: Arc::new(SessionRegistry::new()),
             cfg: Arc::new(cfg),
-        }
+        })
     }
 
     /// Build the auth chain from the configured backend kinds.
-    pub fn build_auth_chain(&self) -> anyhow::Result<crate::auth::AuthChain> {
-        use crate::config::AuthBackendKind;
-
-        anyhow::ensure!(
-            !self.cfg.auth_backends.is_empty(),
-            "at least one --auth backend is required"
-        );
+    /// Returns `None` for UDS-only configurations that require no auth chain.
+    pub fn build_auth_chain(&self) -> anyhow::Result<Option<crate::auth::AuthChain>> {
+        let has_network = self.cfg.listeners.iter().any(|l| !l.is_unix());
+        if !has_network {
+            return Ok(None);
+        }
         let mut backends: Vec<Box<dyn crate::auth::AuthBackend>> = Vec::new();
         for kind in &self.cfg.auth_backends {
             match kind {
-                AuthBackendKind::None => {
-                    backends.push(Box::new(crate::auth::none::NoneBackend));
-                }
                 AuthBackendKind::Tailscale => {
                     backends.push(Box::new(
                         crate::auth::tailscale::TailscaleBackend::new()
@@ -52,7 +73,7 @@ impl Daemon {
                 }
             }
         }
-        Ok(crate::auth::AuthChain::new(backends))
+        Ok(Some(crate::auth::AuthChain::new(backends)))
     }
 }
 
@@ -262,5 +283,47 @@ impl cairn_protocol::exports::cairn::daemon::meta::Handler<ConnCtx> for Daemon {
         link_remote_context(&span, &call_ctx);
         let _enter = span.enter();
         Ok(handlers::meta::whoami(&ctx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AuthBackendKind;
+    use crate::listen::ListenerConfig;
+
+    #[test]
+    fn new_rejects_network_listener_without_auth() {
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::WebTransport(
+                "127.0.0.1:9443".parse().unwrap(),
+            )],
+            ..DaemonConfig::default()
+        };
+        let err = Daemon::new(cfg)
+            .err()
+            .expect("should reject network listener without auth");
+        assert!(
+            err.to_string().contains("--auth"),
+            "expected --auth hint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn new_accepts_uds_without_auth() {
+        let cfg = DaemonConfig::default();
+        assert!(Daemon::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn new_accepts_network_listener_with_auth() {
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::WebTransport(
+                "127.0.0.1:9443".parse().unwrap(),
+            )],
+            auth_backends: vec![AuthBackendKind::Tailscale],
+            ..DaemonConfig::default()
+        };
+        assert!(Daemon::new(cfg).is_ok());
     }
 }

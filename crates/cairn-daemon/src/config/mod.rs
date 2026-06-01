@@ -12,8 +12,6 @@ use crate::listen::ListenerConfig;
 /// Which authentication backend to enable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AuthBackendKind {
-    /// Accept all connections unconditionally (anonymous).
-    None,
     /// Authenticate via the Tailscale LocalAPI (whois).
     Tailscale,
 }
@@ -60,38 +58,10 @@ impl Default for DaemonConfig {
             wt_key: None,
             wt_connect_timeout: Duration::from_secs(30),
             wt_idle_timeout: Duration::from_secs(300),
-            auth_backends: vec![AuthBackendKind::None],
+            auth_backends: vec![],
             auth_timeout: Duration::from_secs(5),
             shutdown_grace: Duration::from_secs(5),
             default_shell: default_shell(),
-        }
-    }
-}
-
-impl DaemonConfig {
-    /// Log warnings for flag combinations that aren't hard errors but are
-    /// likely misconfigurations (e.g. socket-mode without a UDS listener,
-    /// auth=none on a network-facing endpoint).
-    pub fn warn_on_misconfig(&self) {
-        let has_wt = self.listeners.iter().any(|l| l.is_wt());
-        let has_unix = self.listeners.iter().any(|l| l.is_unix());
-
-        if !has_unix && (self.dir_mode != 0o700 || self.socket_mode != 0o600) {
-            tracing::warn!("--dir-mode / --socket-mode have no effect without a unix:// listener");
-        }
-        if has_wt {
-            if self.wt_cert.is_none() || self.wt_key.is_none() {
-                tracing::warn!(
-                    "https:// (WebTransport) listener configured but --wt-cert / --wt-key not set"
-                );
-            }
-            if self.auth_backends.contains(&AuthBackendKind::None)
-                && self.listeners.iter().any(|l| l.is_wt() && !l.is_loopback())
-            {
-                tracing::warn!(
-                    "auth=none with a non-loopback https:// listener exposes the daemon without authentication"
-                );
-            }
         }
     }
 }

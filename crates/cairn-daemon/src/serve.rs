@@ -68,13 +68,17 @@ impl Accept for &AuthenticatedWtAccept {
 pub async fn serve(
     daemon: crate::daemon::Daemon,
     shutdown: CancellationToken,
+    auth_chain: Option<crate::auth::AuthChain>,
 ) -> anyhow::Result<()> {
     // At least one listener must be configured.
     if daemon.cfg.listeners.is_empty() {
         anyhow::bail!("no listeners configured");
     }
 
-    let auth_chain = Arc::new(daemon.build_auth_chain()?);
+    let auth_chain = match auth_chain {
+        Some(chain) => Some(Arc::new(chain)),
+        None => daemon.build_auth_chain()?.map(Arc::new),
+    };
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     // ── UDS listener ─────────────────────────────────────────────────────
@@ -136,6 +140,9 @@ pub async fn serve(
     });
 
     if let Some(addr) = wt_addr {
+        let auth_chain = auth_chain
+            .clone()
+            .expect("WT listener requires auth chain; validated by Daemon::new");
         let (tls, cert_path, key_path) = resolve_tls(&daemon.cfg)?;
         let rt_dir = crate::config::runtime_dir();
         std::fs::create_dir_all(&rt_dir)?;
