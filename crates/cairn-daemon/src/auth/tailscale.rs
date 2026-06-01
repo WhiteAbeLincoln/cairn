@@ -20,7 +20,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use crate::auth::{AuthBackend, AuthContext, AuthError, AuthPhase};
+use crate::auth::{AuthBackend, AuthContext, AuthError, AuthPhase, TransportContext};
 use crate::identity::Identity;
 
 type HttpClient = hyper_util::client::legacy::Client<
@@ -159,7 +159,7 @@ impl AuthBackend for TailscaleBackend {
     {
         // SocketAddr is Copy; pull it out so the future only borrows `self`.
         let peer_addr = match ctx.transport {
-            crate::auth::TransportContext::WebTransport { peer_addr } => peer_addr,
+            TransportContext::WebTransport { peer_addr } => peer_addr,
         };
         Box::pin(self.do_authenticate(peer_addr))
     }

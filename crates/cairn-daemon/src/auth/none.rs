@@ -1,4 +1,7 @@
 //! The `none` auth backend: accepts all connections as anonymous.
+//!
+//! Not selectable via `--auth`. Used by the test harness to provide an auth
+//! chain for WT smoke tests that exercise transport, not authentication.
 
 use crate::auth::{AuthBackend, AuthContext, AuthError, AuthPhase};
 use crate::identity::Identity;
