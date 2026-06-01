@@ -3,7 +3,7 @@
 
 mod common;
 
-use bindings::cairn::daemon::types::{SessionSpec, Signal, SignalName};
+use bindings::cairn::daemon::types::{CallContext, SessionSpec, Signal, SignalName};
 use cairn_protocol as bindings;
 use common::DaemonHarness;
 
@@ -231,4 +231,46 @@ async fn rename_and_restart() {
         .expect("inspect after restart")
         .expect("inspect ok");
     assert_eq!(after.id, created.id);
+}
+
+// ── call-context ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn create_with_call_context_is_accepted() {
+    let h = DaemonHarness::start().await;
+    let client = h.client();
+
+    let ctx = Some(CallContext {
+        trace_context: Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_string()),
+    });
+
+    let created = bindings::client::cairn::daemon::sessions::create(
+        &client,
+        (),
+        ctx,
+        &spec("traced", &["sleep", "100"]),
+    )
+    .await
+    .expect("create invocation")
+    .expect("create result");
+    assert_eq!(created.name, Some("traced".to_string()));
+    assert!(created.exit.is_none());
+}
+
+#[tokio::test]
+async fn create_with_none_call_context_is_accepted() {
+    let h = DaemonHarness::start().await;
+    let client = h.client();
+
+    let created = bindings::client::cairn::daemon::sessions::create(
+        &client,
+        (),
+        None,
+        &spec("untraced", &["sleep", "100"]),
+    )
+    .await
+    .expect("create invocation")
+    .expect("create result");
+    assert_eq!(created.name, Some("untraced".to_string()));
+    assert!(created.exit.is_none());
 }
