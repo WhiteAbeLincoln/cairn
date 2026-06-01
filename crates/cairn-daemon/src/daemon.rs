@@ -30,23 +30,27 @@ impl Daemon {
         }
     }
 
-    /// Build the auth chain from the configured backend names.
+    /// Build the auth chain from the configured backend kinds.
     pub fn build_auth_chain(&self) -> anyhow::Result<crate::auth::AuthChain> {
+        use crate::config::AuthBackendKind;
+
+        anyhow::ensure!(
+            !self.cfg.auth_backends.is_empty(),
+            "at least one --auth backend is required"
+        );
         let mut backends: Vec<Box<dyn crate::auth::AuthBackend>> = Vec::new();
-        for name in &self.cfg.auth_backends {
-            match name.as_str() {
-                "none" => backends.push(Box::new(crate::auth::none::NoneBackend)),
-                "tailscale" => {
+        for kind in &self.cfg.auth_backends {
+            match kind {
+                AuthBackendKind::None => {
+                    backends.push(Box::new(crate::auth::none::NoneBackend));
+                }
+                AuthBackendKind::Tailscale => {
                     backends.push(Box::new(
                         crate::auth::tailscale::TailscaleBackend::new()
                             .map_err(|e| anyhow::anyhow!("tailscale auth backend init: {e}"))?,
                     ));
                 }
-                other => anyhow::bail!("unknown auth backend: {other:?}"),
             }
-        }
-        if backends.is_empty() {
-            anyhow::bail!("at least one --auth backend is required");
         }
         Ok(crate::auth::AuthChain::new(backends))
     }
