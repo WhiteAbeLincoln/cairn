@@ -65,7 +65,14 @@ pub async fn attach(
     );
 
     let no_stdin = init.no_stdin;
-    let (tx, out) = tokio::sync::mpsc::channel::<Vec<ServerEvent>>(32);
+    // Capacity is deliberately small: this channel exists only because wRPC's
+    // StreamEncoder eagerly polls the returned Stream into an unbounded
+    // internal BytesMut, so without a bounded intermediary the encoder would
+    // drain the entire broadcast ring into heap memory.  The capacity limits
+    // how far ahead the encoder can get; a slow client triggers broadcast
+    // Lagged sooner, which is the desired outcome (kick it, trust the
+    // snapshot).
+    let (tx, out) = tokio::sync::mpsc::channel::<Vec<ServerEvent>>(2);
 
     tokio::spawn(
         async move {
@@ -110,34 +117,44 @@ pub async fn attach(
                     },
                     out_chunk = sub.recv() => match out_chunk {
                         Ok(bytes) => {
-                            if tx.send(vec![ServerEvent::Output(bytes)]).await.is_err() { return; }
+                            // Race the send against kick so an operator-initiated
+                            // kick isn't blocked by a slow client's full channel.
+                            let msg = vec![ServerEvent::Output(bytes)];
+                            tokio::select! {
+                                res = tx.send(msg) => {
+                                    if res.is_err() { return; }
+                                }
+                                _ = &mut kick_rx => {
+                                    tracing::info!("client kicked");
+                                    let _ = tx.try_send(vec![ServerEvent::Error(WireError {
+                                        code: cairn_protocol::error_codes::CLIENT_KICKED.to_string(),
+                                        message: "detached by operator".to_string(),
+                                    })]);
+                                    return;
+                                }
+                            }
                         }
                         Err(RecvError::Lagged(_)) => {
                             tracing::warn!("client lagged");
-                            // lag-kick: tell the client this is recoverable so it reattaches fresh.
-                            let _ = tx.send(vec![ServerEvent::Error(WireError {
+                            let _ = tx.try_send(vec![ServerEvent::Error(WireError {
                                 code: cairn_protocol::error_codes::CLIENT_LAGGED.to_string(),
                                 message: "client fell behind output; reattach for a fresh snapshot".to_string(),
-                            })]).await;
+                            })]);
                             return;
                         }
                         Err(RecvError::Closed) => {
                             tracing::info!("session ended under attached client");
-                            // Session ended. Subscription joins broadcast-close
-                            // and exit-publication internally; wait() resolves
-                            // immediately because exit_status is already set.
                             let exit = wire_exit(handle.wait().await);
-                            let _ = tx.send(vec![ServerEvent::Exited(exit)]).await;
+                            let _ = tx.try_send(vec![ServerEvent::Exited(exit)]);
                             return;
                         }
                     },
                     _ = &mut kick_rx => {
                         tracing::info!("client kicked");
-                        // evicted by the `kick` op: terminal, client must not reconnect.
-                        let _ = tx.send(vec![ServerEvent::Error(WireError {
+                        let _ = tx.try_send(vec![ServerEvent::Error(WireError {
                             code: cairn_protocol::error_codes::CLIENT_KICKED.to_string(),
                             message: "detached by operator".to_string(),
-                        })]).await;
+                        })]);
                         return;
                     }
                 }

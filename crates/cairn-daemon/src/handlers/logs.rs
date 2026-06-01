@@ -30,7 +30,7 @@ pub async fn logs(
         .map_err(|e| anyhow::anyhow!("subscribe failed: {e}"))?;
 
     let snapshot = apply_window(sub.snapshot.clone(), &window);
-    let (tx, out) = tokio::sync::mpsc::channel::<Vec<Bytes>>(32);
+    let (tx, out) = tokio::sync::mpsc::channel::<Vec<Bytes>>(2);
 
     tokio::spawn(async move {
         // Move the whole Subscription into the task so its guard (leadership/
