@@ -236,14 +236,14 @@ impl cairn_protocol::exports::cairn::daemon::meta::Handler<ConnCtx> for Daemon {
 
     async fn authenticate(
         &self,
-        _ctx: ConnCtx,
+        ctx: ConnCtx,
         call_ctx: Option<CallContext>,
         token: String,
     ) -> anyhow::Result<Result<(), WireError>> {
         let span = tracing::info_span!("rpc", method = "meta.authenticate");
         link_remote_context(&span, &call_ctx);
         let _enter = span.enter();
-        Ok(handlers::meta::authenticate(token))
+        Ok(handlers::meta::authenticate(&ctx, token))
     }
 
     async fn whoami(
