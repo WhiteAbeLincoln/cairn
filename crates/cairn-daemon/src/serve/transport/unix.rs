@@ -5,13 +5,15 @@ use tokio_util::sync::CancellationToken;
 use wrpc_transport::frame::Accept;
 
 use crate::serve::ConnCtx;
+use crate::serve::auth::Authenticator;
+use crate::serve::transport::TransportListener;
 use crate::serve::wrpc::run_wrpc_server;
 
 use super::super::ListenerId;
 
 /// A `UnixListener` whose `accept` captures `SO_PEERCRED` into `ConnCtx`
 /// before splitting the stream.
-pub struct PeerCredListener(pub tokio::net::UnixListener);
+struct PeerCredListener(pub tokio::net::UnixListener);
 
 impl Accept for &PeerCredListener {
     type Context = ConnCtx;
@@ -23,6 +25,7 @@ impl Accept for &PeerCredListener {
         let identity = match stream.peer_cred().ok().map(|c| c.uid()) {
             Some(uid) => crate::identity::Identity::Unix {
                 uid,
+                // username is resolved lazily in whoami
                 username: None,
             },
             None => crate::identity::Identity::Anonymous,
@@ -32,34 +35,41 @@ impl Accept for &PeerCredListener {
     }
 }
 
-pub(in crate::serve) struct BoundUnixListener {
+impl TransportListener for PeerCredListener {
+    fn run(
+        self,
+        daemon: crate::daemon::Daemon,
+        _auth: Authenticator,
+        shutdown: CancellationToken,
+    ) -> impl futures::Future<Output = anyhow::Result<()>> + Send + 'static {
+        run_wrpc_server::<_, OwnedReadHalf, OwnedWriteHalf, ()>(self, daemon, shutdown)
+    }
+}
+
+pub(super) struct UnixListenerGuard {
     path: PathBuf,
-    listener: tokio::net::UnixListener,
+}
+
+impl Drop for UnixListenerGuard {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            tracing::error!(
+                socket = %self.path.display(),
+                error = %error,
+                "failed to remove daemon socket file during shutdown"
+            );
+        }
+    }
 }
 
 pub(super) fn bind(
     id: ListenerId,
     path: PathBuf,
     cfg: &crate::config::DaemonConfig,
-) -> anyhow::Result<BoundUnixListener> {
+) -> anyhow::Result<(impl TransportListener, UnixListenerGuard)> {
     let listener = bind_with_cleanup(&path, cfg)?;
     tracing::info!(listener = %id, socket = %path.display(), "UDS listening");
-    Ok(BoundUnixListener { path, listener })
-}
-
-impl BoundUnixListener {
-    pub(super) async fn run(
-        self,
-        daemon: crate::daemon::Daemon,
-        shutdown: CancellationToken,
-    ) -> anyhow::Result<()> {
-        let acceptor = PeerCredListener(self.listener);
-        run_wrpc_server::<_, OwnedReadHalf, OwnedWriteHalf, ()>(acceptor, daemon, shutdown).await
-    }
-
-    pub(super) fn path(&self) -> &Path {
-        &self.path
-    }
+    Ok((PeerCredListener(listener), UnixListenerGuard { path }))
 }
 
 // ── Socket lifecycle ──────────────────────────────────────────────────────

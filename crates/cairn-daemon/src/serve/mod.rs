@@ -35,7 +35,8 @@ pub async fn serve(
     let auth = auth::Authenticator::new(&daemon, auth_chain)?;
     let mut tasks = JoinSet::new();
 
-    let spawned =
+    // holds guards for transports that require cleanup (e.g. UnixListenerGuard removes socket file on drop)
+    let _spawned =
         transport::bind_and_spawn(&daemon.cfg, &daemon, &auth, &shutdown, &mut tasks).await?;
 
     // Wait for shutdown or a transport task to fail.
@@ -61,10 +62,6 @@ pub async fn serve(
     // Graceful shutdown: drain sessions, then abort remaining tasks.
     drain_sessions(&daemon, daemon.cfg.shutdown_grace).await;
     tasks.shutdown().await;
-
-    for path in &spawned.unix_paths {
-        let _ = std::fs::remove_file(path);
-    }
 
     Ok(())
 }

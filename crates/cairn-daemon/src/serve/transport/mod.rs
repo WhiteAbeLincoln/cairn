@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -10,7 +8,16 @@ pub(super) mod unix;
 pub(super) mod webtransport;
 
 pub(super) struct SpawnedTransports {
-    pub(super) unix_paths: Vec<PathBuf>,
+    _unix_guards: Vec<unix::UnixListenerGuard>,
+}
+
+pub trait TransportListener {
+    fn run(
+        self,
+        daemon: crate::daemon::Daemon,
+        auth: Authenticator,
+        shutdown: CancellationToken,
+    ) -> impl futures::Future<Output = anyhow::Result<()>> + Send + 'static;
 }
 
 pub(super) async fn bind_and_spawn(
@@ -20,28 +27,33 @@ pub(super) async fn bind_and_spawn(
     shutdown: &CancellationToken,
     tasks: &mut JoinSet<anyhow::Result<()>>,
 ) -> anyhow::Result<SpawnedTransports> {
-    let mut unix_paths = Vec::new();
+    let mut unix_guards = Vec::new();
 
     for (index, listener_cfg) in cfg.listeners.iter().enumerate() {
         let id = ListenerId::new(index, listener_cfg);
 
         match listener_cfg {
             crate::listen::ListenerConfig::Unix(path) => {
-                let bound = unix::bind(id, path.clone(), cfg)?;
-                unix_paths.push(bound.path().to_path_buf());
-                let daemon = daemon.clone();
-                let shutdown = shutdown.clone();
-                tasks.spawn(async move { bound.run(daemon, shutdown).await });
-            }
-            crate::listen::ListenerConfig::WebTransport(addr) => {
-                let bound = webtransport::bind(id, *addr, cfg).await?;
+                let (bound, guard) = unix::bind(id, path.clone(), cfg)?;
+                unix_guards.push(guard);
+
                 let daemon = daemon.clone();
                 let auth = auth.clone();
                 let shutdown = shutdown.clone();
-                tasks.spawn(async move { bound.run(daemon, auth, shutdown).await });
+                tasks.spawn(bound.run(daemon, auth, shutdown));
+            }
+            crate::listen::ListenerConfig::WebTransport(addr) => {
+                let bound = webtransport::bind(id, *addr, cfg).await?;
+
+                let daemon = daemon.clone();
+                let auth = auth.clone();
+                let shutdown = shutdown.clone();
+                tasks.spawn(bound.run(daemon, auth, shutdown));
             }
         }
     }
 
-    Ok(SpawnedTransports { unix_paths })
+    Ok(SpawnedTransports {
+        _unix_guards: unix_guards,
+    })
 }

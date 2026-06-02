@@ -2,24 +2,42 @@ use std::net::SocketAddr;
 
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
+use wrpc_transport::Accept;
 
 use crate::serve::ConnCtx;
 use crate::serve::auth::Authenticator;
-use crate::serve::wrpc::{AuthenticatedWtAccept, run_wrpc_server};
+use crate::serve::transport::TransportListener;
+use crate::serve::wrpc::run_wrpc_server;
 
 use super::super::ListenerId;
 
-pub(in crate::serve) struct BoundWebTransportListener {
-    pub(super) id: ListenerId,
+struct BoundWebTransportListener {
+    id: ListenerId,
     endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
     connect_timeout: std::time::Duration,
+}
+
+struct AuthenticatedWtAccept {
+    inner: wrpc_transport_web::Client,
+    ctx: ConnCtx,
+}
+
+impl Accept for &AuthenticatedWtAccept {
+    type Context = ConnCtx;
+    type Outgoing = wtransport::SendStream;
+    type Incoming = wtransport::RecvStream;
+
+    async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
+        let ((), tx, rx) = Accept::accept(&self.inner).await?;
+        Ok((self.ctx.clone(), tx, rx))
+    }
 }
 
 pub(super) async fn bind(
     id: ListenerId,
     addr: SocketAddr,
     cfg: &crate::config::DaemonConfig,
-) -> anyhow::Result<BoundWebTransportListener> {
+) -> anyhow::Result<impl TransportListener> {
     let (tls, cert_path, key_path) = super::super::resolve_tls(cfg)?;
     let rt_dir = crate::config::runtime_dir();
     std::fs::create_dir_all(&rt_dir)?;
@@ -53,8 +71,8 @@ pub(super) async fn bind(
     })
 }
 
-impl BoundWebTransportListener {
-    pub(super) async fn run(
+impl TransportListener for BoundWebTransportListener {
+    async fn run(
         self,
         daemon: crate::daemon::Daemon,
         auth: Authenticator,
@@ -67,42 +85,45 @@ impl BoundWebTransportListener {
                 _ = shutdown.cancelled() => break,
 
                 incoming = self.endpoint.accept() => {
-                    let conn = match self.accept_connection(incoming).await {
-                        Ok(conn) => conn,
-                        Err(error) => {
-                            tracing::debug!(
-                                listener = %self.id,
-                                error = %error,
-                                "WT connection accept failed"
-                            );
-                            continue;
-                        }
-                    };
-
-                    let peer_addr = conn.remote_address();
-                    let identity = match auth.authenticate_network(peer_addr).await {
-                        Ok(id) => id,
-                        Err(error) => {
-                            tracing::warn!(
-                                listener = %self.id,
-                                %peer_addr,
-                                %error,
-                                "WT connection rejected"
-                            );
-                            continue;
-                        }
-                    };
-
-                    tracing::info!(%peer_addr, ?identity, "WT connection authenticated");
-                    let ctx = ConnCtx { identity };
-                    let acceptor = AuthenticatedWtAccept {
-                        inner: wrpc_transport_web::Client::from(conn),
-                        ctx,
-                    };
-
+                    let id = self.id.clone();
+                    let connect_timeout = self.connect_timeout;
+                    let auth = auth.clone();
                     let daemon = daemon.clone();
                     let shutdown = shutdown.clone();
                     connections.spawn(async move {
+                        let conn = match accept_connection(connect_timeout, incoming).await {
+                            Ok(conn) => conn,
+                            Err(error) => {
+                                tracing::debug!(
+                                    listener = %id,
+                                    error = %error,
+                                    "WT connection accept failed"
+                                );
+                                return;
+                            }
+                        };
+
+                        let peer_addr = conn.remote_address();
+                        let identity = match auth.authenticate_network(peer_addr).await {
+                            Ok(id) => id,
+                            Err(error) => {
+                                tracing::warn!(
+                                    listener = %id,
+                                    %peer_addr,
+                                    %error,
+                                    "WT connection rejected"
+                                );
+                                return;
+                            }
+                        };
+
+                        tracing::info!(%peer_addr, ?identity, "WT connection authenticated");
+                        let ctx = ConnCtx { identity };
+                        let acceptor = AuthenticatedWtAccept {
+                            inner: wrpc_transport_web::Client::from(conn),
+                            ctx,
+                        };
+
                         if let Err(error) = run_wrpc_server::<
                             _,
                             wtransport::RecvStream,
@@ -124,25 +145,33 @@ impl BoundWebTransportListener {
             }
         }
 
-        connections.abort_all();
-        while connections.join_next().await.is_some() {}
+        // Cooperative drain: give connection tasks time to notice shutdown
+        // and exit cleanly before forcefully aborting stragglers.
+        let drain = tokio::time::timeout(self.connect_timeout, async {
+            while connections.join_next().await.is_some() {}
+        });
+        if drain.await.is_err() {
+            tracing::warn!(listener = %self.id, "WT connections did not drain in time, aborting");
+            connections.abort_all();
+            while connections.join_next().await.is_some() {}
+        }
         Ok(())
     }
+}
 
-    async fn accept_connection(
-        &self,
-        incoming: wtransport::endpoint::IncomingSession,
-    ) -> anyhow::Result<wtransport::Connection> {
-        let request = tokio::time::timeout(self.connect_timeout, incoming)
-            .await
-            .map_err(|_| anyhow::anyhow!("WT session request timed out"))?
-            .map_err(|e| anyhow::anyhow!("WT session request error: {e}"))?;
+async fn accept_connection(
+    timeout: std::time::Duration,
+    incoming: wtransport::endpoint::IncomingSession,
+) -> anyhow::Result<wtransport::Connection> {
+    let request = tokio::time::timeout(timeout, incoming)
+        .await
+        .map_err(|_| anyhow::anyhow!("WT session request timed out"))?
+        .map_err(|e| anyhow::anyhow!("WT session request error: {e}"))?;
 
-        let conn = tokio::time::timeout(self.connect_timeout, request.accept())
-            .await
-            .map_err(|_| anyhow::anyhow!("WT connection accept timed out"))?
-            .map_err(|e| anyhow::anyhow!("WT connection accept error: {e}"))?;
+    let conn = tokio::time::timeout(timeout, request.accept())
+        .await
+        .map_err(|_| anyhow::anyhow!("WT connection accept timed out"))?
+        .map_err(|e| anyhow::anyhow!("WT connection accept error: {e}"))?;
 
-        Ok(conn)
-    }
+    Ok(conn)
 }

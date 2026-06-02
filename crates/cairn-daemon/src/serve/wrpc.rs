@@ -26,12 +26,19 @@ where
             .map(|(instance, name, stream)| stream.map(move |res| (instance, name, res))),
     );
 
+    // server.accept() is not cancel-safe — it has internal await points
+    // where dropping loses accepted connections or deadlocks the handler
+    // registry mutex. Pin it so it survives across select! iterations
+    // rather than being dropped and recreated each time.
+    let mut accepting = std::pin::pin!(server.accept(&acceptor));
+
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
 
-            result = server.accept(&acceptor) => {
+            result = &mut accepting => {
                 result.context("wRPC accept failed")?;
+                accepting.set(server.accept(&acceptor));
             }
 
             item = invocations.next() => {
@@ -51,20 +58,4 @@ where
     }
 
     Ok(())
-}
-
-pub(in crate::serve) struct AuthenticatedWtAccept {
-    pub(in crate::serve) inner: wrpc_transport_web::Client,
-    pub(in crate::serve) ctx: ConnCtx,
-}
-
-impl Accept for &AuthenticatedWtAccept {
-    type Context = ConnCtx;
-    type Outgoing = wtransport::SendStream;
-    type Incoming = wtransport::RecvStream;
-
-    async fn accept(&self) -> std::io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
-        let ((), tx, rx) = Accept::accept(&self.inner).await?;
-        Ok((self.ctx.clone(), tx, rx))
-    }
 }
