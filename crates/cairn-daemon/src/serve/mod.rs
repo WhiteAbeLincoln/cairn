@@ -5,9 +5,7 @@
 //! shutdown, drains sessions, and cleans up.
 
 use std::fmt;
-use std::path::PathBuf;
 
-use anyhow::Context as _;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -40,6 +38,7 @@ pub async fn serve(
         transport::bind_and_spawn(&daemon.cfg, &daemon, &auth, &shutdown, &mut tasks).await?;
 
     // Wait for shutdown or a transport task to fail.
+    let mut transport_error = None;
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -47,23 +46,37 @@ pub async fn serve(
                 match result {
                     Some(Ok(Ok(()))) => {
                         if !shutdown.is_cancelled() {
-                            anyhow::bail!("transport task exited unexpectedly");
+                            transport_error = Some(anyhow::anyhow!("transport task exited unexpectedly"));
+                            break;
                         }
                     }
-                    Some(Ok(Err(error))) => return Err(error).context("transport task failed"),
+                    Some(Ok(Err(error))) => {
+                        transport_error = Some(error.context("transport task failed"));
+                        break;
+                    }
                     Some(Err(error)) if error.is_cancelled() => {}
-                    Some(Err(error)) => return Err(error).context("transport task panicked"),
+                    Some(Err(error)) => {
+                        transport_error = Some(
+                            anyhow::Error::from(error).context("transport task panicked"),
+                        );
+                        break;
+                    }
                     None => break,
                 }
             }
         }
     }
 
-    // Graceful shutdown: drain sessions, then abort remaining tasks.
+    // Always drain sessions, even after a transport failure — managed
+    // processes deserve the SIGTERM grace path regardless of why we're
+    // shutting down.
     drain_sessions(&daemon, daemon.cfg.shutdown_grace).await;
     tasks.shutdown().await;
 
-    Ok(())
+    match transport_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -120,31 +133,6 @@ async fn drain_sessions(daemon: &crate::daemon::Daemon, grace: std::time::Durati
     });
     futures::future::join_all(waits).await;
     // Dropping the registry's Arcs (on daemon teardown) is the final SIGKILL backstop.
-}
-
-// ── TLS resolution ───────────────────────────────────────────────────────
-
-/// Resolve the TLS configuration for the WebTransport listener.
-///
-/// Returns the `TlsConfig` and the filesystem paths to cert and key PEM files.
-/// If the user provided `--wt-cert` and `--wt-key`, those paths are used.
-/// Otherwise a self-signed certificate is generated (or reused) under
-/// `crate::config::runtime_dir()/tls/`.
-fn resolve_tls(
-    cfg: &crate::config::DaemonConfig,
-) -> anyhow::Result<(crate::tls::TlsConfig, PathBuf, PathBuf)> {
-    match (&cfg.wt_cert, &cfg.wt_key) {
-        (Some(cert), Some(key)) => {
-            let tls = crate::tls::TlsConfig::from_pem_files(cert, key)?;
-            Ok((tls, cert.clone(), key.clone()))
-        }
-        (None, None) => {
-            let tls_dir = crate::config::runtime_dir().join("tls");
-            let tls = crate::tls::TlsConfig::self_signed(&tls_dir)?;
-            Ok((tls, tls_dir.join("cert.pem"), tls_dir.join("key.pem")))
-        }
-        _ => anyhow::bail!("--wt-cert and --wt-key must both be provided, or both omitted"),
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────

@@ -2,13 +2,13 @@ use std::fmt;
 use std::sync::Arc;
 
 #[derive(Clone)]
-pub(in crate::serve) struct Authenticator {
+pub(super) struct Authenticator {
     chain: Option<Arc<crate::auth::AuthChain>>,
     auth_timeout: std::time::Duration,
 }
 
 impl Authenticator {
-    pub(in crate::serve) fn new(
+    pub(super) fn new(
         daemon: &crate::daemon::Daemon,
         auth_chain: Option<crate::auth::AuthChain>,
     ) -> anyhow::Result<Self> {
@@ -23,7 +23,7 @@ impl Authenticator {
         })
     }
 
-    pub(in crate::serve) async fn authenticate_network(
+    pub(super) async fn authenticate_network(
         &self,
         peer_addr: std::net::SocketAddr,
     ) -> Result<crate::identity::Identity, AuthFailure> {
@@ -46,7 +46,7 @@ impl Authenticator {
 }
 
 #[derive(Debug)]
-pub(in crate::serve) enum AuthFailure {
+pub(super) enum AuthFailure {
     NoBackend,
     Rejected(String),
     TimedOut,

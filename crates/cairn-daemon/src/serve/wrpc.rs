@@ -1,12 +1,11 @@
-use anyhow::Context as _;
 use futures::stream::{StreamExt as _, select_all};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
-use wrpc_transport::frame::Accept;
+use wrpc_transport::frame::{Accept, AcceptError};
 
 use super::ConnCtx;
 
-pub(in crate::serve) async fn run_wrpc_server<A, I, O, H>(
+pub(super) async fn run_wrpc_server<A, I, O, H>(
     acceptor: A,
     daemon: crate::daemon::Daemon,
     shutdown: CancellationToken,
@@ -37,7 +36,16 @@ where
             _ = shutdown.cancelled() => break,
 
             result = &mut accepting => {
-                result.context("wRPC accept failed")?;
+                match result {
+                    Ok(()) => {}
+                    // Handler channel closed — server internals are broken.
+                    Err(AcceptError::Send(_)) => {
+                        anyhow::bail!("wRPC handler channel closed");
+                    }
+                    Err(error) => {
+                        tracing::debug!(%error, "wRPC connection rejected");
+                    }
+                }
                 accepting.set(server.accept(&acceptor));
             }
 
@@ -47,9 +55,7 @@ where
                         tokio::spawn(fut);
                     }
                     Some((instance, name, Err(error))) => {
-                        return Err(error).with_context(|| {
-                            format!("wRPC invocation failed for {instance}#{name}")
-                        });
+                        tracing::debug!(%error, %instance, %name, "wRPC invocation failed");
                     }
                     None => break,
                 }

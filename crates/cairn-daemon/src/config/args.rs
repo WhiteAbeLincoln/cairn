@@ -45,6 +45,11 @@ pub struct Args {
     #[arg(long, env = "CAIRN_WT_IDLE_TIMEOUT", value_parser = humantime::parse_duration)]
     pub wt_idle_timeout: Option<std::time::Duration>,
 
+    /// Maximum concurrent WebTransport connections in the accept/auth
+    /// handshake phase. Excess connections are dropped immediately.
+    #[arg(long, env = "CAIRN_WT_MAX_PENDING")]
+    pub wt_max_pending: Option<usize>,
+
     /// Authentication backends for network listeners. Repeat or comma-separate.
     /// Required when a network listener (https://) is configured.
     #[arg(long, env = "CAIRN_AUTH", value_delimiter = ',', value_enum)]
@@ -75,8 +80,10 @@ pub struct Args {
     pub log_format: LogFormat,
 }
 
-impl From<Args> for DaemonConfig {
-    fn from(args: Args) -> Self {
+impl TryFrom<Args> for DaemonConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(args: Args) -> anyhow::Result<Self> {
         let mut cfg = DaemonConfig::default();
 
         if !args.listen.is_empty() {
@@ -88,17 +95,19 @@ impl From<Args> for DaemonConfig {
         if let Some(m) = args.socket_mode {
             cfg.socket_mode = m;
         }
-        if let Some(p) = args.wt_cert {
-            cfg.wt_cert = Some(p);
-        }
-        if let Some(p) = args.wt_key {
-            cfg.wt_key = Some(p);
-        }
+        cfg.wt_tls = match (args.wt_cert, args.wt_key) {
+            (Some(cert), Some(key)) => Some(super::WtTlsIdentity { cert, key }),
+            (None, None) => None,
+            _ => anyhow::bail!("--wt-cert and --wt-key must both be provided, or both omitted"),
+        };
         if let Some(t) = args.wt_connect_timeout {
             cfg.wt_connect_timeout = t;
         }
         if let Some(t) = args.wt_idle_timeout {
             cfg.wt_idle_timeout = t;
+        }
+        if let Some(n) = args.wt_max_pending {
+            cfg.wt_max_pending = n;
         }
         cfg.auth_backends = args.auth;
         if let Some(t) = args.auth_timeout {
@@ -111,6 +120,6 @@ impl From<Args> for DaemonConfig {
             cfg.default_shell = s;
         }
 
-        cfg
+        Ok(cfg)
     }
 }

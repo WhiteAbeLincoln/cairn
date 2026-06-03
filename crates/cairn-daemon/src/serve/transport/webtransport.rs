@@ -1,5 +1,8 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use wrpc_transport::Accept;
@@ -15,6 +18,7 @@ struct BoundWebTransportListener {
     id: ListenerId,
     endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
     connect_timeout: std::time::Duration,
+    pending_limit: Arc<Semaphore>,
 }
 
 struct AuthenticatedWtAccept {
@@ -38,7 +42,7 @@ pub(super) async fn bind(
     addr: SocketAddr,
     cfg: &crate::config::DaemonConfig,
 ) -> anyhow::Result<impl TransportListener> {
-    let (tls, cert_path, key_path) = super::super::resolve_tls(cfg)?;
+    let (tls, cert_path, key_path) = resolve_tls(cfg)?;
     let rt_dir = crate::config::runtime_dir();
     std::fs::create_dir_all(&rt_dir)?;
     tls.export_hash(&rt_dir.join("cert-hash"))?;
@@ -68,6 +72,7 @@ pub(super) async fn bind(
         id,
         endpoint,
         connect_timeout: cfg.wt_connect_timeout,
+        pending_limit: Arc::new(Semaphore::new(cfg.wt_max_pending)),
     })
 }
 
@@ -85,6 +90,17 @@ impl TransportListener for BoundWebTransportListener {
                 _ = shutdown.cancelled() => break,
 
                 incoming = self.endpoint.accept() => {
+                    let permit = match self.pending_limit.clone().try_acquire_owned() {
+                        Ok(permit) => permit,
+                        Err(_) => {
+                            tracing::warn!(
+                                listener = %self.id,
+                                "WT pending connection limit reached, dropping"
+                            );
+                            continue;
+                        }
+                    };
+
                     let id = self.id.clone();
                     let connect_timeout = self.connect_timeout;
                     let auth = auth.clone();
@@ -118,6 +134,7 @@ impl TransportListener for BoundWebTransportListener {
                         };
 
                         tracing::info!(%peer_addr, ?identity, "WT connection authenticated");
+                        drop(permit);
                         let ctx = ConnCtx { identity };
                         let acceptor = AuthenticatedWtAccept {
                             inner: wrpc_transport_web::Client::from(conn),
@@ -174,4 +191,28 @@ async fn accept_connection(
         .map_err(|e| anyhow::anyhow!("WT connection accept error: {e}"))?;
 
     Ok(conn)
+}
+
+// ── TLS resolution ───────────────────────────────────────────────────────
+
+/// Resolve the TLS configuration for the WebTransport listener.
+///
+/// Returns the `TlsConfig` and the filesystem paths to cert and key PEM files.
+/// If the user provided `--wt-cert` and `--wt-key`, those paths are used.
+/// Otherwise a self-signed certificate is generated (or reused) under
+/// `crate::config::runtime_dir()/tls/`.
+fn resolve_tls(
+    cfg: &crate::config::DaemonConfig,
+) -> anyhow::Result<(crate::tls::TlsConfig, PathBuf, PathBuf)> {
+    match &cfg.wt_tls {
+        Some(id) => {
+            let tls = crate::tls::TlsConfig::from_pem_files(&id.cert, &id.key)?;
+            Ok((tls, id.cert.clone(), id.key.clone()))
+        }
+        None => {
+            let tls_dir = crate::config::runtime_dir().join("tls");
+            let tls = crate::tls::TlsConfig::self_signed(&tls_dir)?;
+            Ok((tls, tls_dir.join("cert.pem"), tls_dir.join("key.pem")))
+        }
+    }
 }

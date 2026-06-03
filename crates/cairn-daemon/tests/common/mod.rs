@@ -91,8 +91,10 @@ impl DaemonHarness {
                 ListenerConfig::WebTransport(wt_addr),
             ],
             auth_backends: vec![AuthBackendKind::Tailscale],
-            wt_cert: Some(cert_path),
-            wt_key: Some(key_path),
+            wt_tls: Some(cairn_daemon::config::WtTlsIdentity {
+                cert: cert_path,
+                key: key_path,
+            }),
             ..DaemonConfig::default()
         };
         let daemon = Daemon::new(cfg).expect("test daemon config should be valid");

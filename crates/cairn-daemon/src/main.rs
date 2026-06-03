@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     // Extract tracing args before the move into DaemonConfig.
     let _otel_provider = cairn_daemon::telemetry::init_tracing(&args.log, args.log_format)?;
 
-    let cfg: DaemonConfig = args.into();
+    let cfg: DaemonConfig = args.try_into()?;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

@@ -32,16 +32,23 @@ pub enum LogFormat {
     Off,
 }
 
+/// User-provided TLS certificate and key for the WebTransport listener.
+#[derive(Debug, Clone)]
+pub struct WtTlsIdentity {
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
+
 /// Resolved daemon configuration.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub listeners: Vec<ListenerConfig>,
     pub dir_mode: u32,
     pub socket_mode: u32,
-    pub wt_cert: Option<PathBuf>,
-    pub wt_key: Option<PathBuf>,
+    pub wt_tls: Option<WtTlsIdentity>,
     pub wt_connect_timeout: Duration,
     pub wt_idle_timeout: Duration,
+    pub wt_max_pending: usize,
     pub auth_backends: Vec<AuthBackendKind>,
     pub auth_timeout: Duration,
     pub shutdown_grace: Duration,
@@ -54,10 +61,10 @@ impl Default for DaemonConfig {
             listeners: vec![ListenerConfig::Unix(default_socket_path())],
             dir_mode: 0o700,
             socket_mode: 0o600,
-            wt_cert: None,
-            wt_key: None,
+            wt_tls: None,
             wt_connect_timeout: Duration::from_secs(30),
             wt_idle_timeout: Duration::from_secs(300),
+            wt_max_pending: 64,
             auth_backends: vec![],
             auth_timeout: Duration::from_secs(5),
             shutdown_grace: Duration::from_secs(5),

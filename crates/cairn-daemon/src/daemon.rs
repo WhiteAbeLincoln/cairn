@@ -43,12 +43,10 @@ impl Daemon {
         if !has_unix && (cfg.dir_mode != 0o700 || cfg.socket_mode != 0o600) {
             tracing::warn!("--dir-mode / --socket-mode have no effect without a unix:// listener");
         }
-        if cfg.listeners.iter().any(|l| l.is_wt())
-            && (cfg.wt_cert.is_none() || cfg.wt_key.is_none())
-        {
+        if cfg.listeners.iter().any(|l| l.is_wt()) && cfg.wt_tls.is_none() {
             tracing::warn!(
                 "https:// (WebTransport) listener configured but \
-                 --wt-cert / --wt-key not set"
+                 --wt-cert / --wt-key not set; using self-signed certificate"
             );
         }
 
