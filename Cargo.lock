@@ -377,6 +377,7 @@ dependencies = [
  "shlex",
  "tempfile",
  "tokio",
+ "tokio-util",
  "wit-bindgen-wrpc",
  "wrpc-transport",
 ]

@@ -1,0 +1,1 @@
+{"name":"my-session","command":["bash","-c","echo hello"],"env":[["FOO","bar"],["BAZ","qux"]],"envInherit":true,"workdir":"/home/user/project","tty":true,"stdin":true,"idleTimeoutSecs":null,"scrollbackLines":10000}
