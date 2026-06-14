@@ -27,6 +27,11 @@ target
 # Web client
 web/node_modules
 web/dist
+
+# cairn-web SvelteKit app
+cairn-web/node_modules/
+cairn-web/.svelte-kit/
+cairn-web/build/
 # nix build
 /result
 /.claude/settings.local.json

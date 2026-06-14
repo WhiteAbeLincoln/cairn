@@ -108,7 +108,7 @@
 
         devShells.default = craneLib.devShell {
           checks = self.checks.${system};
-          packages = [pkgs.bun pkgs.nodejs pkgs.zig_0_15 validate-changes] ++ pre-commit.enabledPackages;
+          packages = [pkgs.bun pkgs.deno pkgs.nodejs pkgs.zig_0_15 validate-changes] ++ pre-commit.enabledPackages;
           shellHook =
             pre-commit.shellHook
             + ''
