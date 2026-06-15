@@ -67,7 +67,7 @@ if [ "$HOOKS" = true ]; then
   exit 0
 fi
 
-FORMATTER_HOOKS=(cargo-fmt)
+FORMATTER_HOOKS=(biome cargo-fmt)
 
 run_prek() {
   local args=("${ARGS[@]}")

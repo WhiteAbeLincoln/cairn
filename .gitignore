@@ -49,3 +49,4 @@ cairn-web/build/
 # certs when running out of the dev dir
 /certs
 /docs/ideas
+.superpowers
