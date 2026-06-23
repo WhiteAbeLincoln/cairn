@@ -32,6 +32,7 @@ web/dist
 cairn-web/node_modules/
 cairn-web/.svelte-kit/
 cairn-web/build/
+cairn-web/.env.local
 # nix build
 /result
 /.claude/settings.local.json
