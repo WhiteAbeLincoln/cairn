@@ -98,7 +98,10 @@ fn detect_local_api() -> anyhow::Result<LocalApi> {
         }
     }
 
-    if Path::new(IPNPORT_PATH).exists() {
+    // ipnport is a symlink whose *target name* is the port number — the
+    // target itself doesn't exist as a file, so Path::exists() (which follows
+    // symlinks) returns false. Check for the symlink with symlink_metadata().
+    if std::fs::symlink_metadata(IPNPORT_PATH).is_ok() {
         let creds = read_ipnport_creds()?;
         let client =
             hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())

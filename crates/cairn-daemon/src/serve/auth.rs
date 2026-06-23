@@ -27,7 +27,13 @@ impl Authenticator {
         &self,
         peer_addr: std::net::SocketAddr,
     ) -> Result<crate::identity::Identity, AuthFailure> {
-        let chain = self.chain.as_ref().ok_or(AuthFailure::NoBackend)?;
+        let chain = match self.chain.as_ref() {
+            Some(c) => c,
+            None if peer_addr.ip().is_loopback() => {
+                return Ok(crate::identity::Identity::Anonymous);
+            }
+            None => return Err(AuthFailure::NoBackend),
+        };
         let ctx = crate::auth::AuthContext {
             transport: crate::auth::TransportContext::WebTransport { peer_addr },
             token: None,

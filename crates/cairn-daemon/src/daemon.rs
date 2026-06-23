@@ -28,12 +28,13 @@ pub struct Daemon {
 impl Daemon {
     pub fn new(cfg: DaemonConfig) -> anyhow::Result<Self> {
         let has_network = cfg.listeners.iter().any(|l| !l.is_unix());
+        let has_exposed = cfg.listeners.iter().any(|l| !l.is_loopback());
         let has_unix = cfg.listeners.iter().any(|l| l.is_unix());
 
-        if has_network && cfg.auth_backends.is_empty() {
+        if has_exposed && cfg.auth_backends.is_empty() {
             anyhow::bail!(
-                "network listener configured but no --auth backend specified; \
-                 authentication is required for non-UDS transports"
+                "non-loopback listener configured but no --auth backend specified; \
+                 authentication is required for externally-reachable transports"
             );
         }
 
@@ -263,16 +264,16 @@ mod tests {
     use crate::listen::ListenerConfig;
 
     #[test]
-    fn new_rejects_network_listener_without_auth() {
+    fn new_rejects_exposed_listener_without_auth() {
         let cfg = DaemonConfig {
             listeners: vec![ListenerConfig::WebTransport(
-                "127.0.0.1:9443".parse().unwrap(),
+                "0.0.0.0:9443".parse().unwrap(),
             )],
             ..DaemonConfig::default()
         };
         let err = Daemon::new(cfg)
             .err()
-            .expect("should reject network listener without auth");
+            .expect("should reject non-loopback listener without auth");
         assert!(
             err.to_string().contains("--auth"),
             "expected --auth hint, got: {err}"
@@ -286,10 +287,21 @@ mod tests {
     }
 
     #[test]
-    fn new_accepts_network_listener_with_auth() {
+    fn new_accepts_loopback_wt_without_auth() {
         let cfg = DaemonConfig {
             listeners: vec![ListenerConfig::WebTransport(
                 "127.0.0.1:9443".parse().unwrap(),
+            )],
+            ..DaemonConfig::default()
+        };
+        assert!(Daemon::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn new_accepts_exposed_listener_with_auth() {
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::WebTransport(
+                "0.0.0.0:9443".parse().unwrap(),
             )],
             auth_backends: vec![AuthBackendKind::Tailscale],
             ..DaemonConfig::default()
