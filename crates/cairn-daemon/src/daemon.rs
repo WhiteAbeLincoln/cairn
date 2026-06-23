@@ -64,6 +64,9 @@ impl Daemon {
         if !has_network {
             return Ok(None);
         }
+        if self.cfg.auth_backends.is_empty() {
+            return Ok(None);
+        }
         let mut backends: Vec<Box<dyn crate::auth::AuthBackend>> = Vec::new();
         for kind in &self.cfg.auth_backends {
             match kind {

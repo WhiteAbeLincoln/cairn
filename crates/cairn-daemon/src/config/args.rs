@@ -8,11 +8,17 @@ use crate::listen::{self, ListenerConfig};
 #[derive(Parser)]
 #[command(version, about = "The cairn session-manager daemon")]
 pub struct Args {
+    // extra whitespace here is necessary for the cli args
+    // to render properly
     /// Listener endpoints. Repeat or comma-separate. Examples:
-    ///   unix                    — default UDS path
-    ///   unix:///path/to.sock    — explicit UDS path
-    ///   https://0.0.0.0:9443    — WebTransport listener (W3C scheme)
-    ///   /path/to.sock           — bare path treated as unix://
+    ///
+    /// - `unix`: default UDS path
+    ///
+    /// - `unix:///path/to.sock`: explicit UDS path
+    ///
+    /// - `https://0.0.0.0:9443`: WebTransport listener (W3C scheme)
+    ///
+    /// - `/path/to.sock`: bare path treated as unix://
     #[arg(
         long,
         env = "CAIRN_LISTEN",

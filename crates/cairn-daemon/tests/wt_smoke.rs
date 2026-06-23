@@ -49,6 +49,23 @@ async fn wt_version_round_trip() {
     assert_eq!(info.protocol, "cairn:daemon@0.1.0");
 }
 
+/// Loopback WT with no auth backends should accept connections as anonymous.
+/// This mirrors the local dev setup (`--listen https://127.0.0.1:4433` with
+/// no `--auth`).
+#[tokio::test]
+async fn wt_loopback_no_auth() {
+    let harness = DaemonHarness::start_with_wt_no_auth().await;
+    let wt_addr = harness.wt_addr.unwrap();
+    let cert_hash = harness.cert_hash.as_deref().unwrap();
+
+    let wt_client = build_wt_client(wt_addr, cert_hash).await;
+
+    let info = cairn_protocol::client::cairn::daemon::meta::version(&wt_client, (), None)
+        .await
+        .expect("loopback WT without auth should connect");
+    assert!(info.daemon.starts_with("cairn-daemon/"));
+}
+
 #[tokio::test]
 async fn uds_and_wt_coexist() {
     let harness = DaemonHarness::start_with_wt().await;

@@ -126,6 +126,57 @@ impl DaemonHarness {
         }
     }
 
+    /// Start a daemon with both UDS and a loopback WebTransport listener,
+    /// but **no auth backends**. The daemon should allow anonymous loopback
+    /// connections without requiring `--auth`.
+    pub async fn start_with_wt_no_auth() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("cairn").join("cairn.sock");
+        let tls_dir = tmp.path().join("tls");
+
+        let tls = cairn_daemon::tls::TlsConfig::self_signed(&tls_dir).unwrap();
+        let cert_hash = tls.spki_hash_hex();
+        let cert_path = tls_dir.join("cert.pem");
+        let key_path = tls_dir.join("key.pem");
+
+        let port = free_port();
+        let wt_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], port));
+
+        let cfg = DaemonConfig {
+            listeners: vec![
+                ListenerConfig::Unix(socket_path.clone()),
+                ListenerConfig::WebTransport(wt_addr),
+            ],
+            wt_tls: Some(cairn_daemon::config::WtTlsIdentity {
+                cert: cert_path,
+                key: key_path,
+            }),
+            ..DaemonConfig::default()
+        };
+        let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
+        let shutdown = CancellationToken::new();
+
+        let task = tokio::spawn(serve(daemon, shutdown.clone(), None));
+
+        for _ in 0..100 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(socket_path.exists(), "daemon socket did not appear in time");
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        Self {
+            socket_path,
+            wt_addr: Some(wt_addr),
+            cert_hash: Some(cert_hash),
+            _tmp: tmp,
+            shutdown,
+            task,
+        }
+    }
+
     pub fn client(&self) -> wrpc_transport::unix::Client<PathBuf> {
         wrpc_transport::unix::Client::from(self.socket_path.clone())
     }
