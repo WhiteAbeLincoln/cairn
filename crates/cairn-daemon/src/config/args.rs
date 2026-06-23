@@ -25,7 +25,7 @@ pub struct Args {
         value_delimiter = ',',
         value_parser = listen::parse_listener
     )]
-    pub listen: Vec<ListenerConfig>,
+    pub listen: Vec<Vec<ListenerConfig>>,
 
     /// Octal permission mode for the socket parent directory (e.g. 700 or 0o700).
     #[arg(long, env = "CAIRN_DIR_MODE", value_parser = super::parse_octal_mode)]
@@ -92,8 +92,9 @@ impl TryFrom<Args> for DaemonConfig {
     fn try_from(args: Args) -> anyhow::Result<Self> {
         let mut cfg = DaemonConfig::default();
 
-        if !args.listen.is_empty() {
-            cfg.listeners = args.listen;
+        let listeners: Vec<ListenerConfig> = args.listen.into_iter().flatten().collect();
+        if !listeners.is_empty() {
+            cfg.listeners = listeners;
         }
         if let Some(m) = args.dir_mode {
             cfg.dir_mode = m;

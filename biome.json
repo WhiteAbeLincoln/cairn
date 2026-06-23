@@ -27,5 +27,17 @@
     },
     "files": {
         "includes": ["cairn-web/src/**"]
-    }
+    },
+    "overrides": [
+        {
+            "includes": ["**/*.svelte"],
+            "linter": {
+                "rules": {
+                    "style": {
+                        "useConst": "off"
+                    }
+                }
+            }
+        }
+    ]
 }

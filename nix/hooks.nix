@@ -52,5 +52,19 @@
         pass_filenames = false;
         require_serial = true;
       };
+
+      svelte-build = {
+        enable = true;
+        name = "svelte-build";
+        description = "Verify cairn-web builds without errors.";
+        package = pkgs.nodejs;
+        entry = builtins.toString (pkgs.writeShellScript "svelte-build-hook" ''
+          cd cairn-web
+          ${pkgs.nodejs}/bin/npx vite build --logLevel error
+        '');
+        files = "^cairn-web/src/.*\\.(ts|js|svelte)$";
+        pass_filenames = false;
+        require_serial = true;
+      };
     };
   }

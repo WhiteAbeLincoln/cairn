@@ -10,7 +10,7 @@ pub enum ListenerConfig {
     WebTransport(SocketAddr),
 }
 
-/// Parse a `--listen` value into a [`ListenerConfig`].
+/// Parse a `--listen` value into one or more [`ListenerConfig`]s.
 ///
 /// Accepted forms:
 /// - `unix` — use the default socket path
@@ -19,12 +19,18 @@ pub enum ListenerConfig {
 ///   WebTransport URL scheme; a future WebSocket listener would
 ///   use `wss://`)
 /// - `/absolute/path` — bare path, treated as `unix://`
-pub fn parse_listener(s: &str) -> anyhow::Result<ListenerConfig> {
+///
+/// When the host is `localhost`, the listener expands to both
+/// `127.0.0.1` and `[::1]` (dual-stack loopback). Explicit IP
+/// addresses bind to exactly what was requested.
+pub fn parse_listener(s: &str) -> anyhow::Result<Vec<ListenerConfig>> {
     if s == "unix" {
-        return Ok(ListenerConfig::Unix(crate::config::default_socket_path()));
+        return Ok(vec![ListenerConfig::Unix(
+            crate::config::default_socket_path(),
+        )]);
     }
     if s.starts_with('/') {
-        return Ok(ListenerConfig::Unix(PathBuf::from(s)));
+        return Ok(vec![ListenerConfig::Unix(PathBuf::from(s))]);
     }
 
     let url =
@@ -36,23 +42,29 @@ pub fn parse_listener(s: &str) -> anyhow::Result<ListenerConfig> {
             if path.is_empty() {
                 anyhow::bail!("`--listen {s}` requires a socket path");
             }
-            Ok(ListenerConfig::Unix(PathBuf::from(path)))
+            Ok(vec![ListenerConfig::Unix(PathBuf::from(path))])
         }
         "https" => {
-            // WebTransport listeners bind to a socket; the URL form is
-            // only used here as a transport selector. A `host:port` with
-            // a hostname requires DNS to bind, which we don't do — IP
-            // literals only.
             let host = url
                 .host_str()
                 .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a host"))?;
             let port = url
                 .port()
                 .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a port"))?;
-            let addr: SocketAddr = format!("{host}:{port}")
-                .parse()
-                .map_err(|e| anyhow::anyhow!("--listen {s:?} must be IP:port (no DNS): {e}"))?;
-            Ok(ListenerConfig::WebTransport(addr))
+
+            if host == "localhost" {
+                let v4: SocketAddr = ([127, 0, 0, 1], port).into();
+                let v6: SocketAddr = ([0, 0, 0, 0, 0, 0, 0, 1], port).into();
+                Ok(vec![
+                    ListenerConfig::WebTransport(v4),
+                    ListenerConfig::WebTransport(v6),
+                ])
+            } else {
+                let addr: SocketAddr = format!("{host}:{port}").parse().map_err(|e| {
+                    anyhow::anyhow!("--listen {s:?} must be IP:port or localhost:port: {e}")
+                })?;
+                Ok(vec![ListenerConfig::WebTransport(addr)])
+            }
         }
         other => anyhow::bail!(
             "unrecognized --listen scheme {other:?} in {s:?}; expected `unix`, `unix:///path`, or `https://host:port`"
@@ -81,34 +93,55 @@ mod tests {
 
     #[test]
     fn bare_unix_uses_default_path() {
-        let l = parse_listener("unix").unwrap();
-        assert!(l.is_unix());
-        if let ListenerConfig::Unix(p) = l {
+        let cfgs = parse_listener("unix").unwrap();
+        assert_eq!(cfgs.len(), 1);
+        assert!(cfgs[0].is_unix());
+        if let ListenerConfig::Unix(p) = &cfgs[0] {
             assert!(p.ends_with("cairn/cairn.sock"));
         }
     }
 
     #[test]
     fn unix_uri_extracts_path() {
-        let l = parse_listener("unix:///tmp/my.sock").unwrap();
-        assert_eq!(l, ListenerConfig::Unix(PathBuf::from("/tmp/my.sock")));
-    }
-
-    #[test]
-    fn https_uri_extracts_socket_addr() {
-        let l = parse_listener("https://127.0.0.1:9443").unwrap();
+        let cfgs = parse_listener("unix:///tmp/my.sock").unwrap();
         assert_eq!(
-            l,
-            ListenerConfig::WebTransport("127.0.0.1:9443".parse().unwrap())
+            cfgs,
+            vec![ListenerConfig::Unix(PathBuf::from("/tmp/my.sock"))]
         );
     }
 
     #[test]
-    fn bare_path_is_unix() {
-        let l = parse_listener("/var/run/cairn.sock").unwrap();
+    fn https_uri_extracts_socket_addr() {
+        let cfgs = parse_listener("https://127.0.0.1:9443").unwrap();
         assert_eq!(
-            l,
-            ListenerConfig::Unix(PathBuf::from("/var/run/cairn.sock"))
+            cfgs,
+            vec![ListenerConfig::WebTransport(
+                "127.0.0.1:9443".parse().unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn localhost_expands_to_dual_stack() {
+        let cfgs = parse_listener("https://localhost:4433").unwrap();
+        assert_eq!(cfgs.len(), 2);
+        assert_eq!(
+            cfgs[0],
+            ListenerConfig::WebTransport(([127, 0, 0, 1], 4433).into())
+        );
+        assert_eq!(
+            cfgs[1],
+            ListenerConfig::WebTransport(([0, 0, 0, 0, 0, 0, 0, 1], 4433).into())
+        );
+        assert!(cfgs.iter().all(|c| c.is_loopback()));
+    }
+
+    #[test]
+    fn bare_path_is_unix() {
+        let cfgs = parse_listener("/var/run/cairn.sock").unwrap();
+        assert_eq!(
+            cfgs,
+            vec![ListenerConfig::Unix(PathBuf::from("/var/run/cairn.sock"))]
         );
     }
 
@@ -119,14 +152,12 @@ mod tests {
 
     #[test]
     fn invalid_https_addr_rejected() {
-        // Hostnames (no DNS-at-bind-time) and bare paths are not valid.
         assert!(parse_listener("https://not-an-addr").is_err());
     }
 
     #[test]
     fn https_hostname_rejected() {
-        // The daemon binds to a socket; hostnames would need DNS, which
-        // we don't do at listen time.
+        // Arbitrary hostnames (not localhost) still require an IP literal.
         assert!(parse_listener("https://myhost.example:9443").is_err());
     }
 
