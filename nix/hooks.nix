@@ -12,12 +12,12 @@
         enable = true;
         name = "biome";
         description = "Lint and format TypeScript/Svelte in cairn-web.";
-        package = pkgs.biome;
+        package = pkgs.nodejs;
         entry = builtins.toString (pkgs.writeShellScript "biome-hook" ''
           check_args="check"
           if [ "''${VALIDATE_FIX:-}" = "1" ]; then check_args="check --write"; fi
           # shellcheck disable=SC2086
-          ${pkgs.biome}/bin/biome $check_args
+          ${pkgs.nodejs}/bin/npx biome $check_args
         '');
         files = "^cairn-web/src/.*\\.(ts|js|svelte)$";
         pass_filenames = false;
