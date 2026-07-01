@@ -397,6 +397,16 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
         return;
     }
 
+    // libghostty-vt treats OSC 7 (pwd) as a side-effect: it only processes
+    // and stores the value when a callback is registered. The body is a
+    // no-op — registration alone is sufficient for format_snapshot's
+    // with_pwd(true) to emit the stored value.
+    if let Err(e) = terminal.borrow_mut().on_pwd_changed(|_term| {}) {
+        tracing::error!(error = ?e, "failed to install PwdChangedFn callback");
+        drain_commands_with_construction_error(&s.cmd_rx);
+        return;
+    }
+
     let (bcast_tx, _) = broadcast::channel::<Bytes>(s.broadcast_capacity);
     // Option so the EOF/exit path can drop the sender promptly, surfacing
     // RecvError::Closed to existing subscribers even if cmd_rx is still alive.
@@ -850,7 +860,12 @@ fn format_snapshot(terminal: &mut libghostty_vt::Terminal) -> Result<Bytes, PtyE
         .with_kitty_keyboard(true)
         .with_charsets(true)
         .with_keyboard(true)
-        .with_tabstops(true)
+        // with_tabstops is intentionally off: libghostty-vt 0.2.0 emits
+        // CHA+HTS sequences *after* the CUP, clobbering the cursor column.
+        // Correct cursor position is far more important than custom tabstops
+        // (which are rarely changed from defaults). See the
+        // `snapshot_tabstops_do_not_clobber_cursor` tripwire test.
+        .with_tabstops(false)
         .with_protection(true);
     let result = {
         let mut formatter = Formatter::new(terminal, opts).map_err(|e| PtyError::Backend {

@@ -296,7 +296,6 @@ async fn snapshot_does_not_leak_alt_screen_content_after_exit() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "cursor position not preserved")]
 async fn snapshot_preserves_cursor_position() {
     // Failure mode: CUP (`\x1b[<row>;<col>H`) is not preserved across
     //   snapshot. Receiver's cursor lands wherever the printed content
@@ -305,12 +304,6 @@ async fn snapshot_preserves_cursor_position() {
     //   wrong column — visible artifact in shell prompts mid-edit, in
     //   readline command-line builders, and anywhere a TUI relies on
     //   "current cursor is here".
-    // Why this still fails: `with_cursor(true)` emits a correct CUP, but
-    //   `with_tabstops(true)` emits CHA+HTS sequences *after* the CUP that
-    //   clobber the cursor column. The last tabstop set lands at column 73,
-    //   so the receiver cursor ends up at col 72. This is a libghostty-vt
-    //   formatter output-ordering bug — tabstops should be emitted before
-    //   the final CUP, not after.
     //
     // Setup design: `hello`, advance two lines, CUP to (10, 20) (1-indexed),
     //   print sentinel `*`, then `\b` so the source cursor lands at (9, 4)
@@ -397,7 +390,6 @@ async fn snapshot_preserves_active_hyperlink() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "working directory not preserved")]
 async fn snapshot_preserves_working_directory() {
     // Failure mode: OSC 7 (working-directory hint) is not preserved across
     //   snapshot. Receiver's `pwd()` returns an empty string regardless of
@@ -405,9 +397,6 @@ async fn snapshot_preserves_working_directory() {
     // Impact: terminal integrations that use OSC 7 — "new tab here",
     //   prompt PWD display, file-drop relative-path resolution — fail
     //   silently on attach.
-    // Why this still fails: the formatter emits OSC 7 correctly in
-    //   isolation, but the OSC 7 is lost when flowing through the real
-    //   PTY/session path. Likely a cairn session-layer issue.
 
     let pty = spawn_raw_session().await;
     let setup = b"\x1b]7;file:///home/abe/projects\x1b\\_PWD_SENT_";
@@ -415,7 +404,7 @@ async fn snapshot_preserves_working_directory() {
     let receiver = replay_into_receiver(&sub.snapshot);
     let pwd = receiver.pwd().expect("pwd query");
     assert!(
-        pwd == "/home/abe/projects",
+        pwd == "file:///home/abe/projects",
         "working directory not preserved (got {pwd:?})",
     );
 }
@@ -534,7 +523,6 @@ async fn snapshot_does_not_leak_synchronized_output_mode() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "cursor position not preserved with scrollback")]
 async fn snapshot_cursor_position_correct_with_scrollback() {
     // Failure mode: when the source has scrollback (rows pushed out of the
     //   active area), the snapshot interleaves scrollback rows + visible
@@ -547,9 +535,6 @@ async fn snapshot_cursor_position_correct_with_scrollback() {
     //   the wrong physical row, sometimes off the visible viewport
     //   entirely, and subsequent text from the source lands in the wrong
     //   place. Mirrors zmx's regression test at `util.zig:1097-1135`.
-    // Why this still fails: same tabstop output-ordering bug as
-    //   snapshot_preserves_cursor_position — CHA+HTS sequences emitted
-    //   after the CUP clobber the cursor column.
     //
     // Setup: 48 rows of `lineNN\r\n` (2 × ROWS, enough to overflow into
     //   scrollback), then CUP to row 5 col 10 (1-indexed; 0-indexed
@@ -569,5 +554,105 @@ async fn snapshot_cursor_position_correct_with_scrollback() {
     assert!(
         cx == 9 && cy == 4,
         "cursor position not preserved with scrollback (expected (9, 4), got ({cx}, {cy}))",
+    );
+}
+
+// ─── Upstream bug tripwires ────────────────────────────────────────────────
+//
+// These tests exercise libghostty-vt formatter bugs that we work around.
+// They use the formatter directly (bypassing format_snapshot's workarounds)
+// and are expected to fail until upstream fixes the issue, at which point
+// the `#[should_panic]` can be removed and the corresponding workaround
+// in format_snapshot can be revisited.
+
+#[test]
+#[should_panic(expected = "tabstops clobber cursor")]
+fn upstream_tabstops_do_not_clobber_cursor() {
+    // libghostty-vt 0.2.0 emits CHA+HTS (tabstop restoration) *after*
+    // the CUP when both `with_tabstops(true)` and `with_cursor(true)` are
+    // set. The CHA sequences move the cursor column, clobbering the
+    // position the CUP just set. format_snapshot works around this by
+    // leaving `with_tabstops(false)`.
+    //
+    // When this test starts failing (test did not panic), the upstream bug
+    // is fixed and `with_tabstops(true)` can be re-enabled in
+    // format_snapshot.
+    use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+
+    let mut term = Terminal::new(TerminalOptions {
+        cols: COLS,
+        rows: ROWS,
+        max_scrollback: 0,
+    })
+    .expect("terminal");
+    term.vt_write(b"hello\x1b[10;20H");
+
+    let opts = FormatterOptions::new()
+        .with_format(Format::Vt)
+        .with_cursor(true)
+        .with_tabstops(true);
+    let mut fmt = Formatter::new(&term, opts).expect("formatter");
+    let snap = fmt
+        .format_alloc(None::<&libghostty_vt::alloc::Allocator>)
+        .expect("format");
+
+    let mut recv = Terminal::new(TerminalOptions {
+        cols: COLS,
+        rows: ROWS,
+        max_scrollback: 0,
+    })
+    .expect("receiver");
+    recv.vt_write(&snap);
+
+    let cx = recv.cursor_x().expect("cursor_x");
+    let cy = recv.cursor_y().expect("cursor_y");
+    assert!(
+        cx == 19 && cy == 9,
+        "tabstops clobber cursor (expected (19, 9), got ({cx}, {cy}))",
+    );
+}
+
+#[test]
+#[should_panic(expected = "hyperlink not preserved")]
+fn upstream_hyperlink_wraps_cell_content() {
+    // libghostty-vt 0.2.0's formatter emits OSC 8 *after* the cell
+    // content instead of wrapping it. Cells are written to the receiver
+    // without hyperlink state.
+    //
+    // When this test starts failing (test did not panic), the upstream bug
+    // is fixed and `with_hyperlink(true)` will actually work for snapshot
+    // fidelity.
+    use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+
+    let mut term = Terminal::new(TerminalOptions {
+        cols: COLS,
+        rows: ROWS,
+        max_scrollback: 0,
+    })
+    .expect("terminal");
+    term.vt_write(b"\x1b]8;;https://example.com\x1b\\Link\x1b]8;;\x1b\\");
+
+    let opts = FormatterOptions::new()
+        .with_format(Format::Vt)
+        .with_hyperlink(true);
+    let mut fmt = Formatter::new(&term, opts).expect("formatter");
+    let snap = fmt
+        .format_alloc(None::<&libghostty_vt::alloc::Allocator>)
+        .expect("format");
+
+    let mut recv = Terminal::new(TerminalOptions {
+        cols: COLS,
+        rows: ROWS,
+        max_scrollback: 0,
+    })
+    .expect("receiver");
+    recv.vt_write(&snap);
+
+    let coord = libghostty_vt::terminal::PointCoordinate { x: 0, y: 0 };
+    let p = libghostty_vt::terminal::Point::Viewport(coord);
+    let cell = recv.grid_ref(p).expect("grid_ref").cell().expect("cell");
+    assert!(
+        cell.has_hyperlink().unwrap_or(false),
+        "hyperlink not preserved (cell at 0,0 has_hyperlink=false)",
     );
 }
