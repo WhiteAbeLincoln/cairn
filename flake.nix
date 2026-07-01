@@ -50,15 +50,15 @@
           runtimeInputs = pre-commit.enabledPackages;
         };
 
-        # Pinned ghostty source for libghostty-vt-sys 0.1.1. The rev matches
+        # Pinned ghostty source for libghostty-vt-sys 0.2.0. The rev matches
         # GHOSTTY_COMMIT in that crate's build.rs. Pointing GHOSTTY_SOURCE_DIR
         # at this nix-store path lets the build skip its runtime `git clone`
         # of ghostty.
         ghosttySrc = pkgs.fetchFromGitHub {
           owner = "ghostty-org";
           repo = "ghostty";
-          rev = "bebca84668947bfc92b9a30ed58712e1c34eee1d";
-          hash = "sha256-7MPEjIAQD+Z/zdP4h/yslysuVnhCESOPvdvwoLoPVmI=";
+          rev = "fdbf9ff3a31d7531b691cb49c98fc465a1a503a0";
+          hash = "sha256-TW2dtJ1wZGtdyqQ4YAsfjbTLURhMISIMNK0c0aIy1xM=";
         };
 
         commonArgs = {

@@ -144,7 +144,6 @@ fn replay_into_receiver(snapshot: &Bytes) -> Terminal<'static, 'static> {
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[tokio::test]
-#[should_panic(expected = "bracketed paste not preserved")]
 async fn snapshot_preserves_bracketed_paste_mode() {
     // Failure mode: DECSET 2004 (bracketed paste) is not preserved across
     //   snapshot.
@@ -152,10 +151,6 @@ async fn snapshot_preserves_bracketed_paste_mode() {
     //   input from pasted input; without it, paste delivers raw keystrokes
     //   that may trigger keybindings (e.g., `:` opening vim's command line
     //   for every colon in a pasted block).
-    // Why this fails today: `format_snapshot` runs the libghostty formatter
-    //   with default `FormatterTerminalExtra` (all flags false). The `modes`
-    //   flag, which emits DECSET sequences for non-default modes, is off, so
-    //   the snapshot never contains `\x1b[?2004h`.
 
     let pty = spawn_raw_session().await;
     let sub = write_setup_and_resubscribe(&pty, b"\x1b[?2004h_BP_SENT_", b"_BP_SENT_").await;
@@ -167,7 +162,6 @@ async fn snapshot_preserves_bracketed_paste_mode() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "application cursor keys mode not preserved")]
 async fn snapshot_preserves_application_cursor_keys() {
     // Failure mode: DECSET 1 (DECCKM, application cursor keys) is not
     //   preserved across snapshot.
@@ -176,8 +170,6 @@ async fn snapshot_preserves_application_cursor_keys() {
     //   vim and readline-based shells switch into application mode on entry;
     //   if a client attaches afterward, arrow keys send the wrong sequences
     //   and cursor movement misbehaves.
-    // Why this fails today: same as #1 — `extra.modes` is off so the
-    //   snapshot emits no DECSET sequence.
 
     let pty = spawn_raw_session().await;
     let sub = write_setup_and_resubscribe(&pty, b"\x1b[?1h_DECCKM_SENT_", b"_DECCKM_SENT_").await;
@@ -189,7 +181,6 @@ async fn snapshot_preserves_application_cursor_keys() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "focus event mode not preserved")]
 async fn snapshot_preserves_focus_event_mode() {
     // Failure mode: DECSET 1004 (focus events) is not preserved across
     //   snapshot.
@@ -197,7 +188,6 @@ async fn snapshot_preserves_focus_event_mode() {
     //   — e.g., vim's `:autoread`, tmux session activity tracking — miss
     //   focus transitions on the reattaching client because mode 1004 is
     //   not active on the receiver.
-    // Why this fails today: same as #1 — `extra.modes` is off.
 
     let pty = spawn_raw_session().await;
     let sub = write_setup_and_resubscribe(&pty, b"\x1b[?1004h_FOCUS_SENT_", b"_FOCUS_SENT_").await;
@@ -209,7 +199,6 @@ async fn snapshot_preserves_focus_event_mode() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "alt screen not active on receiver")]
 async fn snapshot_preserves_alt_screen_when_active() {
     // Failure mode: when the source is in the alternate screen (DECSET
     //   1049) at snapshot time, the snapshot does NOT switch the receiver
@@ -221,8 +210,6 @@ async fn snapshot_preserves_alt_screen_when_active() {
     //   program later exits alt-screen (DECRST 1049) on the live stream,
     //   the receiver swaps to a now-empty main screen (no shell scrollback,
     //   no prompt).
-    // Why this fails today: `extra.modes` is off, so the snapshot never
-    //   contains `\x1b[?1049h`. The receiver stays on its main screen.
 
     let pty = spawn_raw_session().await;
     let sub =
@@ -230,10 +217,10 @@ async fn snapshot_preserves_alt_screen_when_active() {
             .await;
     let receiver = replay_into_receiver(&sub.snapshot);
 
-    use libghostty_vt::ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_ALTERNATE as ALTERNATE;
+    use libghostty_vt::screen::Screen;
     assert_eq!(
         receiver.active_screen().expect("active screen"),
-        ALTERNATE,
+        Screen::Alternate,
         "alt screen not active on receiver",
     );
 }
@@ -261,10 +248,10 @@ async fn snapshot_does_not_leak_alt_screen_content_after_exit() {
     .await;
     let receiver = replay_into_receiver(&sub.snapshot);
 
-    use libghostty_vt::ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_PRIMARY as PRIMARY;
+    use libghostty_vt::screen::Screen;
     assert_eq!(
         receiver.active_screen().expect("active screen"),
-        PRIMARY,
+        Screen::Primary,
         "receiver not on main screen after alt cycle",
     );
 
@@ -277,13 +264,10 @@ async fn snapshot_does_not_leak_alt_screen_content_after_exit() {
         for x in 0..(COLS - needle.len() as u16) {
             let mut window = Vec::with_capacity(needle.len());
             for dx in 0..needle.len() as u16 {
-                // PointCoordinate has private fields; construct via the
-                // public ffi type and its From impl.
-                let coord = libghostty_vt::ffi::GhosttyPointCoordinate {
+                let coord = libghostty_vt::terminal::PointCoordinate {
                     x: x + dx,
                     y: y as u32,
-                }
-                .into();
+                };
                 let p = libghostty_vt::terminal::Point::Viewport(coord);
                 let r = match receiver.grid_ref(p) {
                     Ok(r) => r,
@@ -321,9 +305,12 @@ async fn snapshot_preserves_cursor_position() {
     //   wrong column — visible artifact in shell prompts mid-edit, in
     //   readline command-line builders, and anywhere a TUI relies on
     //   "current cursor is here".
-    // Why this fails today: `extra.screen.cursor` is off, so the snapshot
-    //   emits no CUP at all. Receiver cursor is wherever the last cell
-    //   write left it.
+    // Why this still fails: `with_cursor(true)` emits a correct CUP, but
+    //   `with_tabstops(true)` emits CHA+HTS sequences *after* the CUP that
+    //   clobber the cursor column. The last tabstop set lands at column 73,
+    //   so the receiver cursor ends up at col 72. This is a libghostty-vt
+    //   formatter output-ordering bug — tabstops should be emitted before
+    //   the final CUP, not after.
     //
     // Setup design: `hello`, advance two lines, CUP to (10, 20) (1-indexed),
     //   print sentinel `*`, then `\b` so the source cursor lands at (9, 4)
@@ -345,7 +332,6 @@ async fn snapshot_preserves_cursor_position() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "current SGR style not preserved")]
 async fn snapshot_preserves_current_sgr_style() {
     // Failure mode: the SGR attributes active at the source cursor (bold,
     //   red, italic, …) are not preserved across snapshot. Receiver's
@@ -356,8 +342,6 @@ async fn snapshot_preserves_current_sgr_style() {
     //   ends with the cursor positioned mid-segment — next keystrokes
     //   render in white-on-black instead of the intended color, and stay
     //   that way until the program issues a fresh SGR.
-    // Why this fails today: `extra.screen.style` is off; the snapshot
-    //   emits no SGR-restoration sequence for the cursor.
 
     let pty = spawn_raw_session().await;
     // Bold + red FG, cursor home, sentinel (overwrites READY at top-left),
@@ -384,9 +368,10 @@ async fn snapshot_preserves_active_hyperlink() {
     //   to the receiver after attach lose their hyperlink annotation.
     // Impact: link-aware terminals show the linked text as plain text
     //   after attach; clicks no longer open the URL.
-    // Why this fails today: `extra.screen.hyperlink` is off and
-    //   `extra.modes` (which would emit any required mode state) is also
-    //   off. The snapshot emits no OSC 8 sequence to re-open the link.
+    // Why this still fails: `with_hyperlink(true)` emits OSC 8 *after*
+    //   the cell content instead of wrapping it. Cells are written without
+    //   hyperlink state, so `has_hyperlink` is false. This is a
+    //   libghostty-vt formatter bug — OSC 8 must precede the linked text.
     //
     // Readback: we print a sentinel character INSIDE the open link and
     // inspect that cell on the receiver via grid_ref → cell.has_hyperlink().
@@ -400,7 +385,7 @@ async fn snapshot_preserves_active_hyperlink() {
 
     // The sentinel was printed from (0, 0). Inspect cell (0, 0) — its
     // codepoint should be 'L' and it should carry a hyperlink.
-    let coord = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 0u32 }.into();
+    let coord = libghostty_vt::terminal::PointCoordinate { x: 0u16, y: 0u32 };
     let p = libghostty_vt::terminal::Point::Viewport(coord);
     let gref = receiver.grid_ref(p).expect("grid_ref");
     let cell = gref.cell().expect("cell");
@@ -420,7 +405,9 @@ async fn snapshot_preserves_working_directory() {
     // Impact: terminal integrations that use OSC 7 — "new tab here",
     //   prompt PWD display, file-drop relative-path resolution — fail
     //   silently on attach.
-    // Why this fails today: `extra.pwd` is off.
+    // Why this still fails: the formatter emits OSC 7 correctly in
+    //   isolation, but the OSC 7 is lost when flowing through the real
+    //   PTY/session path. Likely a cairn session-layer issue.
 
     let pty = spawn_raw_session().await;
     let setup = b"\x1b]7;file:///home/abe/projects\x1b\\_PWD_SENT_";
@@ -434,7 +421,6 @@ async fn snapshot_preserves_working_directory() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "scrolling region not preserved")]
 async fn snapshot_preserves_scrolling_region() {
     // Failure mode: DECSTBM (`\x1b[<top>;<bot>r`) — the top/bottom scroll
     //   margins — is not preserved across snapshot. Receiver has the
@@ -443,8 +429,6 @@ async fn snapshot_preserves_scrolling_region() {
     //   layout (e.g., older mc/htop variants) clobber the status row on
     //   the receiver — content scrolls past it instead of being held
     //   below the region.
-    // Why this fails today: `extra.scrolling_region` is off, so the
-    //   snapshot emits no DECSTBM sequence at all.
     //
     // Readback strategy: behavioral probing of DECSTBM via grid_ref turned
     // out to be non-discriminating (row 4 col 0 stays empty whether or not
@@ -471,7 +455,6 @@ async fn snapshot_preserves_scrolling_region() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "kitty keyboard flags not preserved")]
 async fn snapshot_preserves_kitty_keyboard_flags() {
     // Failure mode: Kitty keyboard protocol flags pushed via `CSI > <flags> u`
     //   are not preserved across snapshot. Receiver reports default flags
@@ -480,9 +463,6 @@ async fn snapshot_preserves_kitty_keyboard_flags() {
     //   keyboard, etc.) lose modifier disambiguation on the receiver;
     //   Ctrl+key, Shift+key, and unmodified key all collapse into the
     //   same sequence.
-    // Why this fails today: `extra.keyboard` is off (and `extra.screen.
-    //   kitty_keyboard` likewise), so the snapshot emits no Kitty
-    //   protocol push.
     //
     // Source pushes flags = 5 = DISAMBIGUATE (bit 0) | REPORT_ALTERNATES
     //   (bit 2). Receiver should report kitty_keyboard_flags().bits() == 5.
@@ -516,7 +496,7 @@ async fn snapshot_preserves_charset_designation() {
     let sub = write_setup_and_resubscribe(&pty, setup, b"_CHARSET_SENT_").await;
     let receiver = replay_into_receiver(&sub.snapshot);
 
-    let coord = libghostty_vt::ffi::GhosttyPointCoordinate { x: 0u16, y: 0u32 }.into();
+    let coord = libghostty_vt::terminal::PointCoordinate { x: 0u16, y: 0u32 };
     let p = libghostty_vt::terminal::Point::Viewport(coord);
     let cell = receiver
         .grid_ref(p)
@@ -533,21 +513,14 @@ async fn snapshot_preserves_charset_designation() {
 #[tokio::test]
 async fn snapshot_does_not_leak_synchronized_output_mode() {
     // Tripwire: source pushes DECSET 2026 (synchronized output) without
-    //   ever resetting it. Today this test PASSES cleanly because
-    //   `format_snapshot` emits no DECSET sequences at all (`extra.modes`
-    //   is off), so the mode 2026 the source holds is simply absent from
-    //   the snapshot — there's nothing to leak yet.
-    // Impact: when this tripwire fires, every attach to a session whose
-    //   program is mid-synchronized-update (modern TUIs that batch
-    //   redraws) shows a blank or flickering screen until the receiver's
-    //   2026 timeout fires (typically 150ms) — a visible regression on
-    //   attach.
-    // What trips it: a partial fix that flips `extra.modes = true`
-    //   without also implementing zmx's toggle-off / restore dance
-    //   (`zmx/src/util.zig:488-491` — clear mode 2026 before formatting,
-    //   restore it after). The assertion below catches the receiver
-    //   ending up in synchronized-output mode by replaying the snapshot
-    //   bytes.
+    //   ever resetting it. `format_snapshot` temporarily clears 2026 before
+    //   formatting and restores it after (zmx's toggle dance), so receivers
+    //   never start in sync mode even when the source is mid-redraw.
+    // Impact (if this regresses): every attach to a session whose program
+    //   is mid-synchronized-update shows a blank or flickering screen until
+    //   the receiver's 2026 timeout fires (typically 150ms).
+    // What trips it: removing the toggle dance from `format_snapshot`, or
+    //   a libghostty-vt change that ignores the temporary mode reset.
 
     let pty = spawn_raw_session().await;
     let setup = b"\x1b[?2026h_SYNCOUT_SENT_";
@@ -574,12 +547,9 @@ async fn snapshot_cursor_position_correct_with_scrollback() {
     //   the wrong physical row, sometimes off the visible viewport
     //   entirely, and subsequent text from the source lands in the wrong
     //   place. Mirrors zmx's regression test at `util.zig:1097-1135`.
-    // Why this fails today: two-phase serialization is upstream-blocked
-    //   on `libghostty-vt 0.1.1`'s C ABI exposing a `Selection` parameter
-    //   to the formatter. Today the snapshot emits no CUP at all
-    //   (`extra.screen.cursor` is off), so the receiver's cursor lands
-    //   wherever the last cell write left it — which is essentially
-    //   guaranteed to be wrong.
+    // Why this still fails: same tabstop output-ordering bug as
+    //   snapshot_preserves_cursor_position — CHA+HTS sequences emitted
+    //   after the CUP clobber the cursor column.
     //
     // Setup: 48 rows of `lineNN\r\n` (2 × ROWS, enough to overflow into
     //   scrollback), then CUP to row 5 col 10 (1-indexed; 0-indexed

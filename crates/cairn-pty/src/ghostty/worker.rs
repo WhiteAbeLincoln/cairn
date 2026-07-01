@@ -536,7 +536,7 @@ async fn run_session<P: Pty, C: ChildProcess>(mut s: SessionState<P, C>) {
                     }
                     Command::Subscribe { client_id, reply } => {
                         let _span = make_cmd_span("subscribe", &trace_id);
-                        let snapshot = match format_snapshot(&terminal.borrow()) {
+                        let snapshot = match format_snapshot(&mut terminal.borrow_mut()) {
                             Ok(bytes) => bytes,
                             Err(e) => { let _ = reply.send(Err(e)); continue; }
                         };
@@ -823,23 +823,52 @@ fn drain_commands_with_construction_error(cmd_rx: &flume::Receiver<Envelope>) {
 /// `None` is passed to `format_alloc` so libghostty uses its own default (C)
 /// allocator; the returned bytes are immediately copied into a `bytes::Bytes`,
 /// and the libghostty allocation is freed on drop.
-fn format_snapshot(terminal: &libghostty_vt::Terminal) -> Result<Bytes, PtyError> {
+fn format_snapshot(terminal: &mut libghostty_vt::Terminal) -> Result<Bytes, PtyError> {
     use libghostty_vt::fmt::{Format, Formatter, FormatterOptions};
+    use libghostty_vt::terminal::Mode;
 
-    let opts = FormatterOptions {
-        format: Format::Vt,
-        trim: false,
-        unwrap: false,
-    };
-    let mut formatter = Formatter::new(terminal, opts).map_err(|e| PtyError::Backend {
-        source: Box::new(e),
-    })?;
-    let vt_bytes = formatter
-        .format_alloc(None::<&libghostty_vt::alloc::Allocator<()>>)
-        .map_err(|e| PtyError::Backend {
+    // Temporarily clear synchronized output (DECSET 2026) before formatting.
+    // If the source program is mid-redraw with 2026 active, the snapshot
+    // would put the receiver into sync mode, causing a blank/frozen screen
+    // until the 150ms timeout fires. zmx does the same toggle dance
+    // (zmx/src/util.zig:488-491).
+    let had_sync_output = terminal.mode(Mode::SYNC_OUTPUT).unwrap_or(false);
+    if had_sync_output {
+        terminal.vt_write(b"\x1b[?2026l");
+    }
+
+    let opts = FormatterOptions::new()
+        .with_format(Format::Vt)
+        .with_trim(false)
+        .with_unwrap(false)
+        .with_modes(true)
+        .with_cursor(true)
+        .with_style(true)
+        .with_hyperlink(true)
+        .with_pwd(true)
+        .with_scrolling_region(true)
+        .with_kitty_keyboard(true)
+        .with_charsets(true)
+        .with_keyboard(true)
+        .with_tabstops(true)
+        .with_protection(true);
+    let result = {
+        let mut formatter = Formatter::new(terminal, opts).map_err(|e| PtyError::Backend {
             source: Box::new(e),
         })?;
-    Ok(Bytes::copy_from_slice(&vt_bytes))
+        let vt_bytes = formatter
+            .format_alloc(None::<&libghostty_vt::alloc::Allocator>)
+            .map_err(|e| PtyError::Backend {
+                source: Box::new(e),
+            })?;
+        Bytes::copy_from_slice(&vt_bytes)
+    };
+
+    if had_sync_output {
+        terminal.vt_write(b"\x1b[?2026h");
+    }
+
+    Ok(result)
 }
 
 /// Parse a W3C `traceparent` header value (e.g.
@@ -903,10 +932,9 @@ mod tests {
     //! used to do, and what made that file misleading once the worker
     //! and test closures could drift independently).
     //!
-    //! As a side effect, these tests also pin libghostty-vt 0.1.1's
-    //! default wire bytes (DA1 = `\x1b[?62;22c`, XTWINOPS 18t format, etc.)
-    //! — a future libghostty version that changes those bytes will fail
-    //! these tests loudly.
+    //! As a side effect, these tests also pin libghostty-vt's default
+    //! wire bytes (DA1 = `\x1b[?62;22c`, XTWINOPS 18t format, etc.) — a
+    //! future version that changes those bytes will fail these tests loudly.
 
     // The MockChild uses watch::<Option<ExitStatus>> where ExitStatus is
     // std::process::ExitStatus — that is the type returned by ChildProcess::wait().
