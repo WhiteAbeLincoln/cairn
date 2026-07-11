@@ -23,9 +23,40 @@ impl Authenticator {
         })
     }
 
+    /// Authenticate a WebTransport (QUIC) connection using only its peer
+    /// address — WT carries no HTTP-style headers.
     pub(super) async fn authenticate_network(
         &self,
         peer_addr: std::net::SocketAddr,
+    ) -> Result<crate::identity::Identity, AuthFailure> {
+        self.authenticate(
+            peer_addr,
+            crate::auth::TransportContext::WebTransport { peer_addr },
+        )
+        .await
+    }
+
+    /// Authenticate a WebSocket upgrade using its peer address and the full
+    /// set of upgrade request headers (so backends like `tailscale-serve` can
+    /// read proxy-injected identity headers).
+    pub(super) async fn authenticate_http(
+        &self,
+        peer_addr: std::net::SocketAddr,
+        headers: http::HeaderMap,
+    ) -> Result<crate::identity::Identity, AuthFailure> {
+        self.authenticate(
+            peer_addr,
+            crate::auth::TransportContext::Http { peer_addr, headers },
+        )
+        .await
+    }
+
+    /// Shared network-auth gate: no chain + loopback -> anonymous, no chain +
+    /// non-loopback -> rejected, chain present -> run it (transport phase).
+    async fn authenticate(
+        &self,
+        peer_addr: std::net::SocketAddr,
+        transport: crate::auth::TransportContext,
     ) -> Result<crate::identity::Identity, AuthFailure> {
         let chain = match self.chain.as_ref() {
             Some(c) => c,
@@ -35,7 +66,7 @@ impl Authenticator {
             None => return Err(AuthFailure::NoBackend),
         };
         let ctx = crate::auth::AuthContext {
-            transport: crate::auth::TransportContext::WebTransport { peer_addr },
+            transport,
             token: None,
         };
 

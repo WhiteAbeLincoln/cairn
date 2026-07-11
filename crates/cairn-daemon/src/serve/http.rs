@@ -95,8 +95,7 @@ async fn ws_upgrade(
     }
 
     let origin = header_str(headers, header::ORIGIN);
-    let host = header_str(headers, header::HOST);
-    let identity = match authorize(&state.auth, &state.origins, peer, origin, host).await {
+    let identity = match authorize(&state.auth, &state.origins, peer, headers).await {
         Ok(identity) => identity,
         Err(Rejection::Origin) => {
             tracing::warn!(
@@ -164,20 +163,21 @@ enum Rejection {
     Unauthorized(String),
 }
 
-/// Apply the pre-upgrade gate: origin validation followed by peer-address
-/// authentication. Split out from the handler so the policy is unit-testable
-/// without a live socket.
+/// Apply the pre-upgrade gate: origin validation followed by the real auth
+/// chain (network address + upgrade headers). Split out from the handler so
+/// the policy is unit-testable without a live socket.
 async fn authorize(
     auth: &Authenticator,
     origins: &OriginPolicy,
     peer: SocketAddr,
-    origin: Option<&str>,
-    host: Option<&str>,
+    headers: &HeaderMap,
 ) -> Result<crate::identity::Identity, Rejection> {
+    let origin = header_str(headers, header::ORIGIN);
+    let host = header_str(headers, header::HOST);
     if !origins.allows(origin, host) {
         return Err(Rejection::Origin);
     }
-    auth.authenticate_network(peer)
+    auth.authenticate_http(peer, headers.clone())
         .await
         .map_err(|error| Rejection::Unauthorized(error.to_string()))
 }
@@ -290,13 +290,38 @@ mod tests {
         assert!(!p.allows(Some("http://app.example"), Some("127.0.0.1:8080")));
     }
 
-    // ── Pre-upgrade gate (origin + peer-address auth) ────────────────────────
+    // ── Pre-upgrade gate (origin + auth chain) ───────────────────────────────
+
+    /// Build a `HeaderMap` from `(name, value)` pairs — used to stand in for
+    /// upgrade request headers without a live socket.
+    fn header_map(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                http::HeaderName::from_bytes(name.as_bytes()).expect("valid header name"),
+                http::HeaderValue::from_str(value).expect("valid header value"),
+            );
+        }
+        map
+    }
 
     fn test_authenticator() -> Authenticator {
         let daemon = crate::daemon::Daemon::new(crate::config::DaemonConfig::default())
             .expect("default daemon config is valid");
         // No auth chain: loopback → anonymous, non-loopback → rejected.
         Authenticator::new(&daemon, None).expect("authenticator")
+    }
+
+    /// An authenticator whose chain is just the `tailscale-serve` backend —
+    /// isolates the identity-matrix tests from the whois backend (which
+    /// requires a running `tailscaled`).
+    fn test_authenticator_with_tailscale_serve() -> Authenticator {
+        let daemon = crate::daemon::Daemon::new(crate::config::DaemonConfig::default())
+            .expect("default daemon config is valid");
+        let chain = crate::auth::AuthChain::new(vec![Box::new(
+            crate::auth::tailscale_serve::TailscaleServeBackend::new(),
+        )]);
+        Authenticator::new(&daemon, Some(chain)).expect("authenticator")
     }
 
     #[tokio::test]
@@ -306,8 +331,7 @@ mod tests {
             &auth,
             &policy(&[]),
             "127.0.0.1:5000".parse().unwrap(),
-            None,
-            None,
+            &HeaderMap::new(),
         )
         .await
         .expect("loopback should be allowed");
@@ -321,8 +345,7 @@ mod tests {
             &auth,
             &policy(&[]),
             "203.0.113.7:5000".parse().unwrap(),
-            None,
-            None,
+            &HeaderMap::new(),
         )
         .await;
         assert!(
@@ -334,14 +357,60 @@ mod tests {
     #[tokio::test]
     async fn bad_origin_is_rejected_before_auth() {
         let auth = test_authenticator();
+        let headers = header_map(&[
+            ("origin", "http://evil.example"),
+            ("host", "127.0.0.1:8080"),
+        ]);
         let result = authorize(
             &auth,
             &policy(&[]),
             "127.0.0.1:5000".parse().unwrap(),
-            Some("http://evil.example"),
-            Some("127.0.0.1:8080"),
+            &headers,
         )
         .await;
         assert!(matches!(result, Err(Rejection::Origin)));
     }
+
+    // ── tailscale-serve identity matrix (acceptance criteria) ────────────────
+
+    #[tokio::test]
+    async fn tailscale_serve_header_from_loopback_is_identified() {
+        let auth = test_authenticator_with_tailscale_serve();
+        let headers = header_map(&[("tailscale-user-login", "alice@example.com")]);
+        let identity = authorize(
+            &auth,
+            &policy(&[]),
+            "127.0.0.1:5000".parse().unwrap(),
+            &headers,
+        )
+        .await
+        .expect("loopback peer with a valid header should be identified");
+        assert!(matches!(
+            identity,
+            crate::identity::Identity::Tailscale { ref login, .. } if login == "alice@example.com"
+        ));
+    }
+
+    #[tokio::test]
+    async fn tailscale_serve_header_from_non_loopback_is_ignored() {
+        let auth = test_authenticator_with_tailscale_serve();
+        let headers = header_map(&[("tailscale-user-login", "alice@example.com")]);
+        let result = authorize(
+            &auth,
+            &policy(&[]),
+            "203.0.113.7:5000".parse().unwrap(),
+            &headers,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(Rejection::Unauthorized(_))),
+            "a non-loopback peer's tailscale-serve header must be ignored (fall through the chain), \
+             got: {result:?}"
+        );
+    }
+
+    // The other two rows of the acceptance identity matrix — no chain +
+    // loopback → anonymous, no chain + non-loopback → rejected — are already
+    // covered above by `loopback_without_chain_is_anonymous` and
+    // `non_loopback_without_chain_is_rejected`.
 }

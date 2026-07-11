@@ -141,3 +141,27 @@ impl TryFrom<Args> for DaemonConfig {
         Ok(cfg)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser as _;
+
+    use super::*;
+
+    #[test]
+    fn auth_flag_accepts_tailscale_serve_alone() {
+        let args = Args::try_parse_from(["cairn-daemon", "--auth", "tailscale-serve"])
+            .expect("--auth tailscale-serve should parse");
+        assert_eq!(args.auth, vec![AuthBackendKind::TailscaleServe]);
+    }
+
+    #[test]
+    fn auth_flag_accepts_tailscale_and_tailscale_serve_together() {
+        let args = Args::try_parse_from(["cairn-daemon", "--auth", "tailscale,tailscale-serve"])
+            .expect("comma-separated --auth should parse both backends");
+        assert_eq!(
+            args.auth,
+            vec![AuthBackendKind::Tailscale, AuthBackendKind::TailscaleServe]
+        );
+    }
+}

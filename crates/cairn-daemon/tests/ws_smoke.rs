@@ -186,6 +186,73 @@ async fn ws_healthz_returns_ok() {
     assert!(response.contains("ok"), "healthz body should be 'ok'");
 }
 
+// ── identity (tailscale-serve headers) ─────────────────────────────────────────
+
+/// Like `common::WsClient`, but attaches extra headers to the WS upgrade
+/// request — used to exercise `TransportContext::Http`'s header-based auth
+/// backends (`tailscale-serve`) end to end.
+struct WsClientWithHeaders {
+    uri: String,
+    headers: Vec<(http::HeaderName, http::HeaderValue)>,
+}
+
+impl wrpc_transport::Invoke for WsClientWithHeaders {
+    type Context = ();
+    type Outgoing = wrpc_transport::frame::Outgoing;
+    type Incoming = wrpc_transport::frame::Incoming;
+
+    async fn invoke<P>(
+        &self,
+        (): Self::Context,
+        instance: &str,
+        func: &str,
+        params: bytes::Bytes,
+        paths: impl AsRef<[P]> + Send,
+    ) -> anyhow::Result<(Self::Outgoing, Self::Incoming)>
+    where
+        P: AsRef<[Option<usize>]> + Send + Sync,
+    {
+        let mut builder = wrpc_websockets::tokio_websockets::ClientBuilder::new().uri(&self.uri)?;
+        for (name, value) in &self.headers {
+            builder = builder.add_header(name.clone(), value.clone())?;
+        }
+        let (ws, _resp) = builder.connect().await?;
+        let (tx, rx) = cairn_daemon::ws::split(ws);
+        wrpc_transport::frame::invoke(tx, rx, instance, func, params, paths).await
+    }
+}
+
+/// End-to-end: a WS upgrade carrying `Tailscale-User-*` headers from loopback,
+/// against a daemon configured with `--auth tailscale-serve`, must resolve to
+/// that Tailscale identity — proving `TransportContext::Http` reaches the real
+/// `AuthChain` and the result lands on `ConnCtx` (the same struct WT identities
+/// flow through) rather than just being computed and discarded.
+#[tokio::test]
+async fn ws_tailscale_serve_header_identifies_caller() {
+    let harness = DaemonHarness::start_with_ws_tailscale_serve().await;
+    let addr = harness.ws_addr.unwrap();
+
+    let client = WsClientWithHeaders {
+        uri: format!("ws://{addr}/ws"),
+        headers: vec![
+            (
+                http::HeaderName::from_static("tailscale-user-login"),
+                http::HeaderValue::from_static("alice@example.com"),
+            ),
+            (
+                http::HeaderName::from_static("tailscale-user-name"),
+                http::HeaderValue::from_static("Alice Architect"),
+            ),
+        ],
+    };
+
+    let who = api::meta::whoami(&client, (), None)
+        .await
+        .expect("whoami invoke")
+        .expect("whoami result");
+    assert_eq!(who, "Alice Architect");
+}
+
 // ── origin validation ──────────────────────────────────────────────────────────
 
 /// Attempt the `/ws` upgrade with an optional `Origin` header. Returns `Ok` if

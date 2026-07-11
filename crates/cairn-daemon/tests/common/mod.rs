@@ -231,6 +231,48 @@ impl DaemonHarness {
         }
     }
 
+    /// Start a daemon with UDS + a loopback WebSocket listener and the
+    /// `tailscale-serve` auth backend (no whois backend, so it needs no
+    /// running `tailscaled`). Exercises `TransportContext::Http` end to end:
+    /// a client that sends `Tailscale-User-*` upgrade headers should be
+    /// identified as that Tailscale user.
+    pub async fn start_with_ws_tailscale_serve() -> Self {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket_path = tmp.path().join("cairn").join("cairn.sock");
+
+        let ws_addr: SocketAddr = SocketAddr::from(([127, 0, 0, 1], free_tcp_port()));
+        let cfg = DaemonConfig {
+            listeners: vec![
+                ListenerConfig::Unix(socket_path.clone()),
+                ListenerConfig::WebSocket(ws_addr),
+            ],
+            auth_backends: vec![AuthBackendKind::TailscaleServe],
+            ..DaemonConfig::default()
+        };
+        let daemon = Daemon::new(cfg).expect("test daemon config should be valid");
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(serve(daemon, shutdown.clone(), None));
+
+        for _ in 0..100 {
+            if socket_path.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(socket_path.exists(), "daemon socket did not appear in time");
+        wait_for_tcp(ws_addr).await;
+
+        Self {
+            socket_path,
+            wt_addr: None,
+            ws_addr: Some(ws_addr),
+            cert_hash: None,
+            _tmp: tmp,
+            shutdown,
+            task,
+        }
+    }
+
     pub fn client(&self) -> wrpc_transport::unix::Client<PathBuf> {
         wrpc_transport::unix::Client::from(self.socket_path.clone())
     }

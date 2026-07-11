@@ -12,8 +12,13 @@ use crate::listen::ListenerConfig;
 /// Which authentication backend to enable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AuthBackendKind {
-    /// Authenticate via the Tailscale LocalAPI (whois).
+    /// Authenticate via the Tailscale LocalAPI (whois). Works for direct
+    /// connections (WebTransport or WebSocket) from a tailnet peer address.
     Tailscale,
+    /// Trust `Tailscale-User-*` identity headers injected by a local
+    /// `tailscale serve` reverse proxy. Only honoured when the connection's
+    /// peer address is loopback — see `auth::tailscale_serve` for why.
+    TailscaleServe,
 }
 
 /// Controls the stderr log output format.

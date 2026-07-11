@@ -76,6 +76,11 @@ impl Daemon {
                             .map_err(|e| anyhow::anyhow!("tailscale auth backend init: {e}"))?,
                     ));
                 }
+                AuthBackendKind::TailscaleServe => {
+                    backends.push(Box::new(
+                        crate::auth::tailscale_serve::TailscaleServeBackend::new(),
+                    ));
+                }
             }
         }
         Ok(Some(crate::auth::AuthChain::new(backends)))
@@ -310,5 +315,19 @@ mod tests {
             ..DaemonConfig::default()
         };
         assert!(Daemon::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn build_auth_chain_accepts_tailscale_serve_alone() {
+        // Unlike `Tailscale` (whois), `TailscaleServeBackend::new()` does no
+        // filesystem/tailscaled probing, so this is safe to construct in a
+        // sandboxed test environment.
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::WebSocket("0.0.0.0:8080".parse().unwrap())],
+            auth_backends: vec![AuthBackendKind::TailscaleServe],
+            ..DaemonConfig::default()
+        };
+        let daemon = Daemon::new(cfg).expect("exposed listener with auth backend is valid");
+        assert!(daemon.build_auth_chain().unwrap().is_some());
     }
 }
