@@ -1,7 +1,6 @@
-//! Shared axum HTTP surface for the WebSocket transport.
+//! Shared axum HTTP surface for the `ws://` and dedicated web-ui listeners.
 //!
-//! This module owns the axum [`Router`] and its request handling. Today it
-//! exposes:
+//! [`router`] builds the full surface for a `ws://` listener:
 //!
 //! - `GET /healthz` — an unauthenticated liveness probe.
 //! - `GET /ws` — a WebSocket upgrade that carries exactly one wRPC invocation
@@ -9,9 +8,16 @@
 //!   [`OriginPolicy`] and the shared network [`Authenticator`] before the 101
 //!   response is sent; the upgraded stream is then handed to
 //!   [`super::transport::websocket::serve_upgraded`].
+//! - `GET /cairn.json` — always present, regardless of `--web-ui`.
+//! - SPA fallback (unknown paths -> `index.html`) — only when `--web-ui`
+//!   attaches SPA routes to this listener.
 //!
-//! Later tasks extend this router with static SPA serving and `/cairn.json`.
-//! Keep new HTTP routes here so the transport module stays focused on binding
+//! [`ui_router`] builds the smaller surface for the dedicated
+//! `--web-ui=host:port` listener: `/cairn.json` and the SPA fallback, and
+//! nothing else (no `/ws`, no `/healthz`) — see the design spec's "Web UI
+//! serving" section.
+//!
+//! Keep new HTTP routes here so the transport modules stay focused on binding
 //! and connection lifecycle.
 
 use std::net::SocketAddr;
@@ -20,7 +26,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use tokio_util::sync::CancellationToken;
@@ -28,7 +34,9 @@ use tokio_util::task::TaskTracker;
 
 use super::ConnCtx;
 use super::ListenerId;
+use super::assets::Assets;
 use super::auth::Authenticator;
+use super::cairn_json::{self, CairnJsonInfo};
 
 /// The GUID from RFC 6455 §4.2.2 used to derive the `Sec-WebSocket-Accept`
 /// value from the client's `Sec-WebSocket-Key`.
@@ -44,9 +52,12 @@ pub(crate) struct HttpState {
     /// Tracks the per-connection wRPC serve tasks spawned off successful
     /// upgrades, so the listener can drain them on graceful shutdown.
     conns: TaskTracker,
+    /// `/cairn.json` + SPA-fallback state, shared with [`ui_router`].
+    spa: Arc<SpaState>,
 }
 
 impl HttpState {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         daemon: crate::daemon::Daemon,
         auth: Authenticator,
@@ -54,6 +65,7 @@ impl HttpState {
         origins: OriginPolicy,
         listener: ListenerId,
         conns: TaskTracker,
+        spa: Arc<SpaState>,
     ) -> Self {
         Self {
             daemon,
@@ -62,20 +74,84 @@ impl HttpState {
             origins,
             listener,
             conns,
+            spa,
         }
     }
 }
 
-/// Build the axum router for a WebSocket listener.
+/// Build the axum router for a `ws://` listener: `/healthz`, `/ws`, plus the
+/// always-present `/cairn.json` and (only when SPA assets were attached to
+/// this listener) the SPA fallback.
 pub(crate) fn router(state: Arc<HttpState>) -> Router {
-    Router::new()
+    let core = Router::new()
         .route("/healthz", get(healthz))
         .route("/ws", get(ws_upgrade))
-        .with_state(state)
+        .with_state(state.clone());
+    core.merge(ui_router(state.spa.clone()))
+}
+
+/// Build the axum router for the dedicated `--web-ui=host:port` listener:
+/// only `/cairn.json` and the SPA fallback, no `/ws`/`/healthz`.
+pub(crate) fn ui_router(state: Arc<SpaState>) -> Router {
+    let mut router = Router::new().route("/cairn.json", get(cairn_json_handler));
+    if state.assets.is_some() {
+        router = router.fallback(get(spa_fallback));
+    }
+    router.with_state(state)
 }
 
 async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
+}
+
+// ── /cairn.json + SPA fallback ───────────────────────────────────────────
+
+/// State shared by `/cairn.json` and the SPA fallback across both the
+/// `ws://` listener's router and the dedicated UI listener's router.
+pub(crate) struct SpaState {
+    /// `None` when this listener doesn't serve the SPA (no `--web-ui`, or a
+    /// `ws://` listener when `--web-ui=host:port` attaches only to the
+    /// dedicated listener instead).
+    pub(crate) assets: Option<Arc<Assets>>,
+    pub(crate) cairn_json: Arc<CairnJsonInfo>,
+    /// `true` for a `ws://` listener's own HTTP server (its `/cairn.json`
+    /// reports the relative `"/ws"`); `false` for the dedicated UI listener
+    /// (no `/ws` of its own — see [`cairn_json::render`]).
+    pub(crate) is_ws_listener: bool,
+}
+
+async fn cairn_json_handler(State(state): State<Arc<SpaState>>, headers: HeaderMap) -> Response {
+    let host = cairn_json::request_host(&headers);
+    let doc = cairn_json::render(&state.cairn_json, state.is_ws_listener, &host);
+    let mut response = axum::Json(doc).into_response();
+    // The contents are public (endpoints + a cert fingerprint) so a
+    // standalone-hosted UI can bootstrap from a pasted daemon URL.
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_ALLOW_ORIGIN,
+        header::HeaderValue::from_static("*"),
+    );
+    response
+}
+
+/// SPA fallback: unknown paths serve `index.html` for client-side routing.
+/// Only registered as a route when `state.assets` is `Some`; the `None`
+/// branch below is an unreachable-in-practice defensive fallback.
+async fn spa_fallback(State(state): State<Arc<SpaState>>, uri: Uri) -> Response {
+    let Some(assets) = &state.assets else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let rel_path = uri.path().trim_start_matches('/');
+    let asset = if rel_path.is_empty() {
+        None
+    } else {
+        assets.get(rel_path)
+    }
+    .or_else(|| assets.index());
+
+    match asset {
+        Some(asset) => ([(header::CONTENT_TYPE, asset.content_type)], asset.body).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Handle a `GET /ws` WebSocket upgrade.
@@ -413,4 +489,71 @@ mod tests {
     // loopback → anonymous, no chain + non-loopback → rejected — are already
     // covered above by `loopback_without_chain_is_anonymous` and
     // `non_loopback_without_chain_is_rejected`.
+
+    // ── /cairn.json + SPA fallback (handler-level, no live socket) ──────────
+
+    fn spa_state(assets: Option<Assets>, is_ws_listener: bool) -> Arc<SpaState> {
+        Arc::new(SpaState {
+            assets: assets.map(Arc::new),
+            cairn_json: Arc::new(CairnJsonInfo::default()),
+            is_ws_listener,
+        })
+    }
+
+    #[tokio::test]
+    async fn cairn_json_sets_cors_header() {
+        let state = spa_state(None, true);
+        let response = cairn_json_handler(State(state), HeaderMap::new()).await;
+        assert_eq!(
+            response
+                .headers()
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_serves_index_for_unknown_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), b"<html>spa</html>").unwrap();
+        let assets = Assets::resolve(Some(dir.path())).unwrap();
+        let state = spa_state(Some(assets), true);
+
+        let uri: Uri = "/some/unknown/route".parse().unwrap();
+        let response = spa_fallback(State(state), uri).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&body[..], b"<html>spa</html>");
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_serves_exact_asset() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("index.html"), b"<html>spa</html>").unwrap();
+        std::fs::write(dir.path().join("app.js"), b"console.log(1)").unwrap();
+        let assets = Assets::resolve(Some(dir.path())).unwrap();
+        let state = spa_state(Some(assets), true);
+
+        let uri: Uri = "/app.js".parse().unwrap();
+        let response = spa_fallback(State(state), uri).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/javascript")
+        );
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_without_assets_is_not_found() {
+        let state = spa_state(None, true);
+        let uri: Uri = "/anything".parse().unwrap();
+        let response = spa_fallback(State(state), uri).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
 }

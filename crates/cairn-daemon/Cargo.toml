@@ -25,7 +25,7 @@ wrpc-transport-web.workspace = true
 # version-matched `tokio_websockets`. Pinned to a git commit because the crate
 # is unpublished. See the transport module docs for why only `split` is used.
 wrpc-websockets = { git = "https://github.com/bytecodealliance/wrpc", rev = "5a92c5c29e47d918ff15fb76455427fbcbddd423", default-features = false, features = ["ring", "rand"] }
-axum = { version = "0.7", default-features = false, features = ["tokio", "http1"] }
+axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "json"] }
 wtransport.workspace = true
 rustls.workspace = true
 rcgen = { workspace = true, features = ["pem"] }
@@ -58,6 +58,19 @@ ring = "0.17"
 time = { version = "0.3", features = ["std"] }
 rustls-pki-types = "1"
 url = { version = "2.5" }
+# SPA asset MIME-type detection for `--web-dir`/embedded serving.
+mime_guess = { version = "2", default-features = false }
+# Compile-time SPA embed for the `web-ui` feature; optional so a default
+# `cargo build` never touches `cairn-web/`. See `build.rs` for the guard that
+# turns a missing `cairn-web/build` into a clear build failure instead of an
+# opaque proc-macro panic.
+include_dir = { version = "0.7", optional = true }
+
+[features]
+# Off by default so a plain `cargo build` never requires npm/SvelteKit build
+# artifacts. Enabled for release/nix builds to embed `cairn-web/build` at
+# compile time (see `serve/assets.rs`).
+web-ui = ["dep:include_dir"]
 
 [dev-dependencies]
 tempfile = { version = "3", default-features = false }
@@ -72,3 +85,4 @@ cairn-protocol = { path = "../cairn-protocol" }
 bytes.workspace = true
 futures.workspace = true
 http = "1"
+serde_json.workspace = true

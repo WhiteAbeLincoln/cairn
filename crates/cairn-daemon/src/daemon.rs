@@ -50,6 +50,14 @@ impl Daemon {
                  --wt-cert / --wt-key not set; using self-signed certificate"
             );
         }
+        if matches!(cfg.web_ui, Some(crate::config::WebUiMode::Attach))
+            && !cfg.listeners.iter().any(|l| l.is_ws())
+        {
+            anyhow::bail!(
+                "--web-ui requires at least one ws:// listener; use --web-ui=host:port \
+                 for a dedicated listener instead"
+            );
+        }
 
         Ok(Self {
             registry: Arc::new(SessionRegistry::new()),
@@ -312,6 +320,48 @@ mod tests {
                 "0.0.0.0:9443".parse().unwrap(),
             )],
             auth_backends: vec![AuthBackendKind::Tailscale],
+            ..DaemonConfig::default()
+        };
+        assert!(Daemon::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn new_rejects_bare_web_ui_without_ws_listener() {
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::Unix(crate::config::default_socket_path())],
+            web_ui: Some(crate::config::WebUiMode::Attach),
+            ..DaemonConfig::default()
+        };
+        let err = Daemon::new(cfg)
+            .err()
+            .expect("bare --web-ui without a ws:// listener should be rejected");
+        assert!(
+            err.to_string().contains("ws://"),
+            "expected a ws:// listener hint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn new_accepts_bare_web_ui_with_ws_listener() {
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::WebSocket("127.0.0.1:0".parse().unwrap())],
+            web_ui: Some(crate::config::WebUiMode::Attach),
+            ..DaemonConfig::default()
+        };
+        assert!(Daemon::new(cfg).is_ok());
+    }
+
+    #[test]
+    fn new_accepts_dedicated_web_ui_without_ws_listener() {
+        // `--web-ui=host:port` is valid with only a WebTransport (or even
+        // just a unix://) listener configured — it doesn't need `/ws`.
+        let cfg = DaemonConfig {
+            listeners: vec![ListenerConfig::WebTransport(
+                "127.0.0.1:9443".parse().unwrap(),
+            )],
+            web_ui: Some(crate::config::WebUiMode::Dedicated(vec![
+                "127.0.0.1:5173".parse().unwrap(),
+            ])),
             ..DaemonConfig::default()
         };
         assert!(Daemon::new(cfg).is_ok());

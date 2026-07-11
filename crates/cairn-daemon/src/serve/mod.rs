@@ -9,7 +9,9 @@ use std::fmt;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+pub(crate) mod assets;
 mod auth;
+pub(crate) mod cairn_json;
 mod http;
 mod transport;
 mod wrpc;
@@ -101,6 +103,16 @@ impl ListenerId {
         };
 
         Self { index, label }
+    }
+
+    /// A `ListenerId` for the dedicated `--web-ui=host:port` listener, which
+    /// isn't part of `cfg.listeners` and so has no `ListenerConfig` to derive
+    /// a label from.
+    fn web_ui(index: usize, addr: std::net::SocketAddr) -> Self {
+        Self {
+            index,
+            label: format!("web-ui://{addr}"),
+        }
     }
 }
 

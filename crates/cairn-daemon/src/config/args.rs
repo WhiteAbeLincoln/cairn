@@ -2,8 +2,13 @@
 
 use clap::Parser;
 
-use super::{AuthBackendKind, DaemonConfig, LogFormat};
+use super::{AuthBackendKind, DaemonConfig, LogFormat, WebUiMode};
 use crate::listen::{self, ListenerConfig};
+
+/// Sentinel `default_missing_value` for `--web-ui` given with no `=value`
+/// (bare form). Not a valid `host:port` string, so it can't collide with a
+/// real dedicated-listener target.
+const WEB_UI_ATTACH: &str = "attach";
 
 #[derive(Parser)]
 #[command(version, about = "The cairn session-manager daemon")]
@@ -63,6 +68,25 @@ pub struct Args {
     /// allowed; this extends the allowlist for cross-origin browser clients.
     #[arg(long, env = "CAIRN_WS_ORIGIN", value_delimiter = ',')]
     pub ws_origin: Vec<String>,
+
+    /// Serve the SPA web UI. Bare `--web-ui` attaches SPA routes (and
+    /// `/cairn.json`) to every `ws://` listener — an error at startup if none
+    /// exist. `--web-ui=host:port` instead binds a dedicated HTTP listener
+    /// that serves only the SPA (no `/ws`); valid even with only a
+    /// WebTransport listener configured.
+    #[arg(
+        long,
+        env = "CAIRN_WEB_UI",
+        num_args = 0..=1,
+        default_missing_value = WEB_UI_ATTACH,
+        value_name = "HOST:PORT"
+    )]
+    pub web_ui: Option<String>,
+
+    /// Serve SPA assets from this directory instead of the compiled-in embed
+    /// (works with or without the `web-ui` compile-time embed feature).
+    #[arg(long, env = "CAIRN_WEB_DIR")]
+    pub web_dir: Option<std::path::PathBuf>,
 
     /// Authentication backends for network listeners. Repeat or comma-separate.
     /// Required when a network listener (https://) is configured.
@@ -128,6 +152,12 @@ impl TryFrom<Args> for DaemonConfig {
         if !args.ws_origin.is_empty() {
             cfg.ws_origins = args.ws_origin;
         }
+        cfg.web_ui = match args.web_ui.as_deref() {
+            None => None,
+            Some(WEB_UI_ATTACH) => Some(WebUiMode::Attach),
+            Some(target) => Some(WebUiMode::Dedicated(listen::parse_addr_spec(target)?)),
+        };
+        cfg.web_dir = args.web_dir;
         if let Some(t) = args.auth_timeout {
             cfg.auth_timeout = t;
         }
@@ -163,5 +193,55 @@ mod tests {
             args.auth,
             vec![AuthBackendKind::Tailscale, AuthBackendKind::TailscaleServe]
         );
+    }
+
+    // ── --web-ui ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn web_ui_absent_by_default() {
+        let cfg: DaemonConfig = Args::try_parse_from(["cairn-daemon"])
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(cfg.web_ui, None);
+    }
+
+    #[test]
+    fn web_ui_bare_attaches() {
+        let cfg: DaemonConfig = Args::try_parse_from(["cairn-daemon", "--web-ui"])
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(cfg.web_ui, Some(WebUiMode::Attach));
+    }
+
+    #[test]
+    fn web_ui_with_target_is_dedicated() {
+        let cfg: DaemonConfig = Args::try_parse_from(["cairn-daemon", "--web-ui=127.0.0.1:5173"])
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            cfg.web_ui,
+            Some(WebUiMode::Dedicated(vec![
+                "127.0.0.1:5173".parse().unwrap()
+            ]))
+        );
+    }
+
+    #[test]
+    fn web_ui_with_invalid_target_errors() {
+        let args = Args::try_parse_from(["cairn-daemon", "--web-ui=not-a-target"]).unwrap();
+        let result: anyhow::Result<DaemonConfig> = args.try_into();
+        assert!(result.is_err(), "malformed --web-ui target should error");
+    }
+
+    #[test]
+    fn web_dir_parses_as_path() {
+        let cfg: DaemonConfig = Args::try_parse_from(["cairn-daemon", "--web-dir", "/tmp/spa"])
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(cfg.web_dir, Some(std::path::PathBuf::from("/tmp/spa")));
     }
 }

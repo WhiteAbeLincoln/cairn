@@ -32,23 +32,26 @@ use wrpc_transport::frame::{Accept, AcceptError};
 
 use crate::serve::ConnCtx;
 use crate::serve::auth::Authenticator;
-use crate::serve::http::{HttpState, OriginPolicy};
-use crate::serve::transport::TransportListener;
+use crate::serve::http::{HttpState, OriginPolicy, SpaState};
 
 use super::super::ListenerId;
 
-struct BoundWebSocketListener {
+pub(in crate::serve) struct BoundWebSocketListener {
     id: ListenerId,
     listener: tokio::net::TcpListener,
     origins: OriginPolicy,
     drain_timeout: std::time::Duration,
+    /// Bound port, captured right after bind so a configured port of `0`
+    /// still reports the real port in `/cairn.json` (see `serve::mod`'s
+    /// `CairnJsonInfo` assembly).
+    pub(in crate::serve) bound_addr: SocketAddr,
 }
 
 pub(super) async fn bind(
     id: ListenerId,
     addr: SocketAddr,
     cfg: &crate::config::DaemonConfig,
-) -> anyhow::Result<impl TransportListener> {
+) -> anyhow::Result<BoundWebSocketListener> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
     tracing::info!(listener = %id, %bound_addr, "WS listening");
@@ -58,15 +61,19 @@ pub(super) async fn bind(
         listener,
         origins: OriginPolicy::new(cfg.ws_origins.clone()),
         drain_timeout: cfg.shutdown_grace,
+        bound_addr,
     })
 }
 
-impl TransportListener for BoundWebSocketListener {
-    async fn run(
+impl BoundWebSocketListener {
+    /// `spa` carries this listener's `/cairn.json` facts and (only when
+    /// `--web-ui` attaches SPA routes here) the resolved asset source.
+    pub(in crate::serve) async fn run(
         self,
         daemon: crate::daemon::Daemon,
         auth: Authenticator,
         shutdown: CancellationToken,
+        spa: Arc<SpaState>,
     ) -> anyhow::Result<()> {
         let conns = TaskTracker::new();
         let state = Arc::new(HttpState::new(
@@ -76,6 +83,7 @@ impl TransportListener for BoundWebSocketListener {
             self.origins,
             self.id.clone(),
             conns.clone(),
+            spa,
         ));
         let app =
             crate::serve::http::router(state).into_make_service_with_connect_info::<SocketAddr>();

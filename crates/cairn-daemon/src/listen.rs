@@ -73,15 +73,41 @@ fn parse_host_port(url: &url::Url, s: &str) -> anyhow::Result<Vec<SocketAddr>> {
         .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a port"))?;
 
     if host == "localhost" {
-        let v4: SocketAddr = ([127, 0, 0, 1], port).into();
-        let v6: SocketAddr = ([0, 0, 0, 0, 0, 0, 0, 1], port).into();
-        Ok(vec![v4, v6])
+        Ok(dual_stack_loopback(port))
     } else {
         let addr: SocketAddr = format!("{host}:{port}").parse().map_err(|e| {
             anyhow::anyhow!("--listen {s:?} must be IP:port or localhost:port: {e}")
         })?;
         Ok(vec![addr])
     }
+}
+
+/// Parse a bare `host:port` string (no URL scheme) into one or more socket
+/// addresses — used by `--web-ui=host:port`, which names a dedicated HTTP
+/// listener rather than a `--listen` transport. Applies the same `localhost`
+/// dual-stack expansion as `--listen ws://`/`https://` for consistency.
+pub fn parse_addr_spec(s: &str) -> anyhow::Result<Vec<SocketAddr>> {
+    if let Ok(addr) = s.parse::<SocketAddr>() {
+        return Ok(vec![addr]);
+    }
+    let (host, port) = s
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("{s:?} must be HOST:PORT"))?;
+    if host != "localhost" {
+        anyhow::bail!("{s:?} must be IP:port or localhost:port");
+    }
+    let port: u16 = port
+        .parse()
+        .map_err(|e| anyhow::anyhow!("{s:?} has an invalid port: {e}"))?;
+    Ok(dual_stack_loopback(port))
+}
+
+/// The two loopback addresses `localhost` expands to for a given port.
+fn dual_stack_loopback(port: u16) -> Vec<SocketAddr> {
+    vec![
+        ([127, 0, 0, 1], port).into(),
+        ([0, 0, 0, 0, 0, 0, 0, 1], port).into(),
+    ]
 }
 
 impl ListenerConfig {
@@ -214,5 +240,50 @@ mod tests {
     #[test]
     fn unknown_scheme_rejected() {
         assert!(parse_listener("tcp://localhost:1234").is_err());
+    }
+
+    // ── --web-ui=host:port target parsing ────────────────────────────────
+
+    #[test]
+    fn addr_spec_accepts_ip_port() {
+        assert_eq!(
+            parse_addr_spec("127.0.0.1:5173").unwrap(),
+            vec!["127.0.0.1:5173".parse().unwrap()]
+        );
+    }
+
+    #[test]
+    fn addr_spec_accepts_ipv6_literal() {
+        assert_eq!(
+            parse_addr_spec("[::1]:5173").unwrap(),
+            vec!["[::1]:5173".parse().unwrap()]
+        );
+    }
+
+    #[test]
+    fn addr_spec_localhost_expands_to_dual_stack() {
+        let addrs = parse_addr_spec("localhost:5173").unwrap();
+        assert_eq!(
+            addrs,
+            vec![
+                ([127, 0, 0, 1], 5173).into(),
+                ([0, 0, 0, 0, 0, 0, 0, 1], 5173).into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn addr_spec_rejects_arbitrary_hostname() {
+        assert!(parse_addr_spec("myhost.example:5173").is_err());
+    }
+
+    #[test]
+    fn addr_spec_rejects_missing_port() {
+        assert!(parse_addr_spec("127.0.0.1").is_err());
+    }
+
+    #[test]
+    fn addr_spec_rejects_invalid_port() {
+        assert!(parse_addr_spec("127.0.0.1:notaport").is_err());
     }
 }

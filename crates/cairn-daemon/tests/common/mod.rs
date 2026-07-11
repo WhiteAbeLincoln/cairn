@@ -347,8 +347,10 @@ fn free_port() -> u16 {
 }
 
 /// Find a free TCP port by binding to :0 and reading the assigned port.
-/// Small TOCTOU window; adequate for tests.
-fn free_tcp_port() -> u16 {
+/// Small TOCTOU window; adequate for tests. `pub(crate)` so other test
+/// binaries in this crate (e.g. `web_ui.rs`) can reuse it instead of
+/// duplicating the TOCTOU dance.
+pub(crate) fn free_tcp_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
@@ -357,7 +359,7 @@ fn free_tcp_port() -> u16 {
 }
 
 /// Poll until a TCP connection to `addr` succeeds (the listener is accepting).
-async fn wait_for_tcp(addr: SocketAddr) {
+pub(crate) async fn wait_for_tcp(addr: SocketAddr) {
     for _ in 0..200 {
         if tokio::net::TcpStream::connect(addr).await.is_ok() {
             return;
