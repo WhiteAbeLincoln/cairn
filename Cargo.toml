@@ -21,8 +21,8 @@ serde_json = { version = "1.0.149", features = ["raw_value"] }
 snafu = { version = "0.9.0", features = ["backtrace"] }
 tokio = { version = "1.52", default-features = false }
 tracing = { version = "0.1.44" }
-wrpc-transport = { version = "0.28", default-features = false, features = ["net"] }
-wrpc-transport-web = { version = "0.2", default-features = false }
-wtransport = { version = "0.6", default-features = false }
+wrpc-transport = { version = "0.29", default-features = false, features = ["net"] }
+wrpc-transport-web = { version = "0.3", default-features = false }
+wtransport = { version = "0.7", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rcgen = { version = "0.13", default-features = false, features = ["ring"] }
