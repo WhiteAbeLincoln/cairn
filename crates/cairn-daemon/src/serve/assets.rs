@@ -31,14 +31,23 @@ pub(crate) enum Assets {
 impl Assets {
     /// Resolve the asset source for `--web-ui`/`--web-dir`.
     ///
-    /// Errors if `web_dir` is given but isn't a directory, or if neither
-    /// `web_dir` nor the `web-ui` embed feature is available — the two ways
-    /// `--web-ui` can have no assets to serve.
+    /// Errors if `web_dir` is given but isn't a directory or lacks an
+    /// `index.html` (the SPA entry point every fallback serves — without it
+    /// each request would just 404 with no diagnostic), or if neither
+    /// `web_dir` nor the `web-ui` embed feature is available. All of these
+    /// fail at startup, mirroring the compile-time check `build.rs` applies
+    /// to the embedded copy.
     pub(crate) fn resolve(web_dir: Option<&Path>) -> anyhow::Result<Self> {
         if let Some(dir) = web_dir {
             anyhow::ensure!(
                 dir.is_dir(),
                 "--web-dir {} is not a directory",
+                dir.display()
+            );
+            anyhow::ensure!(
+                dir.join("index.html").is_file(),
+                "--web-dir {} has no index.html (the SPA entry point); point it at a built \
+                 SPA (e.g. cairn-web/build after `npm run build`)",
                 dir.display()
             );
             return Ok(Self::Dir(dir.to_path_buf()));
@@ -123,6 +132,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist");
         assert!(Assets::resolve(Some(&missing)).is_err());
+    }
+
+    #[test]
+    fn resolve_rejects_web_dir_without_index_html() {
+        // A real directory that just isn't a built SPA (e.g. pointing
+        // --web-dir at cairn-web/src instead of cairn-web/build) must fail at
+        // startup with a diagnostic, not start up and 404 every request.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("app.js"), b"not an spa root").unwrap();
+        let err = Assets::resolve(Some(dir.path()))
+            .err()
+            .expect("a --web-dir without index.html must be rejected");
+        assert!(
+            err.to_string().contains("index.html"),
+            "error should name the missing file, got: {err}"
+        );
     }
 
     #[test]

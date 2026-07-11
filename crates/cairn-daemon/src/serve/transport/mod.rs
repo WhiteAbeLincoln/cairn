@@ -64,10 +64,12 @@ pub(super) async fn bind_and_spawn(
             }
             crate::listen::ListenerConfig::WebTransport(addr) => {
                 let bound = webtransport::bind(id, *addr, cfg).await?;
-                // First WT listener wins (dual-stack `localhost` expansion
-                // shares one port across two addresses, so this only matters
-                // for genuinely distinct WT listeners — an edge case the
-                // design spec doesn't cover).
+                // First WT listener wins (a dual-stack `localhost:PORT`
+                // expansion shares one configured port across two addresses,
+                // so that common case is unaffected — though NOT for port 0,
+                // where each bind gets its own ephemeral port and only the
+                // first is reported; genuinely distinct WT listeners are an
+                // edge case the design spec doesn't cover).
                 if wt_info.is_none() {
                     wt_info = Some(bound.cairn_json.clone());
                 }

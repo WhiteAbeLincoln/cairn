@@ -145,6 +145,37 @@ fn bare_web_ui_without_ws_listener_is_rejected_at_construction() {
     assert!(err.to_string().contains("ws://"));
 }
 
+#[tokio::test]
+async fn web_dir_without_index_html_fails_at_startup() {
+    // A directory that exists but isn't a built SPA (the classic mistake:
+    // pointing --web-dir at the source tree instead of the build output).
+    // The daemon must refuse to start with a diagnostic naming index.html,
+    // not come up and 404 every request.
+    let fixture = tempfile::tempdir().unwrap();
+    std::fs::write(fixture.path().join("app.js"), b"not an spa root").unwrap();
+
+    let ws_addr: SocketAddr = ([127, 0, 0, 1], common::free_tcp_port()).into();
+    let cfg = DaemonConfig {
+        listeners: vec![ListenerConfig::WebSocket(ws_addr)],
+        web_ui: Some(WebUiMode::Attach),
+        web_dir: Some(fixture.path().to_path_buf()),
+        ..DaemonConfig::default()
+    };
+    let daemon = Daemon::new(cfg).expect("config passes construction; assets resolve at serve()");
+    let shutdown = CancellationToken::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        serve(daemon, shutdown, None),
+    )
+    .await
+    .expect("serve() should fail fast at startup, not run");
+    let err = result.expect_err("serve() must reject a --web-dir without index.html");
+    assert!(
+        format!("{err:#}").contains("index.html"),
+        "startup error should name the missing file, got: {err:#}"
+    );
+}
+
 // ── serving form 1: bare --web-ui attaches to the ws:// listener ───────────
 
 #[tokio::test]
