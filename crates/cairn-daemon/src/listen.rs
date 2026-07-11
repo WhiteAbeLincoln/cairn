@@ -8,6 +8,7 @@ use std::path::PathBuf;
 pub enum ListenerConfig {
     Unix(PathBuf),
     WebTransport(SocketAddr),
+    WebSocket(SocketAddr),
 }
 
 /// Parse a `--listen` value into one or more [`ListenerConfig`]s.
@@ -16,8 +17,10 @@ pub enum ListenerConfig {
 /// - `unix` — use the default socket path
 /// - `unix:///absolute/path` — explicit UDS path
 /// - `https://host:port` — WebTransport listener (the W3C
-///   WebTransport URL scheme; a future WebSocket listener would
-///   use `wss://`)
+///   WebTransport URL scheme)
+/// - `ws://host:port` — WebSocket listener (the browser-facing
+///   HTTP/WebSocket transport; `wss://` TLS termination is handled
+///   out of band, e.g. by `tailscale serve`)
 /// - `/absolute/path` — bare path, treated as `unix://`
 ///
 /// When the host is `localhost`, the listener expands to both
@@ -44,31 +47,40 @@ pub fn parse_listener(s: &str) -> anyhow::Result<Vec<ListenerConfig>> {
             }
             Ok(vec![ListenerConfig::Unix(PathBuf::from(path))])
         }
-        "https" => {
-            let host = url
-                .host_str()
-                .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a host"))?;
-            let port = url
-                .port()
-                .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a port"))?;
-
-            if host == "localhost" {
-                let v4: SocketAddr = ([127, 0, 0, 1], port).into();
-                let v6: SocketAddr = ([0, 0, 0, 0, 0, 0, 0, 1], port).into();
-                Ok(vec![
-                    ListenerConfig::WebTransport(v4),
-                    ListenerConfig::WebTransport(v6),
-                ])
-            } else {
-                let addr: SocketAddr = format!("{host}:{port}").parse().map_err(|e| {
-                    anyhow::anyhow!("--listen {s:?} must be IP:port or localhost:port: {e}")
-                })?;
-                Ok(vec![ListenerConfig::WebTransport(addr)])
-            }
-        }
+        "https" => Ok(parse_host_port(&url, s)?
+            .into_iter()
+            .map(ListenerConfig::WebTransport)
+            .collect()),
+        "ws" => Ok(parse_host_port(&url, s)?
+            .into_iter()
+            .map(ListenerConfig::WebSocket)
+            .collect()),
         other => anyhow::bail!(
-            "unrecognized --listen scheme {other:?} in {s:?}; expected `unix`, `unix:///path`, or `https://host:port`"
+            "unrecognized --listen scheme {other:?} in {s:?}; expected `unix`, `unix:///path`, `https://host:port`, or `ws://host:port`"
         ),
+    }
+}
+
+/// Resolve the `host:port` authority of a network `--listen` URL into one or
+/// more socket addresses. `localhost` expands to dual-stack loopback
+/// (`127.0.0.1` and `[::1]`); explicit IP literals bind exactly what was asked.
+fn parse_host_port(url: &url::Url, s: &str) -> anyhow::Result<Vec<SocketAddr>> {
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a host"))?;
+    let port = url
+        .port()
+        .ok_or_else(|| anyhow::anyhow!("--listen {s:?} is missing a port"))?;
+
+    if host == "localhost" {
+        let v4: SocketAddr = ([127, 0, 0, 1], port).into();
+        let v6: SocketAddr = ([0, 0, 0, 0, 0, 0, 0, 1], port).into();
+        Ok(vec![v4, v6])
+    } else {
+        let addr: SocketAddr = format!("{host}:{port}").parse().map_err(|e| {
+            anyhow::anyhow!("--listen {s:?} must be IP:port or localhost:port: {e}")
+        })?;
+        Ok(vec![addr])
     }
 }
 
@@ -79,10 +91,13 @@ impl ListenerConfig {
     pub fn is_wt(&self) -> bool {
         matches!(self, Self::WebTransport(_))
     }
+    pub fn is_ws(&self) -> bool {
+        matches!(self, Self::WebSocket(_))
+    }
     pub fn is_loopback(&self) -> bool {
         match self {
             Self::Unix(_) => true,
-            Self::WebTransport(addr) => addr.ip().is_loopback(),
+            Self::WebTransport(addr) | Self::WebSocket(addr) => addr.ip().is_loopback(),
         }
     }
 }
@@ -134,6 +149,41 @@ mod tests {
             ListenerConfig::WebTransport(([0, 0, 0, 0, 0, 0, 0, 1], 4433).into())
         );
         assert!(cfgs.iter().all(|c| c.is_loopback()));
+    }
+
+    #[test]
+    fn ws_uri_extracts_socket_addr() {
+        let cfgs = parse_listener("ws://127.0.0.1:8080").unwrap();
+        assert_eq!(
+            cfgs,
+            vec![ListenerConfig::WebSocket("127.0.0.1:8080".parse().unwrap())]
+        );
+        assert!(cfgs[0].is_ws());
+    }
+
+    #[test]
+    fn ws_localhost_expands_to_dual_stack() {
+        let cfgs = parse_listener("ws://localhost:8080").unwrap();
+        assert_eq!(
+            cfgs,
+            vec![
+                ListenerConfig::WebSocket(([127, 0, 0, 1], 8080).into()),
+                ListenerConfig::WebSocket(([0, 0, 0, 0, 0, 0, 0, 1], 8080).into()),
+            ]
+        );
+        assert!(cfgs.iter().all(|c| c.is_loopback()));
+    }
+
+    #[test]
+    fn ws_hostname_rejected() {
+        // Arbitrary hostnames (not localhost) still require an IP literal.
+        assert!(parse_listener("ws://myhost.example:8080").is_err());
+    }
+
+    #[test]
+    fn wss_scheme_rejected() {
+        // TLS is terminated out of band; the daemon only speaks plaintext `ws`.
+        assert!(parse_listener("wss://localhost:8080").is_err());
     }
 
     #[test]

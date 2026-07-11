@@ -53,6 +53,9 @@ pub struct DaemonConfig {
     pub auth_timeout: Duration,
     pub shutdown_grace: Duration,
     pub default_shell: String,
+    /// Additional allowed `Origin` values for WebSocket upgrades, beyond the
+    /// request's own `Host`-derived origin. Empty by default (same-origin only).
+    pub ws_origins: Vec<String>,
 }
 
 impl Default for DaemonConfig {
@@ -69,6 +72,7 @@ impl Default for DaemonConfig {
             auth_timeout: Duration::from_secs(5),
             shutdown_grace: Duration::from_secs(5),
             default_shell: default_shell(),
+            ws_origins: vec![],
         }
     }
 }

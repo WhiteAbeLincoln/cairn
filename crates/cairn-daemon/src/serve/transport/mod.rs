@@ -5,6 +5,7 @@ use super::ListenerId;
 use super::auth::Authenticator;
 
 pub(super) mod unix;
+pub(super) mod websocket;
 pub(super) mod webtransport;
 
 pub(super) struct SpawnedTransports {
@@ -44,6 +45,14 @@ pub(super) async fn bind_and_spawn(
             }
             crate::listen::ListenerConfig::WebTransport(addr) => {
                 let bound = webtransport::bind(id, *addr, cfg).await?;
+
+                let daemon = daemon.clone();
+                let auth = auth.clone();
+                let shutdown = shutdown.clone();
+                tasks.spawn(bound.run(daemon, auth, shutdown));
+            }
+            crate::listen::ListenerConfig::WebSocket(addr) => {
+                let bound = websocket::bind(id, *addr, cfg).await?;
 
                 let daemon = daemon.clone();
                 let auth = auth.clone();

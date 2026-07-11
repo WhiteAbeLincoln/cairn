@@ -10,6 +10,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 mod auth;
+mod http;
 mod transport;
 mod wrpc;
 
@@ -93,6 +94,9 @@ impl ListenerId {
             }
             crate::listen::ListenerConfig::WebTransport(addr) => {
                 format!("https://{addr}")
+            }
+            crate::listen::ListenerConfig::WebSocket(addr) => {
+                format!("ws://{addr}")
             }
         };
 

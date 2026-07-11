@@ -328,7 +328,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "wrpc-transport",
+ "wrpc-transport 0.29.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wrpc-transport-web",
  "wtransport",
 ]
@@ -338,12 +338,14 @@ name = "cairn-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "base64",
  "bytes",
  "cairn-protocol",
  "cairn-pty",
  "clap",
  "futures",
+ "http",
  "http-body-util",
  "humantime",
  "hyper",
@@ -369,8 +371,9 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "wrpc-transport",
+ "wrpc-transport 0.29.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wrpc-transport-web",
+ "wrpc-websockets",
  "wtransport",
 ]
 
@@ -388,7 +391,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "wit-bindgen-wrpc",
- "wrpc-transport",
+ "wrpc-transport 0.29.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -434,6 +437,17 @@ name = "cfg_aliases"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+
+[[package]]
+name = "chacha20"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "chrono"
@@ -789,6 +803,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
+ "rand_core 0.10.1",
  "wasip2",
  "wasip3",
 ]
@@ -1168,9 +1183,9 @@ checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leb128-tokio"
-version = "0.1.6"
+version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a1f734b00871cae8f137d83d53cf4b5ee3f0d87224a87a4347dab4cde11a7a3"
+checksum = "68e94e2f8143ae63a07c670a27f2fc42a333293c249566f8d4cd6609689656bb"
 dependencies = [
  "tokio",
  "tokio-util",
@@ -1460,7 +1475,7 @@ dependencies = [
  "opentelemetry",
  "percent-encoding",
  "portable-atomic",
- "rand",
+ "rand 0.9.4",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -1664,7 +1679,7 @@ dependencies = [
  "bytes",
  "getrandom 0.3.4",
  "lru-slab",
- "rand",
+ "rand 0.9.4",
  "ring",
  "rustc-hash",
  "rustls",
@@ -1718,7 +1733,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
 dependencies = [
  "rand_chacha",
- "rand_core",
+ "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+dependencies = [
+ "chacha20",
+ "getrandom 0.4.2",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -1728,7 +1754,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
- "rand_core",
+ "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -1739,6 +1765,12 @@ checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
 ]
+
+[[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "rcgen"
@@ -2060,6 +2092,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "simdutf8"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2347,6 +2385,25 @@ dependencies = [
  "futures-util",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "tokio-websockets"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d52efb639344a7c6adb8e62c6f3d2c19c001ff1b79a5041ba1c6ed42e19c6aa5"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "http",
+ "httparse",
+ "rand 0.10.2",
+ "ring",
+ "simdutf8",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -2766,9 +2823,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-tokio"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1db8d9df11ba3f83f9a9fb2c159579e6ef7b368fa6650b8f7f01febb75784cef"
+checksum = "a89e5174a1312bd31d081a1dd6db8e48e2dc680b2988aba43befabb8459ea999"
 dependencies = [
  "leb128-tokio",
  "tokio",
@@ -3043,7 +3100,7 @@ dependencies = [
  "tracing",
  "wasm-tokio",
  "wit-bindgen-wrpc-rust-macro",
- "wrpc-transport",
+ "wrpc-transport 0.29.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -3164,6 +3221,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wrpc-transport"
+version = "0.29.0"
+source = "git+https://github.com/bytecodealliance/wrpc?rev=5a92c5c29e47d918ff15fb76455427fbcbddd423#5a92c5c29e47d918ff15fb76455427fbcbddd423"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "pin-project-lite",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "wasi 0.14.7+wasi-0.2.4",
+ "wasm-tokio",
+]
+
+[[package]]
 name = "wrpc-transport-web"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3173,8 +3247,23 @@ dependencies = [
  "bytes",
  "quinn",
  "tracing",
- "wrpc-transport",
+ "wrpc-transport 0.29.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "wtransport",
+]
+
+[[package]]
+name = "wrpc-websockets"
+version = "0.1.0"
+source = "git+https://github.com/bytecodealliance/wrpc?rev=5a92c5c29e47d918ff15fb76455427fbcbddd423#5a92c5c29e47d918ff15fb76455427fbcbddd423"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "tokio",
+ "tokio-util",
+ "tokio-websockets",
+ "tracing",
+ "wrpc-transport 0.29.0 (git+https://github.com/bytecodealliance/wrpc?rev=5a92c5c29e47d918ff15fb76455427fbcbddd423)",
 ]
 
 [[package]]

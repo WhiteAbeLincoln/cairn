@@ -18,6 +18,8 @@ pub struct Args {
     ///
     /// - `https://0.0.0.0:9443`: WebTransport listener (W3C scheme)
     ///
+    /// - `ws://127.0.0.1:8080`: WebSocket listener (browser-facing)
+    ///
     /// - `/path/to.sock`: bare path treated as unix://
     #[arg(
         long,
@@ -55,6 +57,12 @@ pub struct Args {
     /// handshake phase. Excess connections are dropped immediately.
     #[arg(long, env = "CAIRN_WT_MAX_PENDING")]
     pub wt_max_pending: Option<usize>,
+
+    /// Additional allowed WebSocket `Origin` values (e.g. `https://cairn.example`).
+    /// Repeat or comma-separate. The request's own `Host`-derived origin is always
+    /// allowed; this extends the allowlist for cross-origin browser clients.
+    #[arg(long, env = "CAIRN_WS_ORIGIN", value_delimiter = ',')]
+    pub ws_origin: Vec<String>,
 
     /// Authentication backends for network listeners. Repeat or comma-separate.
     /// Required when a network listener (https://) is configured.
@@ -117,6 +125,9 @@ impl TryFrom<Args> for DaemonConfig {
             cfg.wt_max_pending = n;
         }
         cfg.auth_backends = args.auth;
+        if !args.ws_origin.is_empty() {
+            cfg.ws_origins = args.ws_origin;
+        }
         if let Some(t) = args.auth_timeout {
             cfg.auth_timeout = t;
         }
