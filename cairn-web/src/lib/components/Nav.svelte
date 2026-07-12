@@ -1,0 +1,59 @@
+<script lang="ts">
+import { page } from '$app/state';
+import ConnectionIndicator from './ConnectionIndicator.svelte';
+
+const isActive = $derived(page.url.pathname.startsWith('/sessions'));
+</script>
+
+<nav class="nav">
+    <a href="/sessions" class="nav-brand">cairn</a>
+    <div class="nav-links">
+        <a href="/sessions" class:active={isActive}>Sessions</a>
+    </div>
+    <ConnectionIndicator />
+</nav>
+
+<style>
+    .nav {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.75rem 1rem;
+        background: var(--color-surface);
+        border-bottom: 1px solid var(--color-border);
+    }
+
+    .nav-brand {
+        font-weight: 700;
+        font-size: 1.1rem;
+        font-family: var(--font-mono);
+        color: var(--color-text);
+    }
+
+    .nav-brand:hover {
+        text-decoration: none;
+    }
+
+    .nav-links {
+        display: flex;
+        gap: 0.5rem;
+        flex: 1;
+    }
+
+    .nav-links a {
+        padding: 0.375rem 0.75rem;
+        border-radius: var(--radius);
+        color: var(--color-text-muted);
+        font-size: 0.875rem;
+    }
+
+    .nav-links a:hover {
+        text-decoration: none;
+        color: var(--color-text);
+    }
+
+    .nav-links a.active {
+        color: var(--color-text);
+        background: var(--color-surface-hover);
+    }
+</style>

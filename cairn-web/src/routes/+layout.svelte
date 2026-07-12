@@ -1,0 +1,45 @@
+<script lang="ts">
+import { onMount } from 'svelte';
+import ManualEndpoint from '$lib/components/ManualEndpoint.svelte';
+import Nav from '$lib/components/Nav.svelte';
+import { getNeedsManualEndpoint, initConnection } from '$lib/stores/connection.svelte';
+import '../app.css';
+
+const { children } = $props();
+const needsManualEndpoint = $derived(getNeedsManualEndpoint());
+
+onMount(() => {
+    initConnection(window.location.href);
+});
+</script>
+
+<div class="app-shell">
+    <Nav />
+    <main class="app-main">
+        {#if needsManualEndpoint}
+            <ManualEndpoint />
+        {:else}
+            {@render children()}
+        {/if}
+    </main>
+</div>
+
+<style>
+    .app-shell {
+        display: flex;
+        flex-direction: column;
+        min-height: 100vh;
+        min-height: 100dvh;
+    }
+
+    .app-main {
+        flex: 1;
+        padding: 1rem;
+    }
+
+    @media (min-width: 640px) {
+        .app-main {
+            padding: 1.5rem 2rem;
+        }
+    }
+</style>
