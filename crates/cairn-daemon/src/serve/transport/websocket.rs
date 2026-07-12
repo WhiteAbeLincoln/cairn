@@ -68,19 +68,26 @@ pub(super) async fn bind(
 impl BoundWebSocketListener {
     /// `spa` carries this listener's `/cairn.json` facts and (only when
     /// `--web-ui` attaches SPA routes here) the resolved asset source.
+    ///
+    /// `ui_origin_ports` are the bound ports of the daemon's dedicated
+    /// `--web-ui=host:port` listeners; their same-host origins are folded into
+    /// this listener's [`OriginPolicy`] so the SPA served there can dial `/ws`
+    /// cross-origin without a manual `--ws-origin`.
     pub(in crate::serve) async fn run(
         self,
         daemon: crate::daemon::Daemon,
         auth: Authenticator,
         shutdown: CancellationToken,
         spa: Arc<SpaState>,
+        ui_origin_ports: Vec<u16>,
     ) -> anyhow::Result<()> {
         let conns = TaskTracker::new();
+        let origins = self.origins.with_ui_ports(ui_origin_ports);
         let state = Arc::new(HttpState::new(
             daemon,
             auth,
             shutdown.clone(),
-            self.origins,
+            origins,
             self.id.clone(),
             conns.clone(),
             spa,

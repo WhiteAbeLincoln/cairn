@@ -73,7 +73,11 @@ pub struct Args {
     /// `/cairn.json`) to every `ws://` listener — an error at startup if none
     /// exist. `--web-ui=host:port` instead binds a dedicated HTTP listener
     /// that serves only the SPA (no `/ws`); valid even with only a
-    /// WebTransport listener configured.
+    /// WebTransport listener configured. When a dedicated UI listener is
+    /// combined with a `ws://` listener on the same host, that UI origin is
+    /// auto-allowed for `/ws` upgrades — no `--ws-origin` needed. A UI hosted
+    /// elsewhere (a different host, or standalone static hosting) still
+    /// requires `--ws-origin`.
     #[arg(
         long,
         env = "CAIRN_WEB_UI",

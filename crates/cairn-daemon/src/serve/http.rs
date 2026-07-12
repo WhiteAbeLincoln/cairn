@@ -268,16 +268,38 @@ async fn authorize(
 #[derive(Clone)]
 pub(crate) struct OriginPolicy {
     allowlist: Vec<String>,
+    /// Bound ports of this daemon's dedicated `--web-ui=host:port` listeners.
+    /// A browser `Origin` whose host matches the upgrade request's own `Host`
+    /// and whose port is one of these is auto-allowed (see [`Self::allows`]):
+    /// the SPA served there is a first-party client of this same daemon, so it
+    /// earns the same trust anchor as a same-origin request. Empty unless a
+    /// dedicated web-UI listener is configured.
+    ui_ports: Vec<u16>,
 }
 
 impl OriginPolicy {
     pub(crate) fn new(allowlist: Vec<String>) -> Self {
-        Self { allowlist }
+        Self {
+            allowlist,
+            ui_ports: Vec::new(),
+        }
+    }
+
+    /// Fold in the bound ports of the daemon's dedicated `--web-ui=host:port`
+    /// listeners, whose same-host origins are then auto-allowed. Called once
+    /// per `ws://` listener at serve time, after the UI listeners have bound
+    /// (so a configured port of `0` contributes its real ephemeral port).
+    pub(crate) fn with_ui_ports(mut self, ui_ports: Vec<u16>) -> Self {
+        self.ui_ports = ui_ports;
+        self
     }
 
     /// - Absent `Origin` → allowed (non-browser client).
     /// - `Origin` whose authority equals the request `Host` → allowed (same origin).
     /// - `Origin` present in the configured allowlist → allowed.
+    /// - `Origin` whose host equals the request `Host`'s host and whose port
+    ///   is one of this daemon's dedicated web-UI listener ports → allowed
+    ///   (the SPA on that port dials this `ws://` listener cross-origin).
     /// - anything else → rejected.
     fn allows(&self, origin: Option<&str>, host: Option<&str>) -> bool {
         let Some(origin) = origin else {
@@ -286,10 +308,36 @@ impl OriginPolicy {
         if self.allowlist.iter().any(|allowed| allowed == origin) {
             return true;
         }
-        match (origin_authority(origin), host) {
-            (Some(authority), Some(host)) => authority.eq_ignore_ascii_case(host),
-            _ => false,
+        let (Some(authority), Some(host)) = (origin_authority(origin), host) else {
+            return false;
+        };
+        // Same origin: the Origin's authority equals the request Host exactly.
+        if authority.eq_ignore_ascii_case(host) {
+            return true;
         }
+        // A dedicated `--web-ui=host:port` listener serves the SPA on its own
+        // port; that SPA dials this `ws://` listener cross-origin (same host,
+        // different port). Trust that exact Origin so the two listeners compose
+        // without the operator also passing `--ws-origin`. Fail-closed: only a
+        // UI-listener port on the request's own host earns the exemption.
+        self.matches_ui_listener(authority, host)
+    }
+
+    /// Whether `origin_authority` names one of this daemon's dedicated web-UI
+    /// listeners: same host as the upgrade request, port equal to a bound UI
+    /// listener port.
+    fn matches_ui_listener(&self, origin_authority: &str, request_host: &str) -> bool {
+        if self.ui_ports.is_empty() {
+            return false;
+        }
+        let (origin_host, Some(origin_port)) = split_host_port(origin_authority) else {
+            return false;
+        };
+        let Ok(origin_port) = origin_port.parse::<u16>() else {
+            return false;
+        };
+        let (request_host, _) = split_host_port(request_host);
+        origin_host.eq_ignore_ascii_case(request_host) && self.ui_ports.contains(&origin_port)
     }
 }
 
@@ -298,6 +346,28 @@ fn origin_authority(origin: &str) -> Option<&str> {
     origin
         .split_once("://")
         .map(|(_scheme, authority)| authority)
+}
+
+/// Split a `host[:port]` authority into `(host, Some(port))`, or `(host, None)`
+/// when no port is present. An IPv6 literal keeps its brackets in the host part
+/// (e.g. `[::1]:8080` -> `("[::1]", Some("8080"))`), mirroring the request-Host
+/// parsing in [`super::cairn_json`].
+fn split_host_port(authority: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: the host is everything through the closing bracket.
+        return match rest.find(']') {
+            Some(end) => {
+                let host = &authority[..end + 2];
+                let port = authority[end + 2..].strip_prefix(':');
+                (host, port)
+            }
+            None => (authority, None),
+        };
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (authority, None),
+    }
 }
 
 // ── Handshake helpers ────────────────────────────────────────────────────────
@@ -364,6 +434,32 @@ mod tests {
         // Allowlist entries must match exactly, including scheme/port.
         let p = policy(&["https://app.example"]);
         assert!(!p.allows(Some("http://app.example"), Some("127.0.0.1:8080")));
+    }
+
+    #[test]
+    fn dedicated_ui_listener_origin_is_allowed_same_host() {
+        // ws:// listener on :8080, dedicated `--web-ui` listener on :5173, same
+        // host: the SPA served on :5173 dials /ws on :8080 cross-origin and is
+        // auto-allowed without `--ws-origin`.
+        let p = policy(&[]).with_ui_ports(vec![5173]);
+        assert!(p.allows(Some("http://127.0.0.1:5173"), Some("127.0.0.1:8080")));
+        // IPv6 host, brackets preserved on both the Origin and the Host.
+        assert!(
+            policy(&[])
+                .with_ui_ports(vec![5173])
+                .allows(Some("http://[::1]:5173"), Some("[::1]:8080"))
+        );
+    }
+
+    #[test]
+    fn ui_listener_exemption_is_fail_closed() {
+        let p = policy(&[]).with_ui_ports(vec![5173]);
+        // Right UI port, but a different host than the request's own Host.
+        assert!(!p.allows(Some("http://evil.example:5173"), Some("127.0.0.1:8080")));
+        // Right host, but a port we never bound for a UI listener.
+        assert!(!p.allows(Some("http://127.0.0.1:9999"), Some("127.0.0.1:8080")));
+        // No UI listeners configured -> the exemption never applies.
+        assert!(!policy(&[]).allows(Some("http://127.0.0.1:5173"), Some("127.0.0.1:8080")));
     }
 
     // ── Pre-upgrade gate (origin + auth chain) ───────────────────────────────

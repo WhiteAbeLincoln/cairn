@@ -109,6 +109,42 @@ async fn http_get(addr: SocketAddr, path: &str) -> HttpResponse {
     }
 }
 
+/// Send a `GET /ws` WebSocket upgrade to `addr` carrying `origin` and return
+/// the HTTP status of the handshake response. A successful upgrade is `101`
+/// (the daemon then hijacks the socket, so we only read the status line, not
+/// to EOF); an origin the daemon rejects is `403`.
+async fn ws_upgrade_status(addr: SocketAddr, origin: &str) -> u16 {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    // The `Sec-WebSocket-Key` value is arbitrary (RFC 6455 §4.1); the daemon
+    // only needs it present to derive the accept header.
+    let request = format!(
+        "GET /ws HTTP/1.1\r\n\
+         Host: {addr}\r\n\
+         Origin: {origin}\r\n\
+         Upgrade: websocket\r\n\
+         Connection: Upgrade\r\n\
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+         Sec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut buf = [0u8; 256];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("daemon should answer the upgrade")
+        .unwrap();
+    let head = std::str::from_utf8(&buf[..n]).unwrap();
+    let status_line = head.lines().next().expect("a status line");
+    status_line
+        .split_whitespace()
+        .nth(1)
+        .expect("status code")
+        .parse()
+        .expect("numeric status code")
+}
+
 /// Generate a self-signed WT cert in a per-test tempdir and return the
 /// `WtTlsIdentity` pointing at it, mirroring `common::DaemonHarness`'s
 /// pattern (never rely on the shared global `runtime_dir()` in tests, to
@@ -372,5 +408,47 @@ async fn cairn_json_dedicated_ui_reports_absolute_ws_url_when_ws_listener_exists
     assert_eq!(
         endpoints.get("websocket").unwrap(),
         &serde_json::json!(format!("ws://127.0.0.1:{}/ws", ws_addr.port()))
+    );
+}
+
+// ── dedicated UI listener + ws:// listener compose without --ws-origin ─────
+
+#[tokio::test]
+async fn dedicated_ui_origin_is_auto_allowed_on_ws_upgrade() {
+    // The composition `/cairn.json` advertises (dedicated UI on one port, a
+    // `ws://` listener on another) must actually work: the SPA served on the
+    // UI port dials `/ws` cross-origin, and that Origin has to pass the ws
+    // listener's OriginPolicy WITHOUT the operator also passing `--ws-origin`.
+    let fixture = tempfile::tempdir().unwrap();
+    write_fixture_spa(fixture.path());
+
+    let ws_addr: SocketAddr = ([127, 0, 0, 1], common::free_tcp_port()).into();
+    let ui_addr: SocketAddr = ([127, 0, 0, 1], common::free_tcp_port()).into();
+    let cfg = DaemonConfig {
+        listeners: vec![ListenerConfig::WebSocket(ws_addr)],
+        web_ui: Some(WebUiMode::Dedicated(vec![ui_addr])),
+        web_dir: Some(fixture.path().to_path_buf()),
+        // Deliberately no `ws_origins`: the exemption must come purely from the
+        // dedicated UI listener's port, not a manual allowlist entry.
+        ..DaemonConfig::default()
+    };
+    let _daemon = TestDaemon::spawn(cfg).await;
+    common::wait_for_tcp(ws_addr).await;
+    common::wait_for_tcp(ui_addr).await;
+
+    // The dedicated UI listener's origin (same host, its own port) is allowed.
+    let ui_origin = format!("http://127.0.0.1:{}", ui_addr.port());
+    assert_eq!(
+        ws_upgrade_status(ws_addr, &ui_origin).await,
+        101,
+        "the dedicated UI listener's origin must be auto-allowed on /ws"
+    );
+
+    // A same-host origin on some other, unbound port stays fail-closed.
+    let bogus_origin = "http://127.0.0.1:1";
+    assert_eq!(
+        ws_upgrade_status(ws_addr, bogus_origin).await,
+        403,
+        "an origin whose port is not a UI listener port must still be rejected"
     );
 }

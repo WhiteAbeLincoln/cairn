@@ -101,6 +101,22 @@ pub(super) async fn bind_and_spawn(
     };
     let attach_to_ws = matches!(cfg.web_ui, Some(crate::config::WebUiMode::Attach));
 
+    // The dedicated `--web-ui=host:port` listener isn't part of `--listen`.
+    // Bind it (but don't spawn yet) before the `ws://` listeners run, so its
+    // bound port can be folded into their origin allowlist: the SPA served on
+    // the dedicated port dials the `ws://` listener cross-origin (same host,
+    // different port), which the OriginPolicy auto-allows only for these ports.
+    let mut ui_listeners = Vec::new();
+    let mut ui_origin_ports = Vec::new();
+    if let Some(crate::config::WebUiMode::Dedicated(addrs)) = &cfg.web_ui {
+        for (i, addr) in addrs.iter().enumerate() {
+            let id = ListenerId::web_ui(cfg.listeners.len() + i, *addr);
+            let bound = web_ui::bind(id, *addr).await?;
+            ui_origin_ports.push(bound.bound_addr.port());
+            ui_listeners.push(bound);
+        }
+    }
+
     for bound in pending_ws {
         let daemon = daemon.clone();
         let auth = auth.clone();
@@ -110,23 +126,17 @@ pub(super) async fn bind_and_spawn(
             cairn_json: cairn_json.clone(),
             is_ws_listener: true,
         });
-        tasks.spawn(bound.run(daemon, auth, shutdown, spa));
+        tasks.spawn(bound.run(daemon, auth, shutdown, spa, ui_origin_ports.clone()));
     }
 
-    // The dedicated `--web-ui=host:port` listener isn't part of `--listen`;
-    // bind and spawn it separately, once assets/`CairnJsonInfo` are ready.
-    if let Some(crate::config::WebUiMode::Dedicated(addrs)) = &cfg.web_ui {
-        for (i, addr) in addrs.iter().enumerate() {
-            let id = ListenerId::web_ui(cfg.listeners.len() + i, *addr);
-            let bound = web_ui::bind(id, *addr).await?;
-            let shutdown = shutdown.clone();
-            let spa = Arc::new(SpaState {
-                assets: assets.clone(),
-                cairn_json: cairn_json.clone(),
-                is_ws_listener: false,
-            });
-            tasks.spawn(bound.run(shutdown, spa));
-        }
+    for bound in ui_listeners {
+        let shutdown = shutdown.clone();
+        let spa = Arc::new(SpaState {
+            assets: assets.clone(),
+            cairn_json: cairn_json.clone(),
+            is_ws_listener: false,
+        });
+        tasks.spawn(bound.run(shutdown, spa));
     }
 
     Ok(SpawnedTransports {

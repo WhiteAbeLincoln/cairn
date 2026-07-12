@@ -15,6 +15,10 @@ use super::super::ListenerId;
 pub(in crate::serve) struct BoundUiListener {
     id: ListenerId,
     listener: tokio::net::TcpListener,
+    /// Bound port, captured right after bind so a configured port of `0` still
+    /// contributes its real port to the `ws://` listeners' origin allowlist
+    /// (see `serve::transport::bind_and_spawn`).
+    pub(in crate::serve) bound_addr: SocketAddr,
 }
 
 pub(in crate::serve) async fn bind(
@@ -24,7 +28,11 @@ pub(in crate::serve) async fn bind(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
     tracing::info!(listener = %id, %bound_addr, "web UI listening");
-    Ok(BoundUiListener { id, listener })
+    Ok(BoundUiListener {
+        id,
+        listener,
+        bound_addr,
+    })
 }
 
 impl BoundUiListener {

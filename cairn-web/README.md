@@ -51,6 +51,15 @@ cairn-daemon \
   --web-dir /path/to/cairn-web/build
 ```
 
+If you pair a dedicated `--web-ui=host:port` listener with a `ws://` listener,
+the SPA (served on the UI port) reaches `/ws` cross-origin — a different port
+on the same host. The daemon auto-allows that origin: an `Origin` whose host
+matches the `/ws` request's own `Host` and whose port is a dedicated UI
+listener's port passes the allowlist with **no `--ws-origin` needed**. This
+holds only for the daemon's own UI listener ports on the same host; a UI hosted
+elsewhere (different host, or standalone static hosting — see below) still
+requires `--ws-origin`.
+
 `--web-dir` works with or without the daemon's `web-ui` cargo feature
 (compiled-in asset embed); `web-dir` is the simplest way to iterate on the
 build without rebuilding the daemon binary.
@@ -224,6 +233,7 @@ the element is already attached forces a clean re-attach (a fresh
 | Scenario | Need `--ws-origin`? |
 |---|---|
 | Daemon-served SPA (page and `/ws` on the same origin) | No — same-origin requests are always allowed. |
+| Dedicated `--web-ui=host:port` listener + a `ws://` listener on the same host | No — the UI listener's origin (same host, its own port) is auto-allowed on `/ws`. |
 | Standalone-hosted SPA, different origin than the daemon | Yes — add the standalone build's serving origin(s). |
 | Plain-HTML page embedding `<cairn-terminal endpoint=...>`, different origin than the daemon | Yes — same rule; the browser sends the page's origin on the WebSocket upgrade regardless of whether a full SvelteKit app or a bare custom element initiated it. |
 | Non-browser clients (the `cairn` CLI, WebTransport) | N/A — no `Origin` header (CLI/UDS) or no origin enforcement on this path (WebTransport) today. |
