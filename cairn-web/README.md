@@ -207,12 +207,12 @@ plugin-ecosystem groundwork).
 | `endpoint` | `.endpoint` | string | Standalone mode: `ws://`/`wss://`/`https://` daemon URL. Ignored if `.client` is set. |
 | `font-size` | `.fontSize` | number | Terminal font size in px. |
 | `font-family` | `.fontFamily` | string | CSS font-family string. |
-| — | `.client` | `DaemonClient` | Shared-client mode: an already-connected client. Property-only (not attribute-settable). |
+| — | `.client` | `DaemonClient` | Shared-client mode: an already-connected client. Practically usable only as a property (a `DaemonClient` instance can't round-trip through an HTML attribute string) — though Svelte's custom-element wrapper still lists `client` in `observedAttributes` for every declared prop, so a literal `client="..."` attribute is technically observed too; it just can't carry anything useful. |
 
 | Event | `detail` | Fires when |
 |---|---|---|
 | `cairn-attached` | `{ sessionId }` | The attach stream established (first snapshot received). |
-| `cairn-detached` | `{ sessionId, reason }` | The attach ended without the session exiting — `reason` is `"unmount"` (element removed from the DOM), `"disconnected[:message]"` (stream dropped unexpectedly), or `"error:<code>"` (an in-band `kicked`/`lagged` event from the daemon). |
+| `cairn-detached` | `{ sessionId, reason }` | The attach ended — `reason` is `"unmount"` (element removed from the DOM; fires on removal regardless of whether the session had already exited), `"disconnected[:message]"` (stream dropped unexpectedly), or `"error:<code>"` (an in-band `kicked`/`lagged` event from the daemon). |
 | `cairn-exited` | `ExitStatus` (`{ code?, signal?, unixMs, reason? }`) | The session's process exited. |
 
 Changing `session-id` (or switching between shared/standalone mode) after

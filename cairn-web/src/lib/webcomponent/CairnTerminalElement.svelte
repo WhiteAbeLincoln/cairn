@@ -54,12 +54,12 @@ interface Props {
 let { sessionId, endpoint, fontSize, fontFamily, client }: Props = $props();
 
 // The custom element instance, for dispatching `cairn-*` events on it. Valid
-// because `svelte.config.js` sets `compilerOptions.customElement: true`
-// (required project-wide for this file's own `<svelte:options
-// customElement>` tag to take effect at all — see that file's comment) and
-// this component declares that tag. `vite build --config vite.element.config.ts`
-// compiles this correctly (verified: the output calls `$$props.$$host`), but
-// this pinned svelte-check's generated type-checking shim doesn't yet model
+// because `svelte.config.js`'s `compilerOptions.customElement` is scoped (via
+// the function form) to recognize this file specifically — see that file's
+// comment — and this component declares its own `<svelte:options
+// customElement>` tag. `vite build --config vite.element.config.ts` compiles
+// this correctly (verified: the output calls `$$props.$$host`), but this
+// pinned svelte-check's generated type-checking shim doesn't yet model
 // the `$host()` rune's type (it reports the synthetic `$host` binding as used
 // before its own declaration) — a tooling gap, not a real error.
 // @ts-expect-error -- svelte-check doesn't yet type `$host()`; see above.
