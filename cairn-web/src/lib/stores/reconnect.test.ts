@@ -142,6 +142,31 @@ describe('ReconnectController', () => {
         });
     });
 
+    it('does not re-notify subscribers on successful steady-state probes while connected', async () => {
+        const probe = vi.fn(async () => {});
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            steadyIntervalMs: 15_000,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+        const statuses: string[] = [];
+        controller.onStatusChange((s) => statuses.push(s.state));
+
+        controller.start();
+        await flush();
+        expect(statuses).toEqual(['connecting', 'connected']);
+
+        await scheduler.fireNext(); // steady-state probe #1 succeeds
+        await scheduler.fireNext(); // steady-state probe #2 succeeds
+        expect(probe).toHaveBeenCalledTimes(3);
+        // Still probing on the steady interval, but no new notifications:
+        // "connected -> connected" is not a transition.
+        expect(statuses).toEqual(['connecting', 'connected']);
+        expect(controller.status).toEqual({ state: 'connected' });
+    });
+
     it('stop() prevents any further scheduled probe from running', async () => {
         const probe = vi.fn(async () => {
             throw new Error('down');

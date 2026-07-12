@@ -9,7 +9,9 @@ const { children } = $props();
 const needsManualEndpoint = $derived(getNeedsManualEndpoint());
 
 onMount(() => {
-    initConnection(window.location.href);
+    // initConnection never rejects (failures surface as the manual-endpoint
+    // screen), so no .catch() is needed on this intentionally-unawaited call.
+    void initConnection(window.location.href);
 });
 </script>
 

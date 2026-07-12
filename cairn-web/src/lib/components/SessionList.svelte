@@ -17,13 +17,20 @@ interface Props {
 
 const { sessions, loading, error }: Props = $props();
 
+// A signal-only exit (no exit code) is usually an intentional kill, not an
+// error, so it gets the neutral exited styling rather than the red one.
+function exitedCleanly(info: SessionInfo): boolean {
+    return info.exit !== undefined && (info.exit.code === 0 || info.exit.code === undefined);
+}
+
 function statusClass(info: SessionInfo): string {
     if (!info.exit) return 'running';
-    return info.exit.code === 0 ? 'exited-ok' : 'exited-err';
+    return exitedCleanly(info) ? 'exited-ok' : 'exited-err';
 }
 
 function statusLabel(info: SessionInfo): string {
     if (!info.exit) return 'Running';
+    if (info.exit.code === undefined) return 'Killed';
     return info.exit.code === 0 ? 'Exited' : 'Failed';
 }
 
@@ -74,7 +81,7 @@ function exitLabel(info: SessionInfo): string {
                 >
                 <span class="cell-exit" role="cell">
                     {#if session.exit}
-                        <span class="exit-badge" class:exit-ok={session.exit.code === 0}>
+                        <span class="exit-badge" class:exit-ok={exitedCleanly(session)}>
                             {exitLabel(session)}
                         </span>
                     {/if}

@@ -6,7 +6,7 @@
 -->
 <script lang="ts">
 import { goto } from '$app/navigation';
-import type { SessionSpec } from '$lib/protocol';
+import { buildSessionSpec, DEFAULT_SCROLLBACK_LINES } from '$lib/sessionSpecForm';
 import { getClient } from '$lib/stores/connection.svelte';
 
 let name = $state('');
@@ -15,28 +15,18 @@ let workdir = $state('');
 let showAdvanced = $state(false);
 let envInherit = $state(true);
 let envPairs = $state('');
-let scrollbackLines = $state(10_000);
-let idleTimeout = $state('');
+// Number inputs bind as `number | null` (`null` when cleared or invalid);
+// buildSessionSpec handles both shapes.
+let scrollbackLines = $state<number | null>(DEFAULT_SCROLLBACK_LINES);
+let idleTimeout = $state<number | null>(null);
 let tty = $state(true);
 let stdin = $state(true);
 let submitting = $state(false);
 let error = $state<string | undefined>(undefined);
 
-function parseEnv(text: string): [string, string][] {
-    return text
-        .split('\n')
-        .map((line) => line.trim())
-        .filter((line) => line.includes('='))
-        .map((line) => {
-            const idx = line.indexOf('=');
-            return [line.slice(0, idx), line.slice(idx + 1)] as [string, string];
-        });
-}
-
 async function handleSubmit(e: SubmitEvent): Promise<void> {
     e.preventDefault();
-    const trimmedCommand = command.trim();
-    if (!trimmedCommand || submitting) return;
+    if (!command.trim() || submitting) return;
 
     const client = getClient();
     if (!client) {
@@ -47,17 +37,17 @@ async function handleSubmit(e: SubmitEvent): Promise<void> {
     submitting = true;
     error = undefined;
     try {
-        const spec: SessionSpec = {
-            name: name.trim() || undefined,
-            command: trimmedCommand.split(/\s+/),
-            env: parseEnv(envPairs),
+        const spec = buildSessionSpec({
+            name,
+            command,
+            workdir,
+            envText: envPairs,
             envInherit,
-            workdir: workdir.trim() || undefined,
+            scrollbackLines,
+            idleTimeoutSecs: idleTimeout,
             tty,
             stdin,
-            idleTimeoutSecs: idleTimeout.trim() ? BigInt(idleTimeout.trim()) : undefined,
-            scrollbackLines,
-        };
+        });
         const info = await client.create(spec);
         await goto(`/sessions/${info.id}`);
     } catch (err) {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { DaemonClient, SessionInfo } from '$lib/protocol';
 import { ReconnectController } from './reconnect';
 import { SessionListEngine } from './sessionListEngine';
@@ -66,6 +66,33 @@ describe('SessionListEngine', () => {
         await engine.refresh(client);
         expect(engine.error).toBeUndefined();
         expect(engine.sessions).toEqual([sampleInfo]);
+    });
+
+    it('coalesces overlapping refreshes onto one in-flight fetch (no stale-overwrites-fresh race)', async () => {
+        const engine = new SessionListEngine();
+        let resolveList!: (v: SessionInfo[]) => void;
+        const listAll = vi.fn(
+            () =>
+                new Promise<SessionInfo[]>((resolve) => {
+                    resolveList = resolve;
+                }),
+        );
+        const client = fakeClient(listAll);
+
+        const first = engine.refresh(client);
+        const second = engine.refresh(client); // overlaps: must join, not re-fetch
+        expect(listAll).toHaveBeenCalledTimes(1);
+
+        resolveList([sampleInfo]);
+        await Promise.all([first, second]);
+        expect(engine.sessions).toEqual([sampleInfo]);
+
+        // Once settled, a new refresh really does fetch again.
+        const third = engine.refresh(client);
+        expect(listAll).toHaveBeenCalledTimes(2);
+        resolveList([]);
+        await third;
+        expect(engine.sessions).toEqual([]);
     });
 });
 

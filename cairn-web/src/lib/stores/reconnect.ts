@@ -100,7 +100,13 @@ export class ReconnectController {
             await this.#opts.probe();
             if (this.#stopped) return;
             this.#attempt = 0;
-            this.#setStatus({ state: 'connected' });
+            // Only notify on the connecting/reconnecting -> connected
+            // *transition* — a successful steady-state re-probe is not news,
+            // and re-notifying would make "refresh on reconnect" subscribers
+            // re-fetch every probe interval.
+            if (this.#status.state !== 'connected') {
+                this.#setStatus({ state: 'connected' });
+            }
             this.#scheduleNext(this.#opts.steadyIntervalMs ?? 15_000);
         } catch (err) {
             if (this.#stopped) return;

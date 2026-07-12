@@ -23,18 +23,28 @@ let manualError = $state<string | undefined>(undefined);
 let controller: ReconnectController | undefined;
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
 
-/** Resolve the daemon endpoint and start the connectivity loop. Call once, from the root layout. */
+/**
+ * Resolve the daemon endpoint and start the connectivity loop. Call once,
+ * from the root layout. Never rejects: any unexpected discovery failure
+ * falls through to the manual-endpoint screen with a visible error, so the
+ * caller doesn't need a `.catch()`.
+ */
 export async function initConnection(locationHref: string): Promise<void> {
-    const result = await discoverEndpoint({
-        locationHref,
-        fetchCairnJson,
-        readStored: () => loadStoredEndpoint(window.localStorage),
-    });
-    if (result.status === 'manual-required') {
+    try {
+        const result = await discoverEndpoint({
+            locationHref,
+            fetchCairnJson,
+            readStored: () => loadStoredEndpoint(window.localStorage),
+        });
+        if (result.status === 'manual-required') {
+            needsManualEndpoint = true;
+            return;
+        }
+        connectWith(result.endpoint);
+    } catch (err) {
+        manualError = err instanceof Error ? err.message : String(err);
         needsManualEndpoint = true;
-        return;
     }
-    connectWith(result.endpoint);
 }
 
 /** Submit a manually-entered endpoint (the Task 7 minimal fallback: a direct `ws://`/`wss://` URL). */

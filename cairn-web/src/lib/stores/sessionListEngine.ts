@@ -11,6 +11,7 @@ export class SessionListEngine {
     #sessions: SessionInfo[] = [];
     #loading = false;
     #error: string | undefined;
+    #inflight: Promise<void> | undefined;
     readonly #listeners = new Set<SessionListListener>();
 
     get sessions(): SessionInfo[] {
@@ -36,8 +37,21 @@ export class SessionListEngine {
      * throw lets a caller (e.g. `ReconnectController`'s probe) also treat this
      * as the connectivity check, so "on recovery, re-fetch the session list"
      * falls out of the reconnect loop without a separate callback.
+     *
+     * Overlapping calls coalesce onto the in-flight fetch (they get its
+     * promise), so a slow response can never race a faster later one and
+     * overwrite fresher data with stale.
      */
-    async refresh(client: DaemonClient): Promise<void> {
+    refresh(client: DaemonClient): Promise<void> {
+        if (this.#inflight) return this.#inflight;
+        const run = this.#doRefresh(client).finally(() => {
+            this.#inflight = undefined;
+        });
+        this.#inflight = run;
+        return run;
+    }
+
+    async #doRefresh(client: DaemonClient): Promise<void> {
         this.#loading = true;
         this.#notify();
         try {
