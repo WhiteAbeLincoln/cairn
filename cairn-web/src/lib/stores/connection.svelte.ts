@@ -7,9 +7,13 @@
 import { DaemonClient, wsDialer, wtDialer } from '$lib/protocol';
 import {
     type CairnJsonDoc,
+    clearStoredEndpoint,
     discoverEndpoint,
     type EndpointConfig,
     loadStoredEndpoint,
+    parseDirectWsUrl,
+    parseDirectWtEndpoint,
+    resolveFromBaseUrl,
     saveEndpoint,
 } from './endpoint';
 import { type ConnectionStatus, ReconnectController } from './reconnect';
@@ -47,17 +51,56 @@ export async function initConnection(locationHref: string): Promise<void> {
     }
 }
 
-/** Submit a manually-entered endpoint (the Task 7 minimal fallback: a direct `ws://`/`wss://` URL). */
-export function submitManualEndpoint(url: string): void {
-    const trimmed = url.trim();
-    if (!/^wss?:\/\//i.test(trimmed)) {
+/**
+ * Bootstrap from a daemon base URL (the primary standalone-hosting path):
+ * fetch that host's CORS-open `/cairn.json` and apply the normal
+ * WS-preferred/WT-fallback selection.
+ */
+export async function submitBaseUrl(url: string): Promise<void> {
+    const result = await resolveFromBaseUrl(url, fetchCairnJsonAt);
+    if (result.status === 'error') {
+        manualError = result.message;
+        return;
+    }
+    manualError = undefined;
+    saveEndpoint(window.localStorage, result.endpoint);
+    connectWith(result.endpoint);
+}
+
+/** Submit a direct `ws://`/`wss://` URL, bypassing `/cairn.json` discovery entirely. */
+export function submitDirectWs(url: string): void {
+    const ep = parseDirectWsUrl(url);
+    if (!ep) {
         manualError = 'Enter a ws:// or wss:// URL';
         return;
     }
     manualError = undefined;
-    const ep: EndpointConfig = { transport: 'ws', url: trimmed };
     saveEndpoint(window.localStorage, ep);
     connectWith(ep);
+}
+
+/** Submit a direct WebTransport endpoint (`https://` URL + optional self-signed cert hash). */
+export function submitDirectWt(url: string, certHash: string): void {
+    const result = parseDirectWtEndpoint(url, certHash);
+    if ('error' in result) {
+        manualError = result.error;
+        return;
+    }
+    manualError = undefined;
+    saveEndpoint(window.localStorage, result.endpoint);
+    connectWith(result.endpoint);
+}
+
+/** Forget the persisted endpoint and return to the manual-entry screen, e.g. to switch daemons. */
+export function forgetEndpoint(): void {
+    clearStoredEndpoint(window.localStorage);
+    controller?.stop();
+    controller = undefined;
+    client = undefined;
+    endpoint = undefined;
+    status = { state: 'connecting' };
+    manualError = undefined;
+    needsManualEndpoint = true;
 }
 
 export function getClient(): DaemonClient | undefined {
@@ -108,9 +151,14 @@ function connectWith(ep: EndpointConfig): void {
     next.start();
 }
 
-async function fetchCairnJson(): Promise<CairnJsonDoc | undefined> {
+function fetchCairnJson(): Promise<CairnJsonDoc | undefined> {
+    return fetchCairnJsonAt('/cairn.json');
+}
+
+/** Fetch and parse a `/cairn.json` document from an arbitrary (possibly cross-origin) URL. */
+async function fetchCairnJsonAt(url: string): Promise<CairnJsonDoc | undefined> {
     try {
-        const res = await fetch('/cairn.json');
+        const res = await fetch(url);
         if (!res.ok) return undefined;
         return (await res.json()) as CairnJsonDoc;
     } catch {

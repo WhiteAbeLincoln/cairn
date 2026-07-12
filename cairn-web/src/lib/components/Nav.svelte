@@ -1,8 +1,12 @@
 <script lang="ts">
 import { page } from '$app/state';
+import { forgetEndpoint, getConnectionEndpoint } from '$lib/stores/connection.svelte';
 import ConnectionIndicator from './ConnectionIndicator.svelte';
 
 const isActive = $derived(page.url.pathname.startsWith('/sessions'));
+// Only worth offering once *some* endpoint has been resolved — otherwise the
+// manual-entry screen is already showing.
+const hasEndpoint = $derived(!!getConnectionEndpoint());
 </script>
 
 <nav class="nav">
@@ -11,6 +15,11 @@ const isActive = $derived(page.url.pathname.startsWith('/sessions'));
         <a href="/sessions" class:active={isActive}>Sessions</a>
     </div>
     <ConnectionIndicator />
+    {#if hasEndpoint}
+        <button type="button" class="change-endpoint" onclick={forgetEndpoint}>
+            Change endpoint
+        </button>
+    {/if}
 </nav>
 
 <style>
@@ -53,6 +62,22 @@ const isActive = $derived(page.url.pathname.startsWith('/sessions'));
     }
 
     .nav-links a.active {
+        color: var(--color-text);
+        background: var(--color-surface-hover);
+    }
+
+    .change-endpoint {
+        background: none;
+        border: none;
+        padding: 0.375rem 0.5rem;
+        font-size: 0.75rem;
+        color: var(--color-text-muted);
+        cursor: pointer;
+        border-radius: var(--radius);
+        white-space: nowrap;
+    }
+
+    .change-endpoint:hover {
         color: var(--color-text);
         background: var(--color-surface-hover);
     }

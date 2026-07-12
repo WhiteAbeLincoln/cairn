@@ -9,14 +9,8 @@
 // and the server loop `for await`s the SDK async iterable — no spin loops
 // anywhere. The socket-level write backpressure lives in the ws transport.
 
+import type { AttachInit, ClientEvent, ExitStatus, ServerEvent, SessionId } from '$lib/protocol';
 import { Chan } from '$lib/protocol';
-import type {
-    AttachInit,
-    ClientEvent,
-    ExitStatus,
-    ServerEvent,
-    SessionId,
-} from '$lib/protocol';
 
 /**
  * The observable state of an attach, derived from the server-event stream and
