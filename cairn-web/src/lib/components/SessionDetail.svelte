@@ -1,13 +1,19 @@
 <!--
-  Stub session detail: metadata + Kill/Rename actions, no terminal yet (Task
-  8). Deliberately thin per the Task 7 brief — just enough to make navigation
-  from the list coherent and to exercise the kill/rename round-trip.
+  Session detail: header (back / name / Rename / Kill), the live terminal
+  filling the viewport, and a compact metadata bar. A session that was already
+  exited when the page loaded shows a static exit panel instead of attaching;
+  one that exits (or evicts us) while attached is handled by the terminal's own
+  overlay. Reconnect recovery is bridged in: a connection `connected` transition
+  bumps `reattachSignal`, which the terminal acts on only when disconnected.
 -->
 <script lang="ts">
-import { commandBasename, relativeTime } from '$lib/format';
+import { onMount, untrack } from 'svelte';
+import Terminal from '$lib/components/Terminal.svelte';
+import { commandBasename, describeExit, relativeTime } from '$lib/format';
 import type { SessionInfo } from '$lib/protocol';
-import { getClient } from '$lib/stores/connection.svelte';
+import { getClient, onConnectionStatusChange } from '$lib/stores/connection.svelte';
 import { refreshSessions } from '$lib/stores/sessions.svelte';
+import type { AttachPhase } from '$lib/terminal/attachController';
 
 interface Props {
     session: SessionInfo;
@@ -15,6 +21,14 @@ interface Props {
 }
 
 const { session, onUpdated }: Props = $props();
+
+const client = $derived(getClient());
+
+// Latched at mount (the view is keyed by session id, so this is per session):
+// only a session that was already exited when opened shows the static panel. A
+// live session that exits later intentionally keeps the terminal and its exit
+// overlay, so we read the initial value once via `untrack`.
+const startedExited = untrack(() => session.exit !== undefined);
 
 let killing = $state(false);
 let renaming = $state(false);
@@ -24,22 +38,32 @@ let renaming = $state(false);
 let renameValue = $state('');
 let editingName = $state(false);
 let actionError = $state<string | undefined>(undefined);
+let reattachSignal = $state(0);
 
-function exitSummary(info: SessionInfo): string {
-    if (!info.exit) return '';
-    const parts: string[] = [];
-    if (info.exit.code !== undefined) parts.push(`code ${info.exit.code}`);
-    if (info.exit.signal !== undefined) parts.push(`signal ${info.exit.signal}`);
-    if (info.exit.reason) parts.push(info.exit.reason);
-    return parts.join(', ') || 'exited';
-}
+// A connection `connected` transition (initial connect or reconnect recovery)
+// nudges the terminal to reattach if it dropped. Transitions only — the
+// reconnect controller already de-dupes steady-state re-probes.
+onMount(() =>
+    onConnectionStatusChange((s) => {
+        if (s.state === 'connected') reattachSignal += 1;
+    }),
+);
 
 async function refreshInfo(): Promise<void> {
-    const client = getClient();
-    if (!client) return;
-    const fresh = await client.inspect(session.id);
+    const c = getClient();
+    if (!c) return;
+    const fresh = await c.inspect(session.id);
     onUpdated(fresh);
     refreshSessions();
+}
+
+// Keep the metadata bar honest across the attach lifecycle: (re)attaching or
+// eviction changes the attached-client count, and an exit needs the exit tag.
+// Transient states (connecting/disconnected) carry no new server-side info.
+function handlePhase(phase: AttachPhase): void {
+    if (phase.kind === 'attached' || phase.kind === 'exited' || phase.kind === 'error') {
+        void refreshInfo();
+    }
 }
 
 async function handleKill(): Promise<void> {
@@ -123,34 +147,51 @@ async function handleRename(e: SubmitEvent): Promise<void> {
         <p class="banner-error">{actionError}</p>
     {/if}
 
-    {#if session.exit}
-        <p class="exit-banner">Exited — {exitSummary(session)}</p>
-    {/if}
+    <div class="terminal-area">
+        {#if startedExited}
+            <div class="exited-panel">
+                <p class="exited-title">Session exited</p>
+                <p class="muted">{session.exit ? describeExit(session.exit) : ''}</p>
+            </div>
+        {:else if client}
+            <Terminal {client} sessionId={session.id} {reattachSignal} onPhase={handlePhase} />
+        {:else}
+            <div class="exited-panel"><p class="muted">Disconnected</p></div>
+        {/if}
+    </div>
 
-    <div class="terminal-placeholder muted">Terminal attach arrives in a later task.</div>
-
-    <dl class="meta">
-        <div><dt>ID</dt><dd class="mono">{session.id}</dd></div>
-        <div><dt>Command</dt><dd class="mono">{session.spec.command.join(' ')}</dd></div>
+    <div class="meta-bar">
+        <span class="mono" title={session.spec.command.join(' ')}>
+            {commandBasename(session.spec.command)}
+        </span>
+        <span>{session.cols}×{session.rows}</span>
+        <span>created {relativeTime(session.createdAtUnixMs)}</span>
+        <span>{session.attachedClients.length} attached</span>
         {#if session.pid !== undefined}
-            <div><dt>PID</dt><dd>{session.pid}</dd></div>
+            <span>pid {session.pid}</span>
         {/if}
-        <div><dt>Size</dt><dd>{session.cols}×{session.rows}</dd></div>
-        <div><dt>Created</dt><dd>{relativeTime(session.createdAtUnixMs)}</dd></div>
-        <div><dt>Attached clients</dt><dd>{session.attachedClients.length}</dd></div>
-        {#if session.spec.workdir}
-            <div><dt>Workdir</dt><dd class="mono">{session.spec.workdir}</dd></div>
+        {#if session.exit}
+            <span class="exit-tag">exited — {describeExit(session.exit)}</span>
         {/if}
-    </dl>
+    </div>
 </div>
 
 <style>
+    .detail {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        /* Fill the flex-column main area so the terminal can take the viewport. */
+        flex: 1;
+        min-height: 0;
+    }
+
     .header {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 0.75rem;
-        margin-bottom: 1rem;
+        flex-shrink: 0;
     }
 
     .header h1 {
@@ -185,59 +226,51 @@ async function handleRename(e: SubmitEvent): Promise<void> {
         font-family: var(--font-mono);
     }
 
-    .exit-banner {
-        padding: 0.625rem 0.875rem;
-        background: var(--color-surface);
-        border: 1px solid var(--color-border);
-        border-radius: var(--radius);
-        margin-bottom: 1rem;
-        font-size: 0.875rem;
+    .terminal-area {
+        flex: 1;
+        min-height: 0;
+        /* Positioning context + definite size for the terminal, which fills it. */
+        position: relative;
     }
 
-    .terminal-placeholder {
+    .exited-panel {
+        position: absolute;
+        inset: 0;
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
-        min-height: 12rem;
-        border: 1px dashed var(--color-border);
+        gap: 0.5rem;
+        border: 1px solid var(--color-border);
         border-radius: var(--radius);
-        margin-bottom: 1.25rem;
-        font-size: 0.875rem;
+        background: var(--color-surface);
     }
 
-    .meta {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 0.5rem 1.5rem;
+    .exited-title {
         margin: 0;
+        font-weight: 600;
     }
 
-    .meta > div {
+    .meta-bar {
+        flex-shrink: 0;
         display: flex;
-        justify-content: space-between;
-        gap: 1rem;
-        padding: 0.5rem 0;
-        border-bottom: 1px solid var(--color-border);
-        font-size: 0.875rem;
-    }
-
-    .meta dt {
+        flex-wrap: wrap;
+        gap: 0.375rem 1rem;
+        padding-top: 0.25rem;
+        font-size: 0.8rem;
         color: var(--color-text-muted);
     }
 
-    .meta dd {
-        margin: 0;
-        text-align: right;
-        overflow-wrap: anywhere;
-    }
-
-    .mono {
+    .meta-bar .mono {
         font-family: var(--font-mono);
+        color: var(--color-text);
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
     }
 
-    @media (min-width: 640px) {
-        .meta {
-            grid-template-columns: 1fr 1fr;
-        }
+    .exit-tag {
+        color: var(--color-warning);
     }
 </style>

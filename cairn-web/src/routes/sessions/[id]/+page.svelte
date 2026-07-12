@@ -1,4 +1,5 @@
 <script lang="ts">
+import { untrack } from 'svelte';
 import { page } from '$app/state';
 import SessionDetail from '$lib/components/SessionDetail.svelte';
 import type { SessionInfo } from '$lib/protocol';
@@ -14,6 +15,15 @@ $effect(() => {
     // Re-run whenever the route param or connection status changes.
     const id = sessionId;
     if (!id) return;
+    // Navigated to a different session: drop the previous session's data so the
+    // keyed detail view (and its terminal) never renders stale for the new id.
+    // Read `session` untracked — this effect *writes* `session` (below), so a
+    // tracked read here would retrigger it in a tight inspect() loop.
+    const current = untrack(() => session);
+    if (current && current.id !== id) {
+        session = undefined;
+        error = undefined;
+    }
     if (status.state !== 'connected') return;
     const client = getClient();
     if (!client) return;
@@ -44,7 +54,9 @@ $effect(() => {
         <a href="/sessions">&larr; Back to sessions</a>
     </div>
 {:else if session}
-    <SessionDetail {session} onUpdated={(info) => (session = info)} />
+    {#key session.id}
+        <SessionDetail {session} onUpdated={(info) => (session = info)} />
+    {/key}
 {:else}
     <p class="muted">Loading…</p>
 {/if}

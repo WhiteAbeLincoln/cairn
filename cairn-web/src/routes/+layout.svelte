@@ -36,7 +36,12 @@ onMount(() => {
 
     .app-main {
         flex: 1;
+        min-height: 0;
         padding: 1rem;
+        /* A flex column so a page can opt into filling the viewport (the
+           terminal detail view uses `flex: 1`); block pages stack as before. */
+        display: flex;
+        flex-direction: column;
     }
 
     @media (min-width: 640px) {

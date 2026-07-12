@@ -24,6 +24,8 @@
         "vitest": "^3.0.0"
     },
     "dependencies": {
-        "@bytecodealliance/wrpc": "file:vendor/bytecodealliance-wrpc-0.1.0.tgz"
+        "@bytecodealliance/wrpc": "file:vendor/bytecodealliance-wrpc-0.1.0.tgz",
+        "@wterm/dom": "^0.3.0",
+        "@wterm/ghostty": "^0.3.0"
     }
 }
