@@ -7,9 +7,10 @@
 // error paths included, plus a CPU-regression guard for the ~600% busy-spin the
 // v1 client hit while attached to a quiet session.
 
+import { spawn as spawnProcess } from 'node:child_process';
 import { Chan } from '@bytecodealliance/wrpc';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { DaemonHarness, sampleCpuFraction } from './harness';
+import { DaemonHarness, parseCpuTime, sampleCpuFraction } from './harness';
 import {
     CairnError,
     type ClientEvent,
@@ -337,6 +338,40 @@ describe('sessions — attach', () => {
 });
 
 describe('CPU regression', () => {
+    // Non-vacuity guards: the idle assertion below is only meaningful if the
+    // sampler can actually observe CPU burn. A sampler stuck at 0 (ps format
+    // change, parse regression, wrong pid) would pass `0 < 0.1` forever, so
+    // both failure modes are pinned here in the committed suite.
+
+    it('parseCpuTime decodes every ps TIME format', () => {
+        expect(parseCpuTime('0:00.00')).toBe(0);
+        expect(parseCpuTime('0:02.50')).toBe(2.5);
+        expect(parseCpuTime('12:34.56')).toBeCloseTo(754.56);
+        expect(parseCpuTime('1:02:03.00')).toBe(3723);
+        expect(parseCpuTime('1-02:03:04.00')).toBe(93_784);
+    });
+
+    it('sampler reports a busy process as near one full core', async () => {
+        // A single-threaded spin loop must read close to 1.0; if the sampler
+        // were silently returning 0, this fails and exposes the vacuity.
+        const busy = spawnProcess(process.execPath, [
+            '-e',
+            'const s = Date.now(); while (Date.now() - s < 6000) { Math.sqrt(Math.random()); }',
+        ]);
+        try {
+            const pid = busy.pid;
+            if (pid === undefined) throw new Error('busy process has no pid');
+            const sample = await sampleCpuFraction(pid, 2_000);
+            console.log(
+                `[cpu] busy control: ${(sample.fraction * 100).toFixed(2)}% of one core ` +
+                    `(${sample.cpuDelta.toFixed(2)}s CPU over ${sample.wallSeconds.toFixed(2)}s wall)`,
+            );
+            expect(sample.fraction).toBeGreaterThan(0.5);
+        } finally {
+            busy.kill('SIGKILL');
+        }
+    });
+
     it('daemon stays near-idle while a client is attached to a quiet session', async () => {
         // The v1 web client pinned the daemon at ~600% CPU while attached to a
         // quiet session. Hold an idle attach open and assert the daemon accrues
@@ -350,8 +385,14 @@ describe('CPU regression', () => {
         );
         const it = stream[Symbol.asyncIterator]();
 
-        // Drain the stream in the background so the attach stays alive and any
-        // server chatter is consumed; the session is otherwise silent.
+        // Consume the snapshot first so the attach is fully established (client
+        // registered, subscription live) before the sampling window opens.
+        const first = await nextWithin(it, 5_000, 'attach snapshot');
+        expect(first.done).toBe(false);
+        expect((first.value as ServerEvent[])[0].tag).toBe('snapshot');
+
+        // Then drain the stream in the background so the attach stays alive and
+        // any server chatter is consumed; the session is otherwise silent.
         let draining = true;
         const drain = (async () => {
             try {
@@ -364,8 +405,6 @@ describe('CPU regression', () => {
             }
         })();
 
-        // First event (snapshot) is consumed by the drain loop; sample once the
-        // attach is established.
         const sample = await sampleCpuFraction(harness.pid, 6_000);
 
         // Assertion is deliberately generous (0.10 == 10% of one core) so CI
