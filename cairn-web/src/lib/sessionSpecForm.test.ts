@@ -77,6 +77,21 @@ describe('buildSessionSpec', () => {
         );
     });
 
+    // Scrollback is a wire `u32`: fractional/negative values would throw at the
+    // encoder, so they're coerced the same way idle timeout is.
+    it('truncates a fractional scrollback instead of throwing at the u32 encoder', () => {
+        expect(buildSessionSpec(form({ scrollbackLines: 500.9 })).scrollbackLines).toBe(500);
+    });
+
+    it('falls back to the default for negative and NaN scrollback', () => {
+        expect(buildSessionSpec(form({ scrollbackLines: -1 })).scrollbackLines).toBe(
+            DEFAULT_SCROLLBACK_LINES,
+        );
+        expect(buildSessionSpec(form({ scrollbackLines: Number.NaN })).scrollbackLines).toBe(
+            DEFAULT_SCROLLBACK_LINES,
+        );
+    });
+
     it('parses env text into pairs, splitting on the first = and skipping malformed lines', () => {
         const spec = buildSessionSpec(
             form({ envText: 'FOO=bar\n  BAZ=a=b \nnot-a-pair\n\nEMPTY=' }),

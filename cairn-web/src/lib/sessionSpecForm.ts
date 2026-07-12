@@ -44,7 +44,7 @@ export function buildSessionSpec(form: SessionFormValues): SessionSpec {
         tty: form.tty,
         stdin: form.stdin,
         idleTimeoutSecs: toIdleTimeout(form.idleTimeoutSecs),
-        scrollbackLines: form.scrollbackLines ?? DEFAULT_SCROLLBACK_LINES,
+        scrollbackLines: toScrollbackLines(form.scrollbackLines),
     };
 }
 
@@ -52,6 +52,17 @@ export function buildSessionSpec(form: SessionFormValues): SessionSpec {
 function toIdleTimeout(value: number | null): bigint | undefined {
     if (value === null || Number.isNaN(value) || value <= 0) return undefined;
     return BigInt(Math.trunc(value));
+}
+
+/**
+ * Coerce the scrollback input to a wire-safe `u32`. Empty/cleared (`null`),
+ * `NaN`, and negative values fall back to the default; fractional values are
+ * truncated (the same treatment as {@link toIdleTimeout}). Without this, a
+ * fractional or negative value would throw at the `u32` wire encoder.
+ */
+function toScrollbackLines(value: number | null): number {
+    if (value === null || Number.isNaN(value) || value < 0) return DEFAULT_SCROLLBACK_LINES;
+    return Math.trunc(value);
 }
 
 function parseEnvText(text: string): [string, string][] {
