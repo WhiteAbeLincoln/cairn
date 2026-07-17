@@ -1,9 +1,13 @@
-//! Pluggable authentication backends for WebTransport connections.
+//! Pluggable authentication backends for network-facing connections
+//! (WebTransport and WebSocket).
 
 pub mod none;
 pub mod tailscale;
+pub mod tailscale_serve;
 
 use std::net::SocketAddr;
+
+use http::HeaderMap;
 
 use crate::identity::Identity;
 
@@ -39,7 +43,17 @@ impl std::fmt::Display for AuthError {
 /// available on that transport.
 #[derive(Debug)]
 pub enum TransportContext {
-    WebTransport { peer_addr: SocketAddr },
+    WebTransport {
+        peer_addr: SocketAddr,
+    },
+    /// A WebSocket upgrade request. `headers` are the raw upgrade request
+    /// headers — carried through so backends like `tailscale-serve` can read
+    /// proxy-injected identity headers without the transport layer knowing
+    /// about any particular backend's header names.
+    Http {
+        peer_addr: SocketAddr,
+        headers: HeaderMap,
+    },
 }
 
 /// Information available to auth backends for identity resolution.
@@ -50,7 +64,8 @@ pub struct AuthContext {
     pub token: Option<String>,
 }
 
-/// A backend that can resolve the identity of a WebTransport connection.
+/// A backend that can resolve the identity of a connection, given whatever
+/// [`TransportContext`] its transport was accepted on.
 pub trait AuthBackend: Send + Sync {
     fn authenticate(
         &self,

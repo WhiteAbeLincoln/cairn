@@ -12,8 +12,13 @@ use crate::listen::ListenerConfig;
 /// Which authentication backend to enable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum AuthBackendKind {
-    /// Authenticate via the Tailscale LocalAPI (whois).
+    /// Authenticate via the Tailscale LocalAPI (whois). Works for direct
+    /// connections (WebTransport or WebSocket) from a tailnet peer address.
     Tailscale,
+    /// Trust `Tailscale-User-*` identity headers injected by a local
+    /// `tailscale serve` reverse proxy. Only honoured when the connection's
+    /// peer address is loopback — see `auth::tailscale_serve` for why.
+    TailscaleServe,
 }
 
 /// Controls the stderr log output format.
@@ -39,6 +44,21 @@ pub struct WtTlsIdentity {
     pub key: PathBuf,
 }
 
+/// How (if at all) the daemon serves the SPA web UI. See the design spec's
+/// "Web UI serving" section.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WebUiMode {
+    /// Bare `--web-ui`: attach SPA routes (and `/cairn.json`, which is
+    /// already always served) to every configured `ws://` listener.
+    /// Rejected at daemon construction if no `ws://` listener exists.
+    Attach,
+    /// `--web-ui=host:port`: bind a dedicated HTTP listener that serves only
+    /// the SPA (no `/ws`). SPA routes are NOT attached to any `ws://`
+    /// listener in this form. Valid even with only a WebTransport listener
+    /// configured.
+    Dedicated(Vec<std::net::SocketAddr>),
+}
+
 /// Resolved daemon configuration.
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -53,6 +73,16 @@ pub struct DaemonConfig {
     pub auth_timeout: Duration,
     pub shutdown_grace: Duration,
     pub default_shell: String,
+    /// Additional allowed `Origin` values for WebSocket upgrades, beyond the
+    /// request's own `Host`-derived origin. Empty by default (same-origin only).
+    pub ws_origins: Vec<String>,
+    /// `--web-ui` / `--web-ui=host:port`. `None` disables SPA serving
+    /// entirely (but `/cairn.json` is still served on every `ws://`
+    /// listener regardless of this setting).
+    pub web_ui: Option<WebUiMode>,
+    /// `--web-dir <path>`: serve SPA assets from this directory instead of
+    /// the compiled-in embed. Works with or without the `web-ui` feature.
+    pub web_dir: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -69,6 +99,9 @@ impl Default for DaemonConfig {
             auth_timeout: Duration::from_secs(5),
             shutdown_grace: Duration::from_secs(5),
             default_shell: default_shell(),
+            ws_origins: vec![],
+            web_ui: None,
+            web_dir: None,
         }
     }
 }

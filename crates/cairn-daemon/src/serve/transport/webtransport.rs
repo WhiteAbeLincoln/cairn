@@ -14,11 +14,14 @@ use crate::serve::wrpc::run_wrpc_server;
 
 use super::super::ListenerId;
 
-struct BoundWebTransportListener {
+pub(in crate::serve) struct BoundWebTransportListener {
     id: ListenerId,
     endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
     connect_timeout: std::time::Duration,
     pending_limit: Arc<Semaphore>,
+    /// `/cairn.json` facts for this listener, captured right after bind (see
+    /// `serve::mod`'s `CairnJsonInfo` assembly).
+    pub(in crate::serve) cairn_json: crate::serve::cairn_json::WtInfo,
 }
 
 struct AuthenticatedWtAccept {
@@ -41,7 +44,7 @@ pub(super) async fn bind(
     id: ListenerId,
     addr: SocketAddr,
     cfg: &crate::config::DaemonConfig,
-) -> anyhow::Result<impl TransportListener> {
+) -> anyhow::Result<BoundWebTransportListener> {
     let (tls, cert_path, key_path) = resolve_tls(cfg)?;
     let rt_dir = crate::config::runtime_dir();
     std::fs::create_dir_all(&rt_dir)?;
@@ -68,11 +71,24 @@ pub(super) async fn bind(
         "WT listening"
     );
 
+    // `--wt-cert`/`--wt-key` (a user-supplied cert) omits the pinned hash
+    // from `/cairn.json`: only the self-signed path needs out-of-band
+    // pinning to be trusted by WebTransport clients.
+    let cert_hash = if cfg.wt_tls.is_some() {
+        None
+    } else {
+        Some(tls.spki_hash_hex())
+    };
+
     Ok(BoundWebTransportListener {
         id,
         endpoint,
         connect_timeout: cfg.wt_connect_timeout,
         pending_limit: Arc::new(Semaphore::new(cfg.wt_max_pending)),
+        cairn_json: crate::serve::cairn_json::WtInfo {
+            port: bound_addr.port(),
+            cert_hash,
+        },
     })
 }
 

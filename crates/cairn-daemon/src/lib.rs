@@ -14,3 +14,4 @@ pub mod signal;
 pub mod spawn;
 pub mod telemetry;
 pub mod tls;
+pub mod ws;

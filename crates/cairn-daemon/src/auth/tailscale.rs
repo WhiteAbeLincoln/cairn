@@ -161,8 +161,13 @@ impl AuthBackend for TailscaleBackend {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Identity, AuthError>> + Send + '_>>
     {
         // SocketAddr is Copy; pull it out so the future only borrows `self`.
+        // whois only needs the peer address, so this backend is
+        // transport-agnostic: it resolves identity for direct (non-proxied)
+        // connections over either WebTransport or WebSocket from a tailnet
+        // IP, ignoring any HTTP headers on the latter.
         let peer_addr = match ctx.transport {
             TransportContext::WebTransport { peer_addr } => peer_addr,
+            TransportContext::Http { peer_addr, .. } => peer_addr,
         };
         Box::pin(self.do_authenticate(peer_addr))
     }

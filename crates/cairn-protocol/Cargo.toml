@@ -11,7 +11,7 @@ anyhow.workspace = true
 bytes.workspace = true
 futures.workspace = true
 tokio.workspace = true
-wit-bindgen-wrpc = { version = "0.10", default-features = false }
+wit-bindgen-wrpc = { version = "0.11", default-features = false }
 wrpc-transport.workspace = true
 
 [dev-dependencies]
