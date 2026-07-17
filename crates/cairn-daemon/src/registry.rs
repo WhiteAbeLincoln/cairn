@@ -280,7 +280,8 @@ impl SessionRegistry {
     /// Re-spawn under the same id/name; rejects a still-running session unless `force`.
     pub fn restart(&self, key: &str, force: bool, default_shell: &str) -> Result<(), DaemonError> {
         let entry = self.resolve(key).ok_or(DaemonError::NotFound)?;
-        if entry.handle().try_exit_status().is_none() && !force {
+        let old = entry.handle();
+        if old.try_exit_status().is_none() && !force {
             return Err(DaemonError::Running);
         }
         let opts = options_from(entry.spec.clone(), default_shell, entry.id.clone());
@@ -295,7 +296,19 @@ impl SessionRegistry {
             DaemonError::SpawnFailed
         })?;
         let handle: Arc<dyn PtySession> = Arc::new(handle);
-        entry.swap_running(handle.clone(), None); // old handle dropped -> Drop kills old child
+        entry.swap_running(handle.clone(), None);
+        // Explicit kill — Drop-on-refcount-zero is not a reliable trigger here:
+        // the exit watcher (below, and any attached client's handler) holds its
+        // own clone of `old` for as long as it's awaiting `wait()`/streaming, so
+        // dropping the registry's own reference doesn't guarantee the strong
+        // count hits zero. Unconditional and best-effort: `signal()` is documented
+        // Ok-if-already-exited, so this is a no-op on the non-force path (the
+        // child is already dead there) and a real kill on the force path.
+        tokio::spawn(async move {
+            let _ = old
+                .signal(nix::sys::signal::Signal::SIGKILL, Some("restarted".into()))
+                .await;
+        });
         let _ = self.events.send(RegistryEvent::Changed {
             id: entry.id.clone(),
         });
@@ -456,6 +469,24 @@ mod tests {
         // Session still resolves under the same id.
         let e = reg.resolve(&info.id).expect("still in registry");
         assert_eq!(e.id, info.id);
+    }
+
+    #[tokio::test]
+    async fn force_restart_kills_old_child() {
+        let reg = SessionRegistry::new();
+        let info = reg
+            .create(spec(Some("worker")), "/bin/sh")
+            .await
+            .expect("create");
+        // Capture the pre-restart handle so we can observe whether the OLD
+        // child actually dies, not just that a new one gets spawned.
+        let old = reg.resolve(&info.id).expect("resolve").handle();
+        reg.restart(&info.id, true, "/bin/sh")
+            .expect("force restart");
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), old.wait())
+            .await
+            .expect("old child killed within timeout");
+        assert_eq!(status.reason(), Some("restarted"));
     }
 
     #[tokio::test]
