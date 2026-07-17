@@ -23,6 +23,7 @@ import {
     saveEndpoint,
 } from './endpoint';
 import { type ConnectionStatus, ReconnectController } from './reconnect';
+import { sessionListEngine } from './sessionListEngine';
 
 let client = $state<DaemonClient | undefined>(undefined);
 let endpoint = $state<EndpointConfig | undefined>(undefined);
@@ -102,7 +103,12 @@ export function submitDirectWt(url: string, certHash: string): void {
 /** Forget the persisted endpoint and return to the manual-entry screen, e.g. to switch daemons. */
 export function forgetEndpoint(): void {
     clearStoredEndpoint(window.localStorage);
+    // Stop the controller (aborting its stale watch stream) before resetting
+    // the engine — otherwise a straggling event from the old stream could
+    // repopulate the list right after reset() clears it. The `signal.aborted`
+    // guard in `run` below is the backstop if a stale settle lands anyway.
     controller?.stop();
+    sessionListEngine.reset();
     controller = undefined;
     controlDialer?.close();
     controlDialer = undefined;
@@ -133,7 +139,7 @@ export function getManualError(): string | undefined {
     return manualError;
 }
 
-/** Notified on every connection status transition — used by `sessions.svelte.ts` to refresh on (re)connect. */
+/** Notified on every connection status transition — used by `SessionDetail.svelte` to nudge a reattach on recovery. */
 export function onConnectionStatusChange(fn: (status: ConnectionStatus) => void): () => void {
     statusListeners.add(fn);
     return () => statusListeners.delete(fn);
@@ -142,22 +148,31 @@ export function onConnectionStatusChange(fn: (status: ConnectionStatus) => void)
 function connectWith(ep: EndpointConfig): void {
     endpoint = ep;
     needsManualEndpoint = false;
-    // Retire the previous connection: stop its probe loop and close its
-    // control socket — without the close, the old mux socket stays open on
-    // both ends (the daemon's keepalive pings keep it warm), leaking one
-    // socket + daemon serve loop per endpoint switch.
-    controller?.stop();
+    // Retire the previous connection (e.g. switching daemons): stop its
+    // controller (aborting its stale watch stream) BEFORE resetting the
+    // engine — otherwise a straggling event from the old stream could
+    // repopulate the list right after reset() clears it (the `signal.aborted`
+    // guard in `run` below is the backstop if a stale settle lands anyway) —
+    // and close its control socket: without the close, the old mux socket
+    // stays open on both ends (the daemon's keepalive pings keep it warm),
+    // leaking one socket + daemon serve loop per endpoint switch.
+    if (controller) {
+        controller.stop();
+        sessionListEngine.reset();
+    }
     controlDialer?.close();
     controlDialer = undefined;
 
     const isWs = ep.transport === 'ws';
     let c: DaemonClient;
     if (isWs) {
-        // Control traffic (unary + wait) rides one persistent muxed socket;
-        // attach/logs/send keep dedicated one-shot sockets so bulk streams
-        // stay off the control connection. `onDown` kicks whatever controller
-        // is current when the socket dies (retired dialers suppress it).
-        const control = wsMuxDialer(ep.url, { onDown: () => controller?.kick() });
+        // Control traffic (unary, wait, watch-sessions) rides one persistent
+        // muxed socket; attach/logs/send keep dedicated one-shot sockets so
+        // bulk streams stay off the control connection. No `onDown` hook: the
+        // watch stream rides this socket, so socket death fails its channel
+        // read in the same event-handler turn — the run settling below IS the
+        // down signal.
+        const control = wsMuxDialer(ep.url);
         controlDialer = control;
         c = new DaemonClient(control, wsDialer(ep.url));
     } else {
@@ -166,14 +181,19 @@ function connectWith(ep: EndpointConfig): void {
     client = c;
 
     const next = new ReconnectController({
-        // A cheap, data-free connectivity check — keeps the connection status
-        // independent of any particular RPC (sessions, attach, ...).
-        probe: () => c.version().then(() => undefined),
-        // Over WS the steady probe is only a fallback watchdog — a dead muxed
-        // socket kicks an immediate re-probe via `onDown` — so it can be
-        // lazy. WebTransport has no equivalent death signal, so it keeps the
-        // controller's tighter default cadence.
-        ...(isWs ? { steadyIntervalMs: 30_000 } : {}),
+        // The watch stream is both the data feed and the liveness signal: its
+        // death (resolve or reject) is what "disconnected" means now.
+        run: async (onUp, signal) => {
+            let live = false;
+            for await (const ev of c.watchSessions(signal)) {
+                if (signal.aborted) return; // stale stream must not touch shared state
+                if (!live) {
+                    live = true;
+                    onUp();
+                }
+                sessionListEngine.applyEvent(ev);
+            }
+        },
     });
     next.onStatusChange((s) => {
         status = s;

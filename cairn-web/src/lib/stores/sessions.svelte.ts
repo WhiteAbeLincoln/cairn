@@ -1,28 +1,18 @@
-// Thin Svelte 5 runes wrapper over `SessionListEngine`. Subscribes to the
-// connection store so the list is (re-)fetched automatically whenever
-// connectivity is (re)established — see the design spec: "on recovery,
-// re-fetch the session list."
+// Thin Svelte 5 runes wrapper over the shared `sessionListEngine` singleton.
+// The engine is fed by `connection.svelte.ts`'s `ReconnectController` driving
+// the daemon's `watch-sessions` push stream — there's no more polling or
+// reconnect-triggered refresh to wire up here; this module's only job is to
+// mirror the singleton's `sessions`/`loading` into `$state` for the UI.
 
 import type { SessionInfo } from '$lib/protocol';
-import { getClient, onConnectionStatusChange } from './connection.svelte';
-import { SessionListEngine } from './sessionListEngine';
+import { sessionListEngine } from './sessionListEngine';
 
-const engine = new SessionListEngine();
+let sessions = $state<SessionInfo[]>(sessionListEngine.sessions);
+let loading = $state(sessionListEngine.loading);
 
-let sessions = $state<SessionInfo[]>([]);
-let loading = $state(false);
-let error = $state<string | undefined>(undefined);
-
-engine.subscribe(() => {
-    sessions = engine.sessions;
-    loading = engine.loading;
-    error = engine.error;
-});
-
-onConnectionStatusChange((status) => {
-    if (status.state === 'connected') {
-        refreshSessions();
-    }
+sessionListEngine.subscribe(() => {
+    sessions = sessionListEngine.sessions;
+    loading = sessionListEngine.loading;
 });
 
 export function getSessionList() {
@@ -33,17 +23,5 @@ export function getSessionList() {
         get loading() {
             return loading;
         },
-        get error() {
-            return error;
-        },
     };
-}
-
-/** Re-fetch the session list. A no-op if the client isn't connected yet; failures are recorded in `error`, not thrown. */
-export function refreshSessions(): void {
-    const client = getClient();
-    if (!client) return;
-    engine.refresh(client).catch(() => {
-        // Already surfaced via `engine.error` (read through the `error` getter above).
-    });
 }

@@ -77,9 +77,24 @@ export class DaemonClient {
      * of every current session; subsequent events are `upsert` (created or
      * changed) and `removed` (gone). Wire batches are flattened so each
      * yielded item is a single typed event, not a batch.
+     *
+     * `signal` lets a caller (the `ReconnectController`) cancel a stream it no
+     * longer wants. Closing the transport is the only way to unblock an async
+     * iterator parked on a network read, so abort closes it explicitly rather
+     * than relying on the caller to stop iterating; the `for await` below then
+     * ends on its own once the underlying read resolves to EOF, and `finally`
+     * runs as it would for a normal stream end. Already-aborted signals skip
+     * dialing entirely — there's nothing to close yet.
      */
-    async *watchSessions(): AsyncIterable<SessionEvent> {
+    async *watchSessions(signal?: AbortSignal): AsyncIterable<SessionEvent> {
+        if (signal?.aborted) return;
         const transport = await this.#control();
+        const onAbort = () => closeTransport(transport);
+        signal?.addEventListener('abort', onAbort);
+        // Dialing is async: the signal may have been aborted while it was in
+        // flight, in which case the listener above registered too late to see
+        // the event fire. Catch that race explicitly.
+        if (signal?.aborted) onAbort();
         try {
             const { results, done } = await invoke(
                 transport,
@@ -97,6 +112,7 @@ export class DaemonClient {
             }
             await done;
         } finally {
+            signal?.removeEventListener('abort', onAbort);
             closeTransport(transport);
         }
     }

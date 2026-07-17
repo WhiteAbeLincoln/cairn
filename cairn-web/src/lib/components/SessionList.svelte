@@ -12,10 +12,9 @@ import type { SessionInfo } from '$lib/protocol';
 interface Props {
     sessions: SessionInfo[];
     loading: boolean;
-    error?: string;
 }
 
-const { sessions, loading, error }: Props = $props();
+const { sessions, loading }: Props = $props();
 
 // A signal-only exit (no exit code) is usually an intentional kill, not an
 // error, so it gets the neutral exited styling rather than the red one.
@@ -45,10 +44,6 @@ function exitLabel(info: SessionInfo): string {
     return 'exited';
 }
 </script>
-
-{#if error}
-    <p class="banner-error">Failed to load sessions: {error}</p>
-{/if}
 
 {#if loading && sessions.length === 0}
     <p class="muted">Loading sessions…</p>
