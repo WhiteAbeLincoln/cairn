@@ -3,7 +3,13 @@ import { accept, Chan, t } from '@bytecodealliance/wrpc';
 import { describe, expect, it } from 'vitest';
 import { DaemonClient } from './client';
 import type { Dialer, Transport } from './transport';
-import { CairnError, type ClientEvent, type SessionInfo, type SessionSpec } from './types';
+import {
+    CairnError,
+    type ClientEvent,
+    type SessionEvent,
+    type SessionInfo,
+    type SessionSpec,
+} from './types';
 import * as wit from './wit';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -40,6 +46,13 @@ const sampleInfo: SessionInfo = {
     exit: undefined,
     spec: sampleSpec,
 };
+
+/** A distinct `SessionInfo` for watch-sessions tests, where multiple sessions appear at once. */
+const infoVariant = (n: number): SessionInfo => ({
+    ...sampleInfo,
+    id: `018f9a2b-0000-7000-8000-00000000000${n}`,
+    name: `demo-${n}`,
+});
 
 /** A decoded variant `{ tag, val? }`. */
 type RawVariant = { tag: string; val?: Value };
@@ -102,6 +115,21 @@ class FakeDaemon {
                         [{ tag: 'ok', val: asValue(sampleInfo) }],
                     );
                 }
+                return;
+            }
+            case 'watch-sessions': {
+                const { done } = await inv.receiveParams([t.option(wit.callContext)]);
+                await done;
+                const source: AsyncIterable<Value[]> = (async function* () {
+                    yield [
+                        { tag: 'snapshot', val: [asValue(sampleInfo), asValue(infoVariant(2))] },
+                    ];
+                    yield [
+                        { tag: 'upsert', val: asValue(infoVariant(3)) },
+                        { tag: 'upsert', val: asValue(infoVariant(4)) },
+                    ];
+                })();
+                await inv.sendResults([t.stream(wit.sessionEvent)], [source]);
                 return;
             }
             case 'create': {
@@ -354,6 +382,21 @@ describe('DaemonClient round-trips', () => {
         expect(fake.errors).toEqual([]);
     });
 
+    it('watchSessions flattens wire batches into individual typed events', async () => {
+        const { fake, client } = fixture();
+        const events: SessionEvent[] = [];
+        for await (const event of client.watchSessions()) {
+            events.push(event);
+        }
+        expect(events).toEqual([
+            { tag: 'snapshot', val: [sampleInfo, infoVariant(2)] },
+            { tag: 'upsert', val: infoVariant(3) },
+            { tag: 'upsert', val: infoVariant(4) },
+        ]);
+        await fake.settle();
+        expect(fake.errors).toEqual([]);
+    });
+
     it('create round-trips the full session spec', async () => {
         const { fake, client } = fixture();
         const info = await client.create(sampleSpec);
@@ -533,7 +576,7 @@ describe('DaemonClient dialer routing', () => {
         }
     }
 
-    it('routes unary methods and wait via control, streaming methods via streams', async () => {
+    it('routes unary methods, wait, and watchSessions via control, streaming methods via streams', async () => {
         const fake = new FakeDaemon();
         const control = counted(fake.dialer());
         const streams = counted(fake.dialer());
@@ -550,7 +593,12 @@ describe('DaemonClient dialer routing', () => {
         await client.whoami();
         await client.authenticate('good');
         await client.wait(sampleInfo.id);
-        expect(control.count()).toBe(11);
+        // watch-sessions doubles as the control connection's liveness signal,
+        // so it must ride control, not a dedicated streams socket.
+        for await (const _event of client.watchSessions()) {
+            // drain to completion
+        }
+        expect(control.count()).toBe(12);
         expect(streams.count()).toBe(0);
 
         for await (const _batch of client.logs(sampleInfo.id, { tag: 'tail', val: 1 }, false)) {
@@ -562,7 +610,7 @@ describe('DaemonClient dialer routing', () => {
         }
         await client.send(sampleInfo.id, input());
         expect(streams.count()).toBe(3);
-        expect(control.count()).toBe(11);
+        expect(control.count()).toBe(12);
 
         await fake.settle();
         expect(fake.errors).toEqual([]);

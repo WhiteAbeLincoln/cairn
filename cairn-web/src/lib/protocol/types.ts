@@ -103,6 +103,12 @@ export type ServerEvent =
     | { tag: 'exited'; val: ExitStatus }
     | { tag: 'error'; val: CairnError };
 
+/** `types.session-event` — events on a watch-sessions stream. */
+export type SessionEvent =
+    | { tag: 'snapshot'; val: SessionInfo[] }
+    | { tag: 'upsert'; val: SessionInfo }
+    | { tag: 'removed'; val: SessionId };
+
 /** `meta.version-info`. */
 export interface VersionInfo {
     daemon: string;

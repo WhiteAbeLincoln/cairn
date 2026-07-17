@@ -128,6 +128,13 @@ export const serverEvent: Type = t.variant({
     error: error,
 });
 
+/** `types.session-event`. */
+export const sessionEvent: Type = t.variant({
+    snapshot: t.list(sessionInfo),
+    upsert: sessionInfo,
+    removed: t.string,
+});
+
 /** `meta.version-info`. */
 export const versionInfo: Type = t.record({
     daemon: t.string,

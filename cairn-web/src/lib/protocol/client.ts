@@ -8,6 +8,7 @@ import {
     type ExitStatus,
     type LogWindow,
     type ServerEvent,
+    type SessionEvent,
     type SessionId,
     type SessionInfo,
     type SessionSpec,
@@ -23,14 +24,16 @@ import * as wit from './wit';
  * injected {@link Dialer}, runs exactly one wRPC invocation over it, and closes
  * it when the call (or its stream) completes. Unary methods return promises
  * that reject with a {@link CairnError} when the daemon returns `result::err`;
- * streaming methods (`attach`, `logs`) return async iterables and `wait`
- * returns a promise resolved by the daemon's `future`.
+ * streaming methods (`attach`, `logs`, `watchSessions`) return async iterables
+ * and `wait` returns a promise resolved by the daemon's `future`.
  *
- * Two dialer roles: unary methods and `wait` dial `control`, while `attach`,
- * `logs`, and `send` dial `streams`. This keeps bulk PTY/log streams off a
- * persistent multiplexed control connection (head-of-line blocking, buffer
- * pressure); `wait` is long-lived but tiny — a single `future` result — so it
- * rides `control`. Constructing with one dialer uses it for both roles.
+ * Two dialer roles: unary methods, `wait`, and `watchSessions` dial
+ * `control`, while `attach`, `logs`, and `send` dial `streams`. This keeps
+ * bulk PTY/log streams off a persistent multiplexed control connection
+ * (head-of-line blocking, buffer pressure); `wait` and `watchSessions` are
+ * long-lived but tiny — a single `future` result, sparse session events — so
+ * they ride `control`, where the watch stream doubles as the connection's
+ * liveness signal. Constructing with one dialer uses it for both roles.
  *
  * The `ctx` (`call-context`) parameter of every WIT method is sent as `none`
  * for now; trace propagation can be threaded through later without changing
@@ -67,6 +70,35 @@ export class DaemonClient {
             [t.result(wit.sessionInfo, wit.error)],
         );
         return unwrapResult<SessionInfo>(res);
+    }
+
+    /**
+     * Watch the session list. The first yielded event is always a `snapshot`
+     * of every current session; subsequent events are `upsert` (created or
+     * changed) and `removed` (gone). Wire batches are flattened so each
+     * yielded item is a single typed event, not a batch.
+     */
+    async *watchSessions(): AsyncIterable<SessionEvent> {
+        const transport = await this.#control();
+        try {
+            const { results, done } = await invoke(
+                transport,
+                wit.SESSIONS_INSTANCE,
+                'watch-sessions',
+                [t.option(wit.callContext)],
+                asArgs([NO_CTX]),
+                [t.stream(wit.sessionEvent)],
+            );
+            const stream = results[0] as AsyncIterable<RawVariant[]>;
+            for await (const batch of stream) {
+                for (const event of batch) {
+                    yield event as SessionEvent;
+                }
+            }
+            await done;
+        } finally {
+            closeTransport(transport);
+        }
     }
 
     async create(spec: SessionSpec): Promise<SessionInfo> {
