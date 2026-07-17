@@ -74,7 +74,7 @@ WIT schema, handlers, or the registry.
 | Decision | Choice | Rationale |
 |---|---|---|
 | Protocol selection | `Sec-WebSocket-Protocol: cairn-mux-v0` on the existing `/ws` | RFC 6455's purpose-built mechanism; no discovery (`/cairn.json`) changes; version negotiation built into the name |
-| One-shot protocol | Kept, served when no subprotocol offered | Future split: low-priority muxed events vs. dedicated sockets for high-throughput streams |
+| One-shot protocol | Kept: the default when no subprotocol is offered, and explicitly selectable as `cairn-oneshot-v0` | Future split: low-priority muxed events vs. dedicated sockets for high-throughput streams. The explicit name completes the negotiation vocabulary and pins semantics against future default changes |
 | Mux scope | Unary calls + `wait` on the mux; `attach`/`logs`/`send` on dedicated one-shot sockets | PTY throughput never contends with control traffic; mux flow control stays trivial |
 | Mux protocol | Minimal cairn-owned framing (below) | yamux's only maintained JS impl drags in libp2p's interface stack — a bigger shim than this whole protocol; upstream contribution contradicts wrpc's direction |
 | Flow control | Socket-level only | Mux carries small frames only; bounded per-channel buffers + whole-socket read pause on the daemon |
@@ -84,10 +84,18 @@ WIT schema, handlers, or the registry.
 
 ### Negotiation
 
-The client opens `/ws` offering `cairn-mux-v0` in `Sec-WebSocket-Protocol`. The daemon echoes it
-in the 101 response and serves muxed mode. A client offering no subprotocol gets the existing
-one-shot protocol unchanged. There is no client-side fallback: if the daemon does not echo, the
-browser fails the connection and the reconnect machinery reports it like any outage.
+The daemon recognizes two subprotocol names on `/ws`: `cairn-mux-v0` (this document) and
+`cairn-oneshot-v0` (an explicit name for the existing one-shot protocol — upstream
+`wrpc-websockets`' convention, one invocation per socket, empty-text-frame EOF sentinel).
+
+| Client offers | Daemon speaks |
+|---|---|
+| no subprotocol | one-shot (unchanged; stock `wrpc-websockets` clients keep working) |
+| a list of names | the first offered name the daemon supports, echoed in the 101 |
+| only unsupported names | nothing echoed ⇒ the browser fails the connection |
+
+There is no client-side fallback logic: if the daemon does not echo, the connection fails and
+the reconnect machinery reports it like any outage.
 
 ### Framing
 
@@ -143,8 +151,9 @@ detects failures pings cannot: a wedged daemon, and silent path death invisible 
 ## Daemon design (Rust)
 
 **Negotiation in `serve/http.rs`.** The `/ws` upgrade handler additionally parses
-`Sec-WebSocket-Protocol`; if the offer list contains `cairn-mux-v0`, the 101 echoes it and the
-connection goes to the muxed serve path. Otherwise the existing one-shot path runs untouched.
+`Sec-WebSocket-Protocol` and selects the first offered name it supports (`cairn-mux-v0` ⇒ muxed
+serve path, `cairn-oneshot-v0` ⇒ one-shot path), echoing it in the 101. No offer ⇒ the one-shot
+path with no echo, exactly as today.
 Auth and origin policy run once at upgrade, as today; every channel inherits the connection's
 `ConnCtx`.
 
@@ -226,7 +235,9 @@ Behavioral tests through real interfaces (per repo test discipline):
 
 Daemon integration tests alongside the existing harness: a real WS listener with a
 `tokio-websockets` client negotiating `cairn-mux-v0` running concurrent `version` + `list-all`
-over one socket; and a regression test that a no-subprotocol client still gets one-shot behavior.
+over one socket; and regression tests that a no-subprotocol client still gets one-shot behavior
+(without a subprotocol echoed) and that offering `cairn-oneshot-v0` selects the same behavior
+explicitly (with the echo).
 
 **TS** — unit tests for `wsMuxDialer` against a mock WebSocket: header framing, demux routes
 payloads to the correct channel's Transport, FIN ⇒ EOF, RST ⇒ error, socket drop fails all live
