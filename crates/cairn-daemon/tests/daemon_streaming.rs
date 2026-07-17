@@ -1,8 +1,10 @@
 //! Direct handler tests for the streaming session operations:
 //! wait, send (Tasks 2–3), logs (Task 4), attach (Task 5).
 
+use std::collections::HashSet;
+
 use cairn_daemon::{config::DaemonConfig, daemon::Daemon};
-use cairn_protocol::cairn::daemon::types::{LogWindow, SessionSpec};
+use cairn_protocol::cairn::daemon::types::{LogWindow, SessionEvent, SessionSpec};
 use futures::StreamExt as _;
 
 fn test_daemon() -> Daemon {
@@ -394,5 +396,156 @@ async fn kick_emits_kicked_event_then_ends() {
     assert!(
         saw_kicked,
         "kick should emit a client.kicked error event before ending"
+    );
+}
+
+// ── watch-sessions ────────────────────────────────────────────────────────
+
+// Drain the next session-event batch within a timeout, flattened.
+async fn next_watch(
+    s: &mut (impl futures::Stream<Item = Vec<SessionEvent>> + Unpin),
+) -> Vec<SessionEvent> {
+    tokio::time::timeout(std::time::Duration::from_secs(2), s.next())
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Poll `stream` (bounded) until a batch contains an event matching `pred`.
+async fn wait_for(
+    stream: &mut (impl futures::Stream<Item = Vec<SessionEvent>> + Unpin),
+    pred: impl Fn(&SessionEvent) -> bool,
+) -> bool {
+    for _ in 0..20 {
+        let batch = next_watch(stream).await;
+        if batch.iter().any(&pred) {
+            return true;
+        }
+    }
+    false
+}
+
+#[tokio::test]
+async fn watch_sessions_first_item_is_snapshot_of_preexisting_sessions() {
+    let daemon = test_daemon();
+    let a = create(&daemon, "wa", &["sleep", "100"]).await;
+    let b = create(&daemon, "wb", &["sleep", "100"]).await;
+
+    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup");
+    let first = next_watch(&mut stream).await;
+
+    assert_eq!(first.len(), 1, "first batch should be exactly one Snapshot");
+    match &first[0] {
+        SessionEvent::Snapshot(list) => {
+            let ids: HashSet<&str> = list.iter().map(|s| s.id.as_str()).collect();
+            assert_eq!(
+                ids,
+                HashSet::from([a.id.as_str(), b.id.as_str()]),
+                "snapshot must contain exactly the pre-existing sessions"
+            );
+        }
+        other => panic!("expected Snapshot, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn watch_sessions_create_emits_upsert_with_new_id() {
+    let daemon = test_daemon();
+    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup");
+    let _snapshot = next_watch(&mut stream).await;
+
+    let info = create(&daemon, "wc", &["sleep", "100"]).await;
+
+    let saw = wait_for(
+        &mut stream,
+        |ev| matches!(ev, SessionEvent::Upsert(i) if i.id == info.id),
+    )
+    .await;
+    assert!(saw, "expected an Upsert carrying the newly created id");
+}
+
+#[tokio::test]
+async fn watch_sessions_rename_emits_upsert_with_new_name() {
+    let daemon = test_daemon();
+    let info = create(&daemon, "wd", &["sleep", "100"]).await;
+
+    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup");
+    let _snapshot = next_watch(&mut stream).await;
+
+    daemon
+        .registry
+        .rename(&info.id, "wd-renamed".to_string())
+        .expect("rename");
+
+    let saw = wait_for(&mut stream, |ev| {
+        matches!(ev, SessionEvent::Upsert(i) if i.id == info.id && i.name.as_deref() == Some("wd-renamed"))
+    })
+    .await;
+    assert!(saw, "expected an Upsert carrying the new name");
+}
+
+#[tokio::test]
+async fn watch_sessions_exit_emits_upsert_with_exit_code() {
+    let daemon = test_daemon();
+    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup");
+    let _snapshot = next_watch(&mut stream).await;
+
+    // Exercises Task 1's exit watcher through the full watch-sessions pipeline.
+    let info = create(&daemon, "we", &["sh", "-c", "exit 3"]).await;
+
+    let saw = wait_for(&mut stream, |ev| {
+        matches!(
+            ev,
+            SessionEvent::Upsert(i)
+                if i.id == info.id
+                    && i.exit.as_ref().and_then(|e| e.code) == Some(3)
+        )
+    })
+    .await;
+    assert!(saw, "expected an Upsert whose exit.code is Some(3)");
+}
+
+#[tokio::test]
+async fn watch_sessions_two_subscribers_each_get_snapshot_and_shared_upsert() {
+    let daemon = test_daemon();
+    let mut s1 = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup (1)");
+    let mut s2 = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup (2)");
+
+    let first1 = next_watch(&mut s1).await;
+    let first2 = next_watch(&mut s2).await;
+    assert!(
+        matches!(first1.first(), Some(SessionEvent::Snapshot(_))),
+        "subscriber 1's first event must be Snapshot"
+    );
+    assert!(
+        matches!(first2.first(), Some(SessionEvent::Snapshot(_))),
+        "subscriber 2's first event must be Snapshot"
+    );
+
+    let info = create(&daemon, "wf", &["sleep", "100"]).await;
+
+    let pred = |ev: &SessionEvent| matches!(ev, SessionEvent::Upsert(i) if i.id == info.id);
+    let saw1 = wait_for(&mut s1, pred).await;
+    let saw2 = wait_for(&mut s2, pred).await;
+    assert!(
+        saw1,
+        "subscriber 1 should see the Upsert for the new session"
+    );
+    assert!(
+        saw2,
+        "subscriber 2 should see the Upsert for the new session"
     );
 }

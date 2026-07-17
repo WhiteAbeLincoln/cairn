@@ -6,8 +6,8 @@
 //! never have to spell out the methods they don't use.
 //!
 //! When a new test needs to stub an operation not yet covered, add an `on_*`
-//! builder + field for it (the streaming ops — wait/logs/attach/send — are
-//! intentionally left unstubbed until a test needs them).
+//! builder + field for it (the streaming ops — wait/logs/attach/send/
+//! watch-sessions — are intentionally left unstubbed until a test needs them).
 
 #![allow(dead_code)] // builder methods are used à la carte by individual tests
 
@@ -219,6 +219,22 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         _id: String,
     ) -> anyhow::Result<Result<SessionInfo, Error>> {
         unimplemented!("sessions.inspect not stubbed in this test")
+    }
+
+    async fn watch_sessions(
+        &self,
+        _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = Vec<bindings::cairn::daemon::types::SessionEvent>>
+                    + Send
+                    + 'static,
+            >,
+        >,
+    > {
+        unimplemented!("sessions.watch-sessions not stubbed in this test")
     }
 
     async fn create(

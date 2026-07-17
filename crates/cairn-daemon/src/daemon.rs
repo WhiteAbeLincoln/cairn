@@ -119,6 +119,18 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
         Ok(sess::inspect(self, id).instrument(span).await)
     }
 
+    async fn watch_sessions(
+        &self,
+        _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<BoxStream<'static, Vec<cairn_protocol::cairn::daemon::types::SessionEvent>>>
+    {
+        let span = tracing::info_span!("rpc", method = "sessions.watch_sessions");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
+        crate::handlers::watch::watch_sessions(self).await
+    }
+
     async fn create(
         &self,
         _ctx: ConnCtx,
