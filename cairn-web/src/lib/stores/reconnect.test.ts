@@ -239,9 +239,12 @@ describe('ReconnectController', () => {
 
     it('each run() attempt gets its own fresh AbortSignal', async () => {
         const signals: AbortSignal[] = [];
-        const run = vi.fn(async (onUp: () => void, signal: AbortSignal) => {
+        // Stays in flight (like a real watch stream) until aborted — a run
+        // that settles on its own never needs its signal aborted, so that
+        // wouldn't exercise anything here.
+        const run = vi.fn((onUp: () => void, signal: AbortSignal) => {
             signals.push(signal);
-            throw new Error('down');
+            return openEndedRun(onUp, signal);
         });
         const scheduler = fakeScheduler();
         const controller = new ReconnectController({
@@ -253,7 +256,7 @@ describe('ReconnectController', () => {
 
         controller.start();
         await flush();
-        controller.stop();
+        controller.stop(); // aborts signals[0]
         controller.start();
         await flush();
 
@@ -261,6 +264,36 @@ describe('ReconnectController', () => {
         expect(signals[0]).not.toBe(signals[1]);
         expect(signals[0]?.aborted).toBe(true); // aborted by the intervening stop()
         expect(signals[1]?.aborted).toBe(false); // the new attempt's signal is untouched
+
+        controller.stop(); // tear down the still-open second attempt
+    });
+
+    it('double start() with no intervening stop() still aborts the superseded attempt (no orphaned AbortController)', async () => {
+        const signals: AbortSignal[] = [];
+        const run = vi.fn((onUp: () => void, signal: AbortSignal) => {
+            signals.push(signal);
+            return openEndedRun(onUp, signal);
+        });
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            run,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start(); // attempt #1 in flight, never stopped
+        await flush();
+        expect(signals).toHaveLength(1);
+        expect(signals[0]?.aborted).toBe(false);
+
+        controller.start(); // called again while #1 is still live — must not orphan it
+        await flush();
+
+        expect(signals).toHaveLength(2);
+        expect(signals[0]?.aborted).toBe(true); // superseded attempt #1 was aborted, not leaked
+        expect(signals[1]?.aborted).toBe(false); // attempt #2 is untouched
+
+        controller.stop();
     });
 
     it('a late settle of the aborted run() produces no status transition and schedules no retry', async () => {
@@ -294,6 +327,91 @@ describe('ReconnectController', () => {
 
         expect(statuses).toEqual(['connecting', 'connected']); // no reconnecting after stop()
         expect(scheduler.scheduled).toEqual([]); // and no retry was scheduled either
+    });
+
+    /**
+     * A `run()` whose promise is captured and settled manually (deferred
+     * pattern), so the test controls exactly when the settle lands relative
+     * to a stop()+start() that happens while it's still pending — unlike the
+     * other tests above, where the fake `run` rejects synchronously and so
+     * can never actually straddle a stop()/start() boundary.
+     */
+    function deferredRun() {
+        const calls: Array<{
+            onUp: () => void;
+            signal: AbortSignal;
+            resolve: () => void;
+            reject: (err: Error) => void;
+        }> = [];
+        const run = vi.fn((onUp: () => void, signal: AbortSignal) => {
+            return new Promise<void>((resolve, reject) => {
+                calls.push({ onUp, signal, resolve, reject });
+            });
+        });
+        return { run, calls };
+    }
+
+    it('a stale generation rejecting after stop()+start() does not touch the new generation status/attempt/timer', async () => {
+        const { run, calls } = deferredRun();
+        const scheduler = fakeScheduler();
+        const statuses: string[] = [];
+        const controller = new ReconnectController({
+            run,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+        controller.onStatusChange((s) => statuses.push(s.state));
+
+        controller.start(); // generation 1, attempt #1 pending
+        await flush();
+        expect(calls).toHaveLength(1);
+
+        controller.stop(); // generation -> 2; aborts #1's signal, but our fake run ignores that
+        controller.start(); // generation -> 3, attempt #2 pending
+        await flush();
+        expect(calls).toHaveLength(2);
+
+        calls[1].onUp(); // the CURRENT attempt goes live
+        expect(controller.status).toEqual({ state: 'connected' });
+
+        // The STALE attempt #1 finally settles — a real stream's teardown
+        // landing a tick or more after abort(), well after start() already
+        // moved on.
+        calls[0].reject(new Error('stale-drop'));
+        await flush();
+
+        expect(controller.status).toEqual({ state: 'connected' }); // untouched by the stale settle
+        expect(statuses).toEqual(['connecting', 'connecting', 'connected']); // no spurious reconnecting inserted
+        expect(scheduler.scheduled).toEqual([]); // no bogus retry timer from the stale generation
+    });
+
+    it("a stale generation's onUp() after stop()+start() does not flip status or reset the attempt counter", async () => {
+        const { run, calls } = deferredRun();
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            run,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start(); // generation 1, attempt #1 pending
+        await flush();
+        controller.stop(); // generation -> 2
+        controller.start(); // generation -> 3, attempt #2 pending
+        await flush();
+        expect(calls).toHaveLength(2);
+
+        // Put the CURRENT generation into reconnecting/attempt-1, so a
+        // "reset to attempt 0" from the stale onUp() would be observable.
+        calls[1].reject(new Error('down'));
+        await flush();
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+
+        // The STALE attempt #1 calls onUp() — must be inert.
+        calls[0].onUp();
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
     });
 
     it('does not re-notify subscribers while a single run() stays healthy', async () => {

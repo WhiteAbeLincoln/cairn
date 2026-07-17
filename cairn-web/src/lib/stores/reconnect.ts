@@ -67,8 +67,19 @@ export class ReconnectController {
     #status: ConnectionStatus = { state: 'connecting' };
     #attempt = 0;
     #timer: unknown;
-    #stopped = true;
-    /** The in-flight run's abort controller, so `stop()` can cancel it directly. */
+    /**
+     * Monotonic generation counter. `start()`, `stop()`, and every retry
+     * bump it; each `#runNow()` call captures the value current at its
+     * launch. `run()` does not necessarily reject synchronously on abort —
+     * the rejection (or a stray `onUp()`) can land a microtask or more
+     * later, potentially after `stop()` and a subsequent `start()` have
+     * already moved on to a new attempt. Gating every continuation point on
+     * `gen === this.#generation` (rather than a single shared `#stopped`
+     * boolean) is what makes such a stale settle inert instead of corrupting
+     * the new attempt's status/attempt-count/timer.
+     */
+    #generation = 0;
+    /** The in-flight run's abort controller. Set if and only if a run is currently in flight. */
     #abort: AbortController | undefined;
     readonly #listeners = new Set<(status: ConnectionStatus) => void>();
 
@@ -87,19 +98,20 @@ export class ReconnectController {
     }
 
     start(): void {
-        this.#stopped = false;
         this.#setStatus({ state: 'connecting' });
-        void this.#runNow();
+        const gen = ++this.#generation;
+        void this.#runNow(gen);
     }
 
     /**
-     * Stop supervising: cancels the pending retry timer (if any) and aborts
-     * the in-flight `run`'s signal, so a switched-away-from endpoint's stream
-     * is torn down rather than left running. Also suppresses any status
-     * transition from that in-flight `run` if it settles after this call.
+     * Stop supervising: cancels the pending retry timer (if any), aborts the
+     * in-flight `run`'s signal (so a switched-away-from endpoint's stream is
+     * torn down rather than left running), and bumps the generation counter
+     * so that run's continuation — even if it settles well after this call
+     * returns — can no longer apply any effect.
      */
     stop(): void {
-        this.#stopped = true;
+        this.#generation += 1;
         if (this.#timer !== undefined) {
             const clear =
                 this.#opts.clearSchedule ??
@@ -111,27 +123,33 @@ export class ReconnectController {
         this.#abort = undefined;
     }
 
-    async #runNow(): Promise<void> {
+    async #runNow(gen: number): Promise<void> {
+        // A bare start() while a previous attempt is still in flight (no
+        // intervening stop()) must not orphan that attempt's controller.
+        this.#abort?.abort();
         const abort = new AbortController();
         this.#abort = abort;
+        const onUp = (): void => {
+            if (gen !== this.#generation) return; // stale — superseded by a later start()/retry
+            this.#attempt = 0;
+            // Only notify on the connecting/reconnecting -> connected
+            // *transition* — re-notifying on a call after we're already
+            // connected (there shouldn't be one) is not news.
+            if (this.#status.state !== 'connected') {
+                this.#setStatus({ state: 'connected' });
+            }
+        };
         try {
-            await this.#opts.run(this.#onUp, abort.signal);
-            if (this.#stopped) return;
+            await this.#opts.run(onUp, abort.signal);
+            if (gen !== this.#generation) return; // stale settle — leave the current attempt's #abort alone
+            this.#abort = undefined;
             this.#down(new Error('watch stream ended'));
         } catch (err) {
-            if (this.#stopped) return;
+            if (gen !== this.#generation) return;
+            this.#abort = undefined;
             this.#down(err instanceof Error ? err : new Error(String(err)));
         }
     }
-
-    /** Called by `run` on its first event. Transition-only notify — a call after we're already `connected` (there shouldn't be one) is not news. */
-    readonly #onUp = (): void => {
-        if (this.#stopped) return;
-        this.#attempt = 0;
-        if (this.#status.state !== 'connected') {
-            this.#setStatus({ state: 'connected' });
-        }
-    };
 
     /** `run` settled (resolved or rejected) — the connection is down. Move to `reconnecting` and schedule a retry with backoff. */
     #down(error: Error): void {
@@ -149,7 +167,8 @@ export class ReconnectController {
     #scheduleNext(ms: number): void {
         const schedule = this.#opts.schedule ?? ((fn, d) => setTimeout(fn, d));
         this.#timer = schedule(() => {
-            void this.#runNow();
+            const gen = ++this.#generation;
+            void this.#runNow(gen);
         }, ms);
     }
 
