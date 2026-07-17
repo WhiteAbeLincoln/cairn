@@ -59,25 +59,27 @@ const OUTBOUND_QUEUE_FRAMES: usize = 64;
 /// clients (browsers auto-pong; `tokio-websockets` auto-replies likewise).
 const PING_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Wire framing for `cairn-mux-v0`. Shared with the integration-test client
-/// so the codec is not duplicated (`pub(crate)` for that reason).
-pub(crate) mod frame {
+/// Wire framing for `cairn-mux-v0`. Public (re-exported as
+/// [`crate::ws::mux`], the same pattern as [`crate::ws::split`]) so
+/// integration tests and client implementations can share the codec instead
+/// of duplicating it.
+pub mod frame {
     use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
 
     /// `[channel_id: u32 BE][flags: u8]`.
-    pub(crate) const HEADER_LEN: usize = 5;
+    pub const HEADER_LEN: usize = 5;
     /// Sender's write side of this channel is done after this frame's payload.
-    pub(crate) const FLAG_FIN: u8 = 1;
+    pub const FLAG_FIN: u8 = 1;
     /// Channel aborted; both directions dead. Payload ignored.
-    pub(crate) const FLAG_RST: u8 = 1 << 1;
+    pub const FLAG_RST: u8 = 1 << 1;
     const KNOWN_FLAGS: u8 = FLAG_FIN | FLAG_RST;
     /// Maximum frame payload; larger is a protocol violation.
-    pub(crate) const MAX_PAYLOAD: usize = 1 << 20;
+    pub const MAX_PAYLOAD: usize = 1 << 20;
     /// Maximum concurrent channels; the daemon RSTs channels beyond this
     /// rather than killing the socket.
-    pub(crate) const MAX_CHANNELS: usize = 256;
+    pub const MAX_CHANNELS: usize = 256;
 
-    pub(crate) fn encode(channel: u32, flags: u8, payload: &[u8]) -> Bytes {
+    pub fn encode(channel: u32, flags: u8, payload: &[u8]) -> Bytes {
         debug_assert!(payload.len() <= MAX_PAYLOAD);
         let mut buf = BytesMut::with_capacity(HEADER_LEN + payload.len());
         buf.put_u32(channel);
@@ -89,7 +91,7 @@ pub(crate) mod frame {
     /// Malformed traffic that tears down the whole connection (everything
     /// else is contained to its channel).
     #[derive(Debug, PartialEq, Eq)]
-    pub(crate) enum Violation {
+    pub enum Violation {
         TooShort(usize),
         ReservedFlags(u8),
         ChannelZero,
@@ -107,7 +109,7 @@ pub(crate) mod frame {
         }
     }
 
-    pub(crate) fn decode(mut msg: Bytes) -> Result<(u32, u8, Bytes), Violation> {
+    pub fn decode(mut msg: Bytes) -> Result<(u32, u8, Bytes), Violation> {
         if msg.len() < HEADER_LEN {
             return Err(Violation::TooShort(msg.len()));
         }
@@ -300,10 +302,6 @@ where
 
 /// Serve wRPC invocations over one muxed WebSocket connection until it closes
 /// or `shutdown` fires. The muxed sibling of the one-shot path's `serve_one`.
-#[expect(
-    dead_code,
-    reason = "wired into the /ws upgrade path by the negotiation change"
-)]
 pub(crate) async fn serve_mux<S, E>(
     ctx: ConnCtx,
     ws: S,

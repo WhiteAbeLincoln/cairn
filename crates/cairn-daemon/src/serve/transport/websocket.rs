@@ -1,13 +1,19 @@
 //! WebSocket transport: an axum HTTP server whose `/ws` route upgrades to a
-//! WebSocket carrying exactly one wRPC invocation.
+//! WebSocket speaking one of two wire protocols, negotiated via
+//! `Sec-WebSocket-Protocol` (see [`WsMode`]):
 //!
-//! This is the browser-facing primary transport. Unlike the multiplexed UDS and
-//! WebTransport listeners (one connection, many invocations), each WebSocket
-//! connection carries a single wRPC call — the model the JS SDK uses, where
-//! every invocation opens its own socket. `bind`/`run` own the TCP accept loop
-//! (delegated to `axum::serve`); the HTTP routing and upgrade handshake live in
-//! [`crate::serve::http`], which hands successful upgrades back here via
-//! [`serve_upgraded`].
+//! - **One-shot** (default, and explicitly as `cairn-oneshot-v0`): the
+//!   connection carries exactly one wRPC invocation — the stock
+//!   `wrpc-websockets` model, kept for dedicated high-throughput streams
+//!   (attach/logs/send) and third-party clients.
+//! - **Muxed** (`cairn-mux-v0`): one persistent connection carries many
+//!   concurrent invocations on logical channels — see
+//!   [`super::ws_mux`].
+//!
+//! This is the browser-facing primary transport. `bind`/`run` own the TCP
+//! accept loop (delegated to `axum::serve`); the HTTP routing, upgrade
+//! handshake, and subprotocol negotiation live in [`crate::serve::http`],
+//! which hands successful upgrades back here via [`serve_upgraded`].
 //!
 //! ## Why only `wrpc_websockets::split`
 //!
@@ -121,8 +127,19 @@ impl BoundWebSocketListener {
     }
 }
 
-/// Take over a completed HTTP upgrade and serve a single wRPC invocation over
-/// it. Spawned (tracked) from the `/ws` handler once the 101 response is queued.
+/// Wire protocol selected for an upgraded `/ws` connection during the
+/// `Sec-WebSocket-Protocol` negotiation in [`crate::serve::http`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WsMode {
+    /// One invocation per socket (the default; also `cairn-oneshot-v0`).
+    OneShot,
+    /// Many invocations muxed over one socket (`cairn-mux-v0`).
+    Mux,
+}
+
+/// Take over a completed HTTP upgrade and serve wRPC over it in the
+/// negotiated [`WsMode`]. Spawned (tracked) from the `/ws` handler once the
+/// 101 response is queued.
 ///
 /// The whole body races `shutdown` so a connection stalled mid-upgrade (e.g. a
 /// client that never finishes the handshake during daemon shutdown) cannot
@@ -133,6 +150,7 @@ pub(crate) async fn serve_upgraded(
     peer: SocketAddr,
     daemon: crate::daemon::Daemon,
     shutdown: CancellationToken,
+    mode: WsMode,
 ) {
     let served = shutdown.clone();
     let work = async move {
@@ -150,8 +168,14 @@ pub(crate) async fn serve_upgraded(
         // `Server`'s bounds. See [`crate::ws::split`].
         let io = hyper_util::rt::TokioIo::new(upgraded);
         let ws = wrpc_websockets::tokio_websockets::ServerBuilder::new().serve(io);
-        let (tx, rx) = crate::ws::split(ws);
-        if let Err(error) = serve_one(ctx, tx, rx, daemon, served).await {
+        let result = match mode {
+            WsMode::OneShot => {
+                let (tx, rx) = crate::ws::split(ws);
+                serve_one(ctx, tx, rx, daemon, served).await
+            }
+            WsMode::Mux => super::ws_mux::serve_mux(ctx, ws, daemon, served).await,
+        };
+        if let Err(error) = result {
             tracing::debug!(%peer, error = %error, "WS connection ended with error");
         }
     };

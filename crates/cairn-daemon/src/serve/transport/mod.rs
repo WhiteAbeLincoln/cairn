@@ -13,13 +13,13 @@ pub(super) mod unix;
 pub(super) mod web_ui;
 pub(super) mod websocket;
 pub(super) mod webtransport;
-pub(super) mod ws_mux;
+pub(crate) mod ws_mux;
 
 pub(super) struct SpawnedTransports {
     _unix_guards: Vec<unix::UnixListenerGuard>,
 }
 
-pub trait TransportListener {
+pub(super) trait TransportListener {
     fn run(
         self,
         daemon: crate::daemon::Daemon,
