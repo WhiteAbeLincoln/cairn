@@ -167,6 +167,87 @@ describe('ReconnectController', () => {
         expect(controller.status).toEqual({ state: 'connected' });
     });
 
+    it('kick() while idle-connected cancels the steady timer and re-probes immediately', async () => {
+        const probe = vi.fn(async () => {});
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            steadyIntervalMs: 30_000,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connected' });
+        expect(scheduler.scheduled).toEqual([{ fn: expect.any(Function), ms: 30_000 }]);
+
+        controller.kick();
+        await flush();
+        // Re-probed immediately (no timer fired) and the old steady timer was
+        // cancelled — exactly one fresh steady timer remains, not two.
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(scheduler.scheduled).toEqual([{ fn: expect.any(Function), ms: 30_000 }]);
+        expect(controller.status).toEqual({ state: 'connected' });
+    });
+
+    it('kick() while stopped is a no-op', async () => {
+        const probe = vi.fn(async () => {});
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        // Never started: kick must not probe.
+        controller.kick();
+        await flush();
+        expect(probe).not.toHaveBeenCalled();
+
+        controller.start();
+        await flush();
+        controller.stop();
+        controller.kick();
+        await flush();
+        expect(probe).toHaveBeenCalledTimes(1); // only the start() probe
+        expect(scheduler.scheduled).toEqual([]);
+    });
+
+    it('kick() mid-probe does not start a concurrent second probe', async () => {
+        let resolveProbe = () => {};
+        const probe = vi.fn(
+            () =>
+                new Promise<void>((resolve) => {
+                    resolveProbe = resolve;
+                }),
+        );
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            steadyIntervalMs: 30_000,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        expect(probe).toHaveBeenCalledTimes(1);
+
+        controller.kick(); // probe still in flight -> must not double-probe
+        controller.kick();
+        await flush();
+        expect(probe).toHaveBeenCalledTimes(1);
+
+        resolveProbe();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connected' });
+        expect(scheduler.scheduled).toEqual([{ fn: expect.any(Function), ms: 30_000 }]);
+
+        // After the in-flight probe settles, kick works again.
+        controller.kick();
+        expect(probe).toHaveBeenCalledTimes(2);
+    });
+
     it('stop() prevents any further scheduled probe from running', async () => {
         const probe = vi.fn(async () => {
             throw new Error('down');

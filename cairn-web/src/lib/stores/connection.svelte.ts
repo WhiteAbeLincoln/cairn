@@ -4,7 +4,7 @@
 // this module's job is only to own the reactive `$state` the UI reads and to
 // supply the real `fetch`/`localStorage` boundaries those pure functions need.
 
-import { DaemonClient, wsDialer, wtDialer } from '$lib/protocol';
+import { DaemonClient, wsDialer, wsMuxDialer, wtDialer } from '$lib/protocol';
 import {
     type CairnJsonDoc,
     clearStoredEndpoint,
@@ -132,16 +132,33 @@ export function onConnectionStatusChange(fn: (status: ConnectionStatus) => void)
 function connectWith(ep: EndpointConfig): void {
     endpoint = ep;
     needsManualEndpoint = false;
-    const c = new DaemonClient(
-        ep.transport === 'ws' ? wsDialer(ep.url) : wtDialer(ep.url, ep.certHash),
-    );
+    // Forward reference: the mux dialer's `onDown` needs the controller, but
+    // the controller's probe needs the client built from the dialer. Safe
+    // because `onDown` only fires when an *established* socket dies — long
+    // after `next` is assigned below. If a stale dialer's socket dies after a
+    // newer `connectWith`, its captured controller is stopped and `kick()`
+    // no-ops.
+    let next: ReconnectController | undefined;
+    const c =
+        ep.transport === 'ws'
+            ? new DaemonClient(
+                  // Control traffic (unary + wait) rides one persistent muxed
+                  // socket; attach/logs/send keep dedicated one-shot sockets
+                  // so bulk streams stay off the control connection.
+                  wsMuxDialer(ep.url, { onDown: () => next?.kick() }),
+                  wsDialer(ep.url),
+              )
+            : new DaemonClient(wtDialer(ep.url, ep.certHash));
     client = c;
 
     controller?.stop();
-    const next = new ReconnectController({
+    next = new ReconnectController({
         // A cheap, data-free connectivity check — keeps the connection status
         // independent of any particular RPC (sessions, attach, ...).
         probe: () => c.version().then(() => undefined),
+        // The steady probe is only a fallback watchdog now that a dead muxed
+        // socket kicks an immediate re-probe via `onDown`, so it can be lazy.
+        steadyIntervalMs: 30_000,
     });
     next.onStatusChange((s) => {
         status = s;

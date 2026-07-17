@@ -2,7 +2,9 @@
 // spec ("Reconnect lives in the stores layer, not `DaemonClient`"): dial
 // failures flip connection state; jittered exponential backoff capped at 10s;
 // once healthy, a steady-interval re-probe keeps watching for a dropped
-// connection. Framework-free (no Svelte, no timers imported directly — both
+// connection, and transports that notice a death sooner (e.g. the muxed
+// WebSocket's onDown) can `kick()` an immediate re-probe instead of waiting
+// out the interval. Framework-free (no Svelte, no timers imported directly — both
 // injectable) so the state machine is unit-testable without a browser or
 // fake-timer gymnastics.
 
@@ -62,6 +64,7 @@ export class ReconnectController {
     #attempt = 0;
     #timer: unknown;
     #stopped = true;
+    #probing = false;
     readonly #listeners = new Set<(status: ConnectionStatus) => void>();
 
     constructor(opts: ReconnectControllerOptions) {
@@ -86,16 +89,33 @@ export class ReconnectController {
 
     stop(): void {
         this.#stopped = true;
-        if (this.#timer !== undefined) {
-            const clear =
-                this.#opts.clearSchedule ??
-                ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
-            clear(this.#timer);
-            this.#timer = undefined;
-        }
+        this.#clearTimer();
+    }
+
+    /**
+     * Probe immediately instead of waiting out the current timer — used when a
+     * transport notices the connection died (e.g. the muxed WebSocket's
+     * `onDown`), so status flips to `reconnecting` right away rather than up
+     * to a steady interval later. No-op while stopped, and no-op while a probe
+     * is already in flight (that probe's outcome is about to reschedule
+     * anyway; kicking mid-probe must never cause a concurrent double-probe).
+     */
+    kick(): void {
+        if (this.#stopped || this.#probing) return;
+        this.#clearTimer();
+        void this.#runNow();
     }
 
     async #runNow(): Promise<void> {
+        this.#probing = true;
+        try {
+            await this.#runProbe();
+        } finally {
+            this.#probing = false;
+        }
+    }
+
+    async #runProbe(): Promise<void> {
         try {
             await this.#opts.probe();
             if (this.#stopped) return;
@@ -120,6 +140,16 @@ export class ReconnectController {
                 error,
             });
             this.#scheduleNext(delay);
+        }
+    }
+
+    #clearTimer(): void {
+        if (this.#timer !== undefined) {
+            const clear =
+                this.#opts.clearSchedule ??
+                ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+            clear(this.#timer);
+            this.#timer = undefined;
         }
     }
 
