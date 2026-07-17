@@ -19,22 +19,30 @@ import * as wit from './wit';
 /**
  * A typed client for the `cairn:daemon@0.1.0` wRPC interface.
  *
- * Stateless per call: every method dials a fresh {@link Transport} via the
+ * Stateless per call: every method dials a fresh {@link Transport} via an
  * injected {@link Dialer}, runs exactly one wRPC invocation over it, and closes
  * it when the call (or its stream) completes. Unary methods return promises
  * that reject with a {@link CairnError} when the daemon returns `result::err`;
  * streaming methods (`attach`, `logs`) return async iterables and `wait`
  * returns a promise resolved by the daemon's `future`.
  *
+ * Two dialer roles: unary methods and `wait` dial `control`, while `attach`,
+ * `logs`, and `send` dial `streams`. This keeps bulk PTY/log streams off a
+ * persistent multiplexed control connection (head-of-line blocking, buffer
+ * pressure); `wait` is long-lived but tiny — a single `future` result — so it
+ * rides `control`. Constructing with one dialer uses it for both roles.
+ *
  * The `ctx` (`call-context`) parameter of every WIT method is sent as `none`
  * for now; trace propagation can be threaded through later without changing
  * these signatures.
  */
 export class DaemonClient {
-    readonly #dial: Dialer;
+    readonly #control: Dialer;
+    readonly #streams: Dialer;
 
-    constructor(dialer: Dialer) {
-        this.#dial = dialer;
+    constructor(control: Dialer, streams: Dialer = control) {
+        this.#control = control;
+        this.#streams = streams;
     }
 
     // --- sessions -----------------------------------------------------------
@@ -121,7 +129,7 @@ export class DaemonClient {
      * daemon delivers it as a `future<exit-status>`).
      */
     async wait(id: SessionId): Promise<ExitStatus> {
-        const transport = await this.#dial();
+        const transport = await this.#control();
         try {
             const { results, done } = await invoke(
                 transport,
@@ -145,7 +153,7 @@ export class DaemonClient {
      * `follow` keeps the stream open for new output.
      */
     async *logs(id: SessionId, window: LogWindow, follow: boolean): AsyncIterable<Uint8Array[]> {
-        const transport = await this.#dial();
+        const transport = await this.#streams();
         try {
             const { results, done } = await invoke(
                 transport,
@@ -177,7 +185,7 @@ export class DaemonClient {
         init: AttachInit,
         clientEvents: AsyncIterable<ClientEvent>,
     ): AsyncIterable<ServerEvent[]> {
-        const transport = await this.#dial();
+        const transport = await this.#streams();
         try {
             const { results } = await invoke(
                 transport,
@@ -202,7 +210,7 @@ export class DaemonClient {
     }
 
     async send(id: SessionId, chunks: AsyncIterable<Uint8Array>): Promise<void> {
-        const transport = await this.#dial();
+        const transport = await this.#streams();
         try {
             const { results, done } = await invoke(
                 transport,
@@ -264,7 +272,7 @@ export class DaemonClient {
         args: unknown[],
         resultTypes: Type[],
     ): Promise<Value[]> {
-        const transport = await this.#dial();
+        const transport = await this.#control();
         try {
             const { results, done } = await invoke(
                 transport,
