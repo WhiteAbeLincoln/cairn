@@ -11,4 +11,5 @@ export type { Dialer, Transport } from './transport';
 export * from './types';
 export * as wit from './wit';
 export { wsDialer } from './ws';
+export { MUX_SUBPROTOCOL, type WsMuxOptions, wsMuxDialer } from './wsmux';
 export { wtDialer } from './wt';
