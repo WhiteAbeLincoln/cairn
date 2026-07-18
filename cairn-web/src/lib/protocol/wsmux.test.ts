@@ -126,10 +126,33 @@ describe('wsMuxDialer', () => {
         expect(text(frames[1].payload)).toBe('second');
     });
 
+    it('assigns channel ids in send order, not dial order', async () => {
+        const fixture = muxFixture();
+        const { transport: first, ws } = await dialOpen(fixture);
+        const second = await fixture.dial();
+
+        // The later dial writes first: it must get the lower id, because the
+        // daemon opens channels in id order and drops frames for a
+        // never-opened id at or below the highest seen.
+        await second.write(bytes('goes-first'));
+        await first.write(bytes('goes-second'));
+
+        const frames = sentFrames(ws);
+        expect(frames.map((f) => [f.id, text(f.payload)])).toEqual([
+            [1, 'goes-first'],
+            [2, 'goes-second'],
+        ]);
+    });
+
     it('demuxes inbound frames to the right channel, FIN ends with EOF', async () => {
         const fixture = muxFixture();
         const { transport: t1, ws } = await dialOpen(fixture);
         const t2 = await fixture.dial();
+
+        // Register both channels on the wire (ids 1 and 2, in send order) —
+        // the daemon only ever responds to channels the client has opened.
+        await t1.write(bytes('open-1'));
+        await t2.write(bytes('open-2'));
 
         ws.receive(2, 0, bytes('for-two'));
         ws.receive(1, FLAG_FIN, bytes('for-one-and-done'));
@@ -146,6 +169,8 @@ describe('wsMuxDialer', () => {
         const fixture = muxFixture();
         const { transport: t1, ws } = await dialOpen(fixture);
         const t2 = await fixture.dial();
+        await t1.write(bytes('open-1'));
+        await t2.write(bytes('open-2'));
 
         ws.receive(1, FLAG_RST);
         await expect(t1.read()).rejects.toThrow('channel reset by daemon');
@@ -172,6 +197,9 @@ describe('wsMuxDialer', () => {
         const { transport: cancelled, ws } = await dialOpen(fixture);
         const finished = await fixture.dial();
 
+        // Channel 1 goes on the wire mid-invocation (write, no FIN yet).
+        await cancelled.write(bytes('partial'));
+
         // Channel 2 completes cleanly: FIN both ways.
         finished.closeWrite?.();
         ws.receive(2, FLAG_FIN);
@@ -182,16 +210,31 @@ describe('wsMuxDialer', () => {
         (cancelled as { close?: () => void }).close?.();
 
         const frames = sentFrames(ws);
-        // Only channel 2's FIN and channel 1's RST — no RST for channel 2.
+        // Channel 1's data + RST, channel 2's FIN — no RST for channel 2.
         expect(frames.map((f) => [f.id, f.flags])).toEqual([
+            [1, 0],
             [2, FLAG_FIN],
             [1, FLAG_RST],
         ]);
     });
 
+    it('close() on a channel that never reached the wire sends nothing', async () => {
+        const fixture = muxFixture();
+        const { transport: unused, ws } = await dialOpen(fixture);
+        const active = await fixture.dial();
+
+        (unused as { close?: () => void }).close?.();
+        // The unused dial consumed no channel id: the next send still gets 1.
+        await active.write(bytes('first-on-wire'));
+
+        const frames = sentFrames(ws);
+        expect(frames.map((f) => [f.id, f.flags])).toEqual([[1, 0]]);
+    });
+
     it('ignores stale frames for unknown channels', async () => {
         const fixture = muxFixture();
         const { transport, ws } = await dialOpen(fixture);
+        await transport.write(bytes('open-1'));
 
         ws.receive(99, 0, bytes('stale'));
         ws.receive(99, FLAG_RST);
@@ -227,7 +270,7 @@ describe('wsMuxDialer', () => {
 
         await expect(pendingRead).rejects.toThrow('WebSocket connection closed');
         await expect(t2.read()).rejects.toThrow('WebSocket connection closed');
-        await expect(t1.write(bytes('x'))).rejects.toThrow('WebSocket is not open');
+        await expect(t1.write(bytes('x'))).rejects.toThrow('WebSocket connection closed');
         expect(downs).toBe(1);
 
         // Next dial opens a fresh socket with fresh channel ids.
@@ -235,6 +278,24 @@ describe('wsMuxDialer', () => {
         expect(fixture.sockets).toHaveLength(2);
         await t3.write(bytes('again'));
         expect(sentFrames(ws2)[0]).toMatchObject({ id: 1, flags: 0 });
+    });
+
+    it('dialer.close() closes the socket, fails live channels, and rejects future dials', async () => {
+        let downs = 0;
+        const fixture = muxFixture({ onDown: () => downs++ });
+        const { transport, ws } = await dialOpen(fixture);
+        await transport.write(bytes('open-1'));
+        const pendingRead = transport.read();
+
+        fixture.dial.close();
+
+        // Assert the rejection immediately (before any timer tick) so the
+        // rejection never sits unobserved across a macrotask boundary.
+        await expect(pendingRead).rejects.toThrow('mux dialer closed');
+        await expect(fixture.dial()).rejects.toThrow('mux dialer closed');
+        expect(ws.closed).toBe(true);
+        // No new socket was opened by the rejected dial.
+        expect(fixture.sockets).toHaveLength(1);
     });
 
     it('rejects the dial when the daemon does not select the subprotocol', async () => {

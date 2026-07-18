@@ -7,9 +7,10 @@ import { WS_OPEN, type WsWire, writeWithBackpressure } from './ws';
  * The `cairn-mux-v0` subprotocol: one persistent WebSocket carrying many
  * concurrent wRPC invocations, each on its own logical channel. Every binary
  * WS message is one frame, `[channel_id: u32 BE][flags: u8][payload]`; only
- * this client opens channels (ids strictly increasing from 1), each carrying
- * exactly one invocation. FIN half-closes a direction, RST aborts a channel
- * without touching the socket. See the design spec
+ * this client opens channels (ids assigned at first send, strictly
+ * increasing from 1 in send order), each carrying exactly one invocation.
+ * FIN half-closes a direction, RST aborts a channel without touching the
+ * socket. See the design spec
  * (`docs/superpowers/specs/2026-07-17-ws-mux-design.md`) and the daemon's
  * mirror implementation (`cairn-daemon/src/serve/transport/ws_mux.rs`).
  */
@@ -46,17 +47,38 @@ export interface WsMuxOptions {
     connect?: (url: string, protocols: string[]) => MuxWebSocket;
 }
 
+/** A {@link Dialer} that can be retired when its connection is replaced. */
+export type CloseableDialer = Dialer & {
+    /**
+     * Permanently retire the dialer: close the cached socket (failing every
+     * live channel), and reject any future dials. Without this, replacing a
+     * connection (endpoint switch, forget) leaks the old socket on both ends
+     * — the daemon's keepalive pings hold it open indefinitely.
+     */
+    close(): void;
+};
+
+/** The DOM WebSocket satisfies {@link MuxWebSocket} at runtime; its handler
+ * properties are declared with DOM event parameter types that fail the
+ * strictly contravariant structural check against our narrower signatures,
+ * hence the cast. */
+function browserSocket(url: string, protocols: string[]): MuxWebSocket {
+    return new WebSocket(url, protocols) as unknown as MuxWebSocket;
+}
+
 /**
  * A muxed-WebSocket {@link Dialer}: one lazily-opened, cached socket
- * negotiated to `cairn-mux-v0`; each dial allocates the next channel id and
- * returns a {@link Transport} carrying one wRPC invocation. If the socket
- * dies, every live channel fails together (the socket is the health signal),
- * the socket is forgotten, and the next dial redials.
+ * negotiated to `cairn-mux-v0`; each dial returns a {@link Transport}
+ * carrying one wRPC invocation on its own channel. If the socket dies, every
+ * live channel fails together (the socket is the health signal), the socket
+ * is forgotten, and the next dial redials.
  */
-export function wsMuxDialer(url: string, opts: WsMuxOptions = {}): Dialer {
+export function wsMuxDialer(url: string, opts: WsMuxOptions = {}): CloseableDialer {
     let current: Promise<MuxConn> | undefined;
+    let closed = false;
 
     const open = (): Promise<MuxConn> => {
+        if (closed) return Promise.reject(new Error('mux dialer closed'));
         if (current) return current;
         const attempt = MuxConn.connect(url, opts, () => {
             // Established socket died: forget it so the next dial redials.
@@ -70,7 +92,18 @@ export function wsMuxDialer(url: string, opts: WsMuxOptions = {}): Dialer {
         return attempt;
     };
 
-    return async () => (await open()).openChannel();
+    const dial = async () => (await open()).openChannel();
+    return Object.assign(dial, {
+        close(): void {
+            closed = true;
+            const retired = current;
+            current = undefined;
+            retired?.then(
+                (conn) => conn.close(),
+                () => {}, // a dial that never connected has nothing to close
+            );
+        },
+    });
 }
 
 /** A {@link Transport} that also exposes an explicit close (RST if incomplete). */
@@ -87,6 +120,9 @@ interface ChannelState {
 class MuxConn {
     readonly #ws: MuxWebSocket;
     readonly #channels = new Map<number, ChannelState>();
+    /** Channels dialed but not yet on the wire (no id assigned) — tracked so
+     * connection teardown fails their pending reads too. */
+    readonly #pending = new Set<ChannelState>();
     #nextId = 1;
     #down: Error | undefined;
 
@@ -100,8 +136,7 @@ class MuxConn {
         onForget: () => void,
     ): Promise<MuxConn> {
         return new Promise((resolve, reject) => {
-            const make =
-                opts.connect ?? ((u: string, protocols: string[]) => new WebSocket(u, protocols));
+            const make = opts.connect ?? browserSocket;
             const ws = make(url, [MUX_SUBPROTOCOL]);
             ws.binaryType = 'arraybuffer';
             const conn = new MuxConn(ws);
@@ -146,16 +181,34 @@ class MuxConn {
         });
     }
 
-    /** Allocate the next channel and return its per-invocation transport. */
+    /** Open a channel and return its per-invocation transport.
+     *
+     * The channel id is allocated at the FIRST outbound frame, not here: the
+     * daemon opens channels in id order and silently ignores frames for a
+     * never-opened id at or below the highest seen (the stale rule), so ids
+     * must be strictly increasing in *send* order. Allocating at dial time
+     * would make that an accident of scheduling — any caller awaiting
+     * between dial and first write could reorder the opens and hang an
+     * invocation on both sides. */
     openChannel(): ChannelTransport {
         if (this.#down) throw this.#down;
-        const id = this.#nextId++;
         const state: ChannelState = {
             inbound: new Chan<Uint8Array>(),
             remoteFin: false,
             localFin: false,
         };
-        this.#channels.set(id, state);
+        this.#pending.add(state);
+        let id: number | undefined;
+
+        // First outbound frame: put the channel on the wire under the next id.
+        const ensureId = (): number => {
+            if (id === undefined) {
+                id = this.#nextId++;
+                this.#pending.delete(state);
+                this.#channels.set(id, state);
+            }
+            return id;
+        };
 
         return {
             read: async (): Promise<Uint8Array | undefined> => {
@@ -163,6 +216,8 @@ class MuxConn {
                 return done ? undefined : value;
             },
             write: async (bytes: Uint8Array): Promise<void> => {
+                if (this.#down) throw this.#down;
+                const id = ensureId();
                 // Chunk oversized writes; each frame is one WS message.
                 let at = 0;
                 do {
@@ -174,10 +229,18 @@ class MuxConn {
             closeWrite: (): void => {
                 if (state.localFin || this.#ws.readyState !== WS_OPEN) return;
                 state.localFin = true;
+                const id = ensureId();
                 this.#ws.send(buildFrame(id, FLAG_FIN, EMPTY));
                 this.#forgetIfComplete(id, state);
             },
             close: (): void => {
+                if (id === undefined) {
+                    // Never reached the wire: the daemon has no channel to
+                    // reset. Just discard the local state.
+                    this.#pending.delete(state);
+                    state.inbound.close();
+                    return;
+                }
                 const live = this.#channels.get(id);
                 if (live !== state) return; // already complete or torn down
                 this.#channels.delete(id);
@@ -189,6 +252,13 @@ class MuxConn {
                 }
             },
         };
+    }
+
+    /** Deliberate retirement (endpoint switch / dialer close): fail every
+     * channel and close the socket. */
+    close(): void {
+        this.#teardown(new Error('mux dialer closed'));
+        this.#ws.close();
     }
 
     #onMessage(data: unknown): void {
@@ -235,7 +305,8 @@ class MuxConn {
         this.#ws.close();
     }
 
-    /** Connection died: fail every live channel together. Idempotent. */
+    /** Connection died: fail every live channel together — including dialed
+     * channels that never reached the wire. Idempotent. */
     #teardown(err: Error): void {
         if (this.#down) return;
         this.#down = err;
@@ -243,6 +314,10 @@ class MuxConn {
             state.inbound.close(err);
         }
         this.#channels.clear();
+        for (const state of this.#pending) {
+            state.inbound.close(err);
+        }
+        this.#pending.clear();
     }
 }
 

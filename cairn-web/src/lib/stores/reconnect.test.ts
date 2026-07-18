@@ -248,6 +248,133 @@ describe('ReconnectController', () => {
         expect(probe).toHaveBeenCalledTimes(2);
     });
 
+    it('times out a never-settling probe, backs off, and recovers on a later probe', async () => {
+        let call = 0;
+        const probe = vi.fn(() => {
+            call += 1;
+            // Zombie connection: the first probe never settles.
+            if (call === 1) return new Promise<void>(() => {});
+            return Promise.resolve();
+        });
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            probeTimeoutMs: 5_000,
+            steadyIntervalMs: 30_000,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        // Probe hung: only the probe-timeout task is pending.
+        expect(scheduler.scheduled).toEqual([{ fn: expect.any(Function), ms: 5_000 }]);
+
+        await scheduler.fireNext(); // probe timeout fires
+        expect(controller.status).toMatchObject({
+            state: 'reconnecting',
+            attempt: 1,
+            retryInMs: 100,
+        });
+        expect((controller.status as { error: Error }).error.message).toBe(
+            'probe timed out after 5000ms',
+        );
+        // The backoff retry was scheduled — the controller is not wedged.
+        expect(scheduler.scheduled).toEqual([{ fn: expect.any(Function), ms: 100 }]);
+
+        await scheduler.fireNext(); // retry -> probe #2 succeeds
+        expect(controller.status).toEqual({ state: 'connected' });
+        // Success cleared its own probe-timeout task; only the steady timer remains.
+        expect(scheduler.scheduled).toEqual([{ fn: expect.any(Function), ms: 30_000 }]);
+    });
+
+    it('ignores a probe that settles after its timeout already fired', async () => {
+        let resolveFirst = () => {};
+        let call = 0;
+        const probe = vi.fn(() => {
+            call += 1;
+            if (call === 1) {
+                return new Promise<void>((resolve) => {
+                    resolveFirst = resolve;
+                });
+            }
+            return Promise.resolve();
+        });
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            probeTimeoutMs: 5_000,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        await scheduler.fireNext(); // probe timeout fires -> reconnecting, retry scheduled
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        const pendingBefore = [...scheduler.scheduled];
+
+        resolveFirst(); // the zombie probe finally settles — too late
+        await flush();
+        // The late settlement is ignored: the backoff path already rescheduled,
+        // and the stale success must not flip status or add timers.
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        expect(scheduler.scheduled).toEqual(pendingBefore);
+    });
+
+    it('clears the probing flag on timeout so kick() works again afterwards', async () => {
+        let call = 0;
+        const probe = vi.fn(() => {
+            call += 1;
+            if (call === 1) return new Promise<void>(() => {});
+            return Promise.resolve();
+        });
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            probeTimeoutMs: 5_000,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        await scheduler.fireNext(); // probe timeout fires -> reconnecting
+
+        controller.kick(); // must not be blocked by a stale #probing flag
+        await flush();
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(controller.status).toEqual({ state: 'connected' });
+    });
+
+    it('kick() while connected notifies connecting -> connected even when the re-probe succeeds first try', async () => {
+        const probe = vi.fn(async () => {});
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            probe,
+            steadyIntervalMs: 30_000,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connected' });
+
+        const statuses: string[] = [];
+        controller.onStatusChange((s) => statuses.push(s.state));
+
+        controller.kick(); // transport saw the connection die (onDown)
+        await flush();
+        // Listeners must hear about both the suspect connection and the
+        // recovery, so refresh-on-connected subscribers re-fetch after a
+        // transport-level drop even when the first re-probe succeeds.
+        expect(statuses).toEqual(['connecting', 'connected']);
+    });
+
     it('stop() prevents any further scheduled probe from running', async () => {
         const probe = vi.fn(async () => {
             throw new Error('down');

@@ -4,7 +4,13 @@
 // this module's job is only to own the reactive `$state` the UI reads and to
 // supply the real `fetch`/`localStorage` boundaries those pure functions need.
 
-import { DaemonClient, wsDialer, wsMuxDialer, wtDialer } from '$lib/protocol';
+import {
+    type CloseableDialer,
+    DaemonClient,
+    wsDialer,
+    wsMuxDialer,
+    wtDialer,
+} from '$lib/protocol';
 import {
     type CairnJsonDoc,
     clearStoredEndpoint,
@@ -25,6 +31,8 @@ let needsManualEndpoint = $state(false);
 let manualError = $state<string | undefined>(undefined);
 
 let controller: ReconnectController | undefined;
+/** The live muxed control dialer (WS endpoints only), retired on replacement. */
+let controlDialer: CloseableDialer | undefined;
 const statusListeners = new Set<(status: ConnectionStatus) => void>();
 
 /**
@@ -96,6 +104,8 @@ export function forgetEndpoint(): void {
     clearStoredEndpoint(window.localStorage);
     controller?.stop();
     controller = undefined;
+    controlDialer?.close();
+    controlDialer = undefined;
     client = undefined;
     endpoint = undefined;
     status = { state: 'connecting' };
@@ -132,6 +142,12 @@ export function onConnectionStatusChange(fn: (status: ConnectionStatus) => void)
 function connectWith(ep: EndpointConfig): void {
     endpoint = ep;
     needsManualEndpoint = false;
+    // Retire the previous control connection: without this, the old mux
+    // socket stays open on both ends (the daemon's keepalive pings keep it
+    // warm), leaking one socket + daemon serve loop per endpoint switch.
+    controlDialer?.close();
+    controlDialer = undefined;
+
     // Forward reference: the mux dialer's `onDown` needs the controller, but
     // the controller's probe needs the client built from the dialer. Safe
     // because `onDown` only fires when an *established* socket dies — long
@@ -139,16 +155,18 @@ function connectWith(ep: EndpointConfig): void {
     // newer `connectWith`, its captured controller is stopped and `kick()`
     // no-ops.
     let next: ReconnectController | undefined;
-    const c =
-        ep.transport === 'ws'
-            ? new DaemonClient(
-                  // Control traffic (unary + wait) rides one persistent muxed
-                  // socket; attach/logs/send keep dedicated one-shot sockets
-                  // so bulk streams stay off the control connection.
-                  wsMuxDialer(ep.url, { onDown: () => next?.kick() }),
-                  wsDialer(ep.url),
-              )
-            : new DaemonClient(wtDialer(ep.url, ep.certHash));
+    const isWs = ep.transport === 'ws';
+    let c: DaemonClient;
+    if (isWs) {
+        // Control traffic (unary + wait) rides one persistent muxed socket;
+        // attach/logs/send keep dedicated one-shot sockets so bulk streams
+        // stay off the control connection.
+        const control = wsMuxDialer(ep.url, { onDown: () => next?.kick() });
+        controlDialer = control;
+        c = new DaemonClient(control, wsDialer(ep.url));
+    } else {
+        c = new DaemonClient(wtDialer(ep.url, ep.certHash));
+    }
     client = c;
 
     controller?.stop();
@@ -156,9 +174,11 @@ function connectWith(ep: EndpointConfig): void {
         // A cheap, data-free connectivity check — keeps the connection status
         // independent of any particular RPC (sessions, attach, ...).
         probe: () => c.version().then(() => undefined),
-        // The steady probe is only a fallback watchdog now that a dead muxed
-        // socket kicks an immediate re-probe via `onDown`, so it can be lazy.
-        steadyIntervalMs: 30_000,
+        // Over WS the steady probe is only a fallback watchdog — a dead muxed
+        // socket kicks an immediate re-probe via `onDown` — so it can be
+        // lazy. WebTransport has no equivalent death signal, so it keeps the
+        // controller's tighter default cadence.
+        ...(isWs ? { steadyIntervalMs: 30_000 } : {}),
     });
     next.onStatusChange((s) => {
         status = s;

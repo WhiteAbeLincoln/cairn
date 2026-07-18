@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DaemonHarness } from './harness';
 import {
     DaemonClient,
+    type MuxWebSocket,
     type SessionSpec,
     wsDialer,
     wsMuxDialer,
@@ -34,7 +35,10 @@ beforeAll(async () => {
     const control = wsMuxDialer(harness.wsUrl, {
         connect: (url, protocols) => {
             socketsOpened += 1;
-            return new WebSocket(url, protocols);
+            // Same cast as wsmux.ts's browserSocket: the runtime WebSocket
+            // satisfies MuxWebSocket, but its DOM handler property types
+            // fail the strictly contravariant structural check.
+            return new WebSocket(url, protocols) as unknown as MuxWebSocket;
         },
     });
     muxed = new DaemonClient(control, wsDialer(harness.wsUrl));

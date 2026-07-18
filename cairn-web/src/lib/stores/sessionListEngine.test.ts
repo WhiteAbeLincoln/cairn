@@ -114,7 +114,13 @@ describe('reconnect drives a session-list refresh (store refresh on reconnect)',
                 scheduled.push(fn);
                 return fn;
             },
-            clearSchedule: () => {},
+            // Must actually remove: the controller arms (and clears) a
+            // probe-timeout timer per probe, which would otherwise linger
+            // ahead of the retry in this FIFO.
+            clearSchedule: (handle) => {
+                const idx = scheduled.indexOf(handle as () => void);
+                if (idx >= 0) scheduled.splice(idx, 1);
+            },
         });
 
         controller.start();

@@ -44,6 +44,13 @@ export interface ReconnectControllerOptions {
     probe: () => Promise<void>;
     /** Delay between successful probes while connected (health re-check cadence). Default 15s. */
     steadyIntervalMs?: number;
+    /**
+     * How long a single probe may run before it counts as failed. Guards
+     * against zombie sockets that accept writes but never deliver reads: a
+     * probe that never settles would otherwise wedge the controller forever
+     * (no reschedule, `kick()` no-oping on the in-flight probe). Default 10s.
+     */
+    probeTimeoutMs?: number;
     backoff?: BackoffOptions;
     /** Injectable in place of `setTimeout`, for deterministic tests. */
     schedule?: (fn: () => void, ms: number) => unknown;
@@ -95,14 +102,18 @@ export class ReconnectController {
     /**
      * Probe immediately instead of waiting out the current timer — used when a
      * transport notices the connection died (e.g. the muxed WebSocket's
-     * `onDown`), so status flips to `reconnecting` right away rather than up
-     * to a steady interval later. No-op while stopped, and no-op while a probe
-     * is already in flight (that probe's outcome is about to reschedule
-     * anyway; kicking mid-probe must never cause a concurrent double-probe).
+     * `onDown`). Status flips to `connecting` right away (notifying listeners:
+     * the connection is suspect), so even a first-try successful re-probe
+     * produces a connecting -> connected transition and "refresh on reconnect"
+     * subscribers re-fetch. No-op while stopped, and no-op while a probe is
+     * already in flight — no status change either (that probe's outcome is
+     * about to reschedule anyway; kicking mid-probe must never cause a
+     * concurrent double-probe).
      */
     kick(): void {
         if (this.#stopped || this.#probing) return;
         this.#clearTimer();
+        this.#setStatus({ state: 'connecting' });
         void this.#runNow();
     }
 
@@ -117,7 +128,7 @@ export class ReconnectController {
 
     async #runProbe(): Promise<void> {
         try {
-            await this.#opts.probe();
+            await this.#probeWithTimeout();
             if (this.#stopped) return;
             this.#attempt = 0;
             // Only notify on the connecting/reconnecting -> connected
@@ -140,6 +151,35 @@ export class ReconnectController {
                 error,
             });
             this.#scheduleNext(delay);
+        }
+    }
+
+    /**
+     * Race the probe against `probeTimeoutMs`, armed via the injectable
+     * scheduler. A timed-out probe rejects (flowing into the normal backoff
+     * path); if the probe settles first, the timeout timer is cleared. A probe
+     * that settles *after* its timeout already fired is simply ignored — the
+     * race has settled, and the backoff path has already rescheduled.
+     */
+    async #probeWithTimeout(): Promise<void> {
+        const timeoutMs = this.#opts.probeTimeoutMs ?? 10_000;
+        const schedule = this.#opts.schedule ?? ((fn, d) => setTimeout(fn, d));
+        let timeoutHandle: unknown;
+        try {
+            await Promise.race([
+                new Promise<never>((_, reject) => {
+                    timeoutHandle = schedule(
+                        () => reject(new Error(`probe timed out after ${timeoutMs}ms`)),
+                        timeoutMs,
+                    );
+                }),
+                this.#opts.probe(),
+            ]);
+        } finally {
+            const clear =
+                this.#opts.clearSchedule ??
+                ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
+            clear(timeoutHandle);
         }
     }
 
