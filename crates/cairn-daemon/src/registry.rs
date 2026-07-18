@@ -8,10 +8,22 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use cairn_protocol::cairn::daemon::types::{ExitStatus as WireExit, SessionInfo, SessionSpec};
 use cairn_pty::{ClientId, GhosttyPty, PtySession};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 use crate::error::DaemonError;
 use crate::spawn::options_from;
+
+/// Session-lifecycle notifications. Carries ids, not snapshots: two emission
+/// points (`AttachGuard::drop`, `rename`) are sync, and `session_info()` is
+/// async — the watch handler resolves ids to fresh snapshots itself.
+#[derive(Debug, Clone)]
+pub enum RegistryEvent {
+    /// The session's `session-info` changed structurally
+    /// (created / renamed / restarted / exited / attach / detach).
+    Changed { id: String },
+    /// Reserved: no emitter yet (no session-removal op exists).
+    Removed { id: String },
+}
 
 /// The swappable runtime state of a session (replaced on restart).
 struct Running {
@@ -32,6 +44,9 @@ pub struct SessionEntry {
     name: Mutex<Option<String>>,
     running: RwLock<Running>,
     pub attached: Mutex<HashMap<ClientId, AttachHandle>>,
+    /// Clone of the registry's bus sender — lets attach/detach (which happen
+    /// on the entry, not the registry) emit `Changed` without a back-pointer.
+    events: broadcast::Sender<RegistryEvent>,
 }
 
 /// RAII guard: removes the client from the entry's attached-set on drop.
@@ -47,6 +62,10 @@ impl Drop for AttachGuard {
             .lock()
             .expect("attached lock")
             .remove(&self.client_id);
+        // Sync send after the lock is released; no subscribers is fine.
+        let _ = self.entry.events.send(RegistryEvent::Changed {
+            id: self.entry.id.clone(),
+        });
     }
 }
 
@@ -59,6 +78,10 @@ impl SessionEntry {
             .lock()
             .expect("attached lock")
             .insert(client_id, AttachHandle { kick: kick_tx });
+        // Sync send after the lock is released; no subscribers is fine.
+        let _ = self.events.send(RegistryEvent::Changed {
+            id: self.id.clone(),
+        });
         (
             kick_rx,
             AttachGuard {
@@ -103,6 +126,10 @@ impl SessionEntry {
 pub struct SessionRegistry {
     sessions: RwLock<HashMap<String, Arc<SessionEntry>>>,
     next_client_id: AtomicU64,
+    /// Session-lifecycle event bus (see `RegistryEvent`). Small capacity —
+    /// it carries only ids, and overflow is recoverable via subscribers'
+    /// `Lagged` → resync path.
+    events: broadcast::Sender<RegistryEvent>,
 }
 
 impl Default for SessionRegistry {
@@ -113,10 +140,28 @@ impl Default for SessionRegistry {
 
 impl SessionRegistry {
     pub fn new() -> Self {
+        let (events, _) = broadcast::channel(64);
         Self {
             sessions: RwLock::new(HashMap::new()),
             next_client_id: AtomicU64::new(0),
+            events,
         }
+    }
+
+    /// Subscribe to session-lifecycle events. Capacity is small (64) —
+    /// overflow is recoverable: receivers treat `Lagged` as "resync".
+    pub fn subscribe_events(&self) -> broadcast::Receiver<RegistryEvent> {
+        self.events.subscribe()
+    }
+
+    /// Number of live receivers on the `RegistryEvent` bus — currently always
+    /// one per `watch-sessions` stream (the only subscriber today), but this
+    /// counts the bus itself, not "watch streams" specifically; any future
+    /// subscriber would show up here too. Exists for observability/tests —
+    /// e.g. asserting a disconnected watcher's task actually tears down
+    /// instead of lingering until the next registry event.
+    pub fn event_subscriber_count(&self) -> usize {
+        self.events.receiver_count()
     }
 
     pub fn mint_client_id(&self) -> ClientId {
@@ -169,23 +214,28 @@ impl SessionRegistry {
             DaemonError::SpawnFailed
         })?;
         let pid = None; // pid surfaced via inspect later if cairn-pty exposes it; None for v0
+        let handle: Arc<dyn PtySession> = Arc::new(handle);
         let entry = Arc::new(SessionEntry {
             id: id.clone(),
             created_at_unix_ms: now_unix_ms(),
             spec: spec.clone(),
             name: Mutex::new(name),
             running: RwLock::new(Running {
-                handle: Arc::new(handle),
+                handle: handle.clone(),
                 pid,
             }),
             attached: Mutex::new(HashMap::new()),
+            events: self.events.clone(),
         });
         // Build SessionInfo before inserting — lock is dropped before .await.
         let info = session_info(&entry).await;
         self.sessions
             .write()
             .expect("sessions lock")
-            .insert(id, entry);
+            .insert(id.clone(), entry);
+        // Send after the entry is inserted, so a subscriber resolving the id finds it.
+        let _ = self.events.send(RegistryEvent::Changed { id: id.clone() });
+        spawn_exit_watcher(handle, self.events.clone(), id);
 
         tracing::info!(
             session_id = %info.id,
@@ -231,13 +281,24 @@ impl SessionRegistry {
             return Err(DaemonError::NameInUse);
         }
         entry.set_name(new_name);
+        let _ = self.events.send(RegistryEvent::Changed {
+            id: entry.id.clone(),
+        });
         Ok(())
     }
 
     /// Re-spawn under the same id/name; rejects a still-running session unless `force`.
+    ///
+    /// The old child (if any) is explicitly SIGKILLed, best-effort, in a
+    /// spawned task, with exit reason `"restarted"` — Drop-on-refcount-zero
+    /// isn't a reliable trigger here (see the comment at the kill site below).
+    /// Emits a `Changed` event for the session id once the new handle is
+    /// swapped in. Requires an ambient tokio runtime (`tokio::spawn`), same as
+    /// `create()`.
     pub fn restart(&self, key: &str, force: bool, default_shell: &str) -> Result<(), DaemonError> {
         let entry = self.resolve(key).ok_or(DaemonError::NotFound)?;
-        if entry.handle().try_exit_status().is_none() && !force {
+        let old = entry.handle();
+        if old.try_exit_status().is_none() && !force {
             return Err(DaemonError::Running);
         }
         let opts = options_from(entry.spec.clone(), default_shell, entry.id.clone());
@@ -251,9 +312,44 @@ impl SessionRegistry {
             );
             DaemonError::SpawnFailed
         })?;
-        entry.swap_running(Arc::new(handle), None); // old handle dropped -> Drop kills old child
+        let handle: Arc<dyn PtySession> = Arc::new(handle);
+        entry.swap_running(handle.clone(), None);
+        // Explicit kill — Drop-on-refcount-zero is not a reliable trigger here:
+        // the exit watcher (below, and any attached client's handler) holds its
+        // own clone of `old` for as long as it's awaiting `wait()`/streaming, so
+        // dropping the registry's own reference doesn't guarantee the strong
+        // count hits zero. Unconditional and best-effort: `signal()` is documented
+        // Ok-if-already-exited, so this is a no-op on the non-force path (the
+        // child is already dead there) and a real kill on the force path.
+        tokio::spawn(async move {
+            let _ = old
+                .signal(nix::sys::signal::Signal::SIGKILL, Some("restarted".into()))
+                .await;
+        });
+        let _ = self.events.send(RegistryEvent::Changed {
+            id: entry.id.clone(),
+        });
+        spawn_exit_watcher(handle, self.events.clone(), entry.id.clone());
         Ok(())
     }
+}
+
+/// Spawn a task that resolves when `handle` exits and emits a `Changed`
+/// event for `id`. One watcher per spawned handle: `create()` and `restart()`
+/// each spawn one for the handle they just created. On restart, the old
+/// handle's watcher (spawned earlier) fires once as the old child dies —
+/// harmless, the watch handler coalesces repeated ids for the same session.
+/// Requires an ambient tokio runtime (`tokio::spawn`); all production callers
+/// are RPC handlers, and registry tests are `#[tokio::test]`.
+fn spawn_exit_watcher(
+    handle: Arc<dyn PtySession>,
+    events: broadcast::Sender<RegistryEvent>,
+    id: String,
+) {
+    tokio::spawn(async move {
+        handle.wait().await;
+        let _ = events.send(RegistryEvent::Changed { id });
+    });
 }
 
 pub(crate) fn now_unix_ms() -> u64 {
@@ -393,6 +489,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn force_restart_kills_old_child() {
+        let reg = SessionRegistry::new();
+        let info = reg
+            .create(spec(Some("worker")), "/bin/sh")
+            .await
+            .expect("create");
+        // Capture the pre-restart handle so we can observe whether the OLD
+        // child actually dies, not just that a new one gets spawned.
+        let old = reg.resolve(&info.id).expect("resolve").handle();
+        reg.restart(&info.id, true, "/bin/sh")
+            .expect("force restart");
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), old.wait())
+            .await
+            .expect("old child killed within timeout");
+        assert_eq!(status.reason(), Some("restarted"));
+    }
+
+    #[tokio::test]
     async fn restart_without_force_while_running_is_rejected() {
         let reg = SessionRegistry::new();
         let info = reg
@@ -451,5 +565,97 @@ mod tests {
         assert_eq!(entry.attached_ids(), vec![cid.to_string()]);
         drop(guard);
         assert!(entry.attached_ids().is_empty());
+    }
+
+    /// Helper: pull the next event off the bus, generously bounded so a
+    /// genuine bug (no event sent) fails the test instead of hanging.
+    async fn next_event(rx: &mut broadcast::Receiver<RegistryEvent>) -> RegistryEvent {
+        tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("event within timeout")
+            .expect("bus not closed")
+    }
+
+    #[tokio::test]
+    async fn subscribe_then_create_emits_changed_with_created_id() {
+        let reg = SessionRegistry::new();
+        let mut events = reg.subscribe_events();
+        let info = reg
+            .create(spec(Some("dev")), "/bin/sh")
+            .await
+            .expect("create");
+        let ev = next_event(&mut events).await;
+        assert!(matches!(ev, RegistryEvent::Changed { id } if id == info.id));
+    }
+
+    #[tokio::test]
+    async fn rename_emits_changed() {
+        let reg = SessionRegistry::new();
+        let info = reg
+            .create(spec(Some("old")), "/bin/sh")
+            .await
+            .expect("create");
+        let mut events = reg.subscribe_events();
+        reg.rename(&info.id, "new".to_string()).expect("rename");
+        let ev = next_event(&mut events).await;
+        assert!(matches!(ev, RegistryEvent::Changed { id } if id == info.id));
+    }
+
+    #[tokio::test]
+    async fn force_restart_emits_changed() {
+        let reg = SessionRegistry::new();
+        let info = reg
+            .create(spec(Some("worker")), "/bin/sh")
+            .await
+            .expect("create");
+        let mut events = reg.subscribe_events();
+        reg.restart(&info.id, true, "/bin/sh")
+            .expect("force restart");
+        let ev = next_event(&mut events).await;
+        assert!(matches!(ev, RegistryEvent::Changed { id } if id == info.id));
+    }
+
+    #[tokio::test]
+    async fn attach_then_guard_drop_each_emit_changed() {
+        let reg = SessionRegistry::new();
+        let info = reg
+            .create(spec(Some("dev")), "/bin/sh")
+            .await
+            .expect("create");
+        let entry = reg.resolve(&info.id).expect("resolve");
+        let cid = reg.mint_client_id();
+        let mut events = reg.subscribe_events();
+
+        let (_kick_rx, guard) = entry.attach(cid);
+        let attach_ev = next_event(&mut events).await;
+        assert!(matches!(attach_ev, RegistryEvent::Changed { id } if id == info.id));
+
+        drop(guard);
+        let detach_ev = next_event(&mut events).await;
+        assert!(matches!(detach_ev, RegistryEvent::Changed { id } if id == info.id));
+    }
+
+    #[tokio::test]
+    async fn exit_watcher_emits_changed_after_short_lived_session_exits() {
+        let reg = SessionRegistry::new();
+        let mut events = reg.subscribe_events();
+        let short_lived = SessionSpec {
+            name: Some("short".to_string()),
+            command: vec!["sh".into(), "-c".into(), "exit 0".into()],
+            env: vec![],
+            env_inherit: true,
+            workdir: None,
+            tty: true,
+            stdin: true,
+            idle_timeout_secs: None,
+            scrollback_lines: 100,
+        };
+        let info = reg.create(short_lived, "/bin/sh").await.expect("create");
+        // Drain the create() event so we're waiting specifically for the
+        // exit-watcher's event, with no further registry call in between.
+        next_event(&mut events).await;
+
+        let ev = next_event(&mut events).await;
+        assert!(matches!(ev, RegistryEvent::Changed { id } if id == info.id));
     }
 }

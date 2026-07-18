@@ -3,7 +3,13 @@ import { accept, Chan, t } from '@bytecodealliance/wrpc';
 import { describe, expect, it } from 'vitest';
 import { DaemonClient } from './client';
 import type { Dialer, Transport } from './transport';
-import { CairnError, type ClientEvent, type SessionInfo, type SessionSpec } from './types';
+import {
+    CairnError,
+    type ClientEvent,
+    type SessionEvent,
+    type SessionInfo,
+    type SessionSpec,
+} from './types';
 import * as wit from './wit';
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -41,6 +47,13 @@ const sampleInfo: SessionInfo = {
     spec: sampleSpec,
 };
 
+/** A distinct `SessionInfo` for watch-sessions tests, where multiple sessions appear at once. */
+const infoVariant = (n: number): SessionInfo => ({
+    ...sampleInfo,
+    id: `018f9a2b-0000-7000-8000-00000000000${n}`,
+    name: `demo-${n}`,
+});
+
 /** A decoded variant `{ tag, val? }`. */
 type RawVariant = { tag: string; val?: Value };
 
@@ -51,10 +64,20 @@ type RawVariant = { tag: string; val?: Value };
 class FakeDaemon {
     readonly received: Record<string, unknown> = {};
     readonly errors: unknown[] = [];
+    /** Count of transports dialed — used to assert an already-aborted `watchSessions()` skips dialing entirely. */
+    dials = 0;
+    /**
+     * Override the `watch-sessions` event source (default: three fixed
+     * batches — snapshot, upsert, removed — that end the stream on their
+     * own). Tests that need to hold the stream
+     * open — e.g. to abort mid-stream — supply their own never-closed `Chan`.
+     */
+    watchSource: (() => AsyncIterable<Value[]>) | undefined;
     readonly #pending: Promise<void>[] = [];
 
     dialer(): Dialer {
         return async () => {
+            this.dials += 1;
             const [clientSide, serverSide] = transportPair();
             const job = this.#handle(serverSide).catch((err) => {
                 this.errors.push(err);
@@ -102,6 +125,28 @@ class FakeDaemon {
                         [{ tag: 'ok', val: asValue(sampleInfo) }],
                     );
                 }
+                return;
+            }
+            case 'watch-sessions': {
+                const { done } = await inv.receiveParams([t.option(wit.callContext)]);
+                await done;
+                const source: AsyncIterable<Value[]> =
+                    this.watchSource?.() ??
+                    (async function* () {
+                        yield [
+                            { tag: 'snapshot', val: [asValue(sampleInfo), asValue(infoVariant(2))] },
+                        ];
+                        yield [
+                            { tag: 'upsert', val: asValue(infoVariant(3)) },
+                            { tag: 'upsert', val: asValue(infoVariant(4)) },
+                        ];
+                        // Exercise all three variant cases through the real
+                        // codec — a payload-descriptor typo on `removed`
+                        // (e.g. the wrong wire type) would otherwise go
+                        // unnoticed since nothing else round-trips it.
+                        yield [{ tag: 'removed', val: infoVariant(2).id }];
+                    })();
+                await inv.sendResults([t.stream(wit.sessionEvent)], [source]);
                 return;
             }
             case 'create': {
@@ -306,7 +351,14 @@ function transportPair(): [Transport, Transport] {
         closeWrite: () => {
             toServer.close();
         },
-    };
+        // A real socket's close() tears down both directions at once; mirror
+        // that here so `closeTransport()` (used by `watchSessions()` on
+        // abort) can unblock a read parked waiting for the next frame.
+        close: () => {
+            toServer.close();
+            toClient.close();
+        },
+    } as Transport;
     const serverSide: Transport = {
         read: recv(toServer),
         write: (bytes: Uint8Array) => {
@@ -352,6 +404,98 @@ describe('DaemonClient round-trips', () => {
         });
         await fake.settle();
         expect(fake.errors).toEqual([]);
+    });
+
+    it('watchSessions flattens wire batches into individual typed events', async () => {
+        const { fake, client } = fixture();
+        const events: SessionEvent[] = [];
+        for await (const event of client.watchSessions()) {
+            events.push(event);
+        }
+        expect(events).toEqual([
+            { tag: 'snapshot', val: [sampleInfo, infoVariant(2)] },
+            { tag: 'upsert', val: infoVariant(3) },
+            { tag: 'upsert', val: infoVariant(4) },
+            { tag: 'removed', val: infoVariant(2).id },
+        ]);
+        await fake.settle();
+        expect(fake.errors).toEqual([]);
+    });
+
+    it('watchSessions(signal) ends the stream and closes the transport when aborted mid-stream', async () => {
+        const { fake, client } = fixture();
+        // A source that only ever yields the one batch we push, so the
+        // client's `for await` is left parked waiting for the next frame —
+        // exactly the state a `ReconnectController` attempt is in when a
+        // later attempt supersedes it and aborts the signal.
+        const serverEvents = new Chan<Value[]>();
+        fake.watchSource = () => serverEvents;
+
+        const controller = new AbortController();
+        const events: SessionEvent[] = [];
+        const iteration = (async () => {
+            for await (const event of client.watchSessions(controller.signal)) {
+                events.push(event);
+                controller.abort();
+            }
+        })();
+
+        serverEvents.push([{ tag: 'snapshot', val: [asValue(sampleInfo)] }]);
+        // If abort didn't close the transport, this would hang forever: the
+        // loop above has nothing else to wake it once parked on the read.
+        await iteration;
+
+        expect(events).toEqual([{ tag: 'snapshot', val: [sampleInfo] }]);
+
+        serverEvents.close(); // release the daemon-side writer, otherwise blocked on more app data
+        await fake.settle();
+        expect(fake.errors).toEqual([]);
+    });
+
+    it('watchSessions(signal) ends cleanly with zero events when aborted after dial but before invoke', async () => {
+        const { fake } = fixture();
+        const controller = new AbortController();
+        let closeCalls = 0;
+        const baseDialer = fake.dialer();
+        // Simulate the signal aborting while the dial itself was in flight:
+        // by the time dial() resolves here and control returns to
+        // `watchSessions`, its `addEventListener('abort', ...)` call hasn't
+        // happened yet, so the pre-dial check can't have caught it either —
+        // only the post-dial re-check can.
+        const dialer: Dialer = async () => {
+            const transport = await baseDialer();
+            controller.abort();
+            return {
+                ...transport,
+                close: () => {
+                    closeCalls += 1;
+                    (transport as { close?: () => void }).close?.();
+                },
+            } as Transport;
+        };
+        const client = new DaemonClient(dialer);
+
+        const events: SessionEvent[] = [];
+        for await (const event of client.watchSessions(controller.signal)) {
+            events.push(event);
+        }
+
+        expect(events).toEqual([]);
+        expect(closeCalls).toBeGreaterThan(0);
+    });
+
+    it('watchSessions(signal) skips dialing entirely when the signal is already aborted', async () => {
+        const { fake, client } = fixture();
+        const controller = new AbortController();
+        controller.abort();
+
+        const events: SessionEvent[] = [];
+        for await (const event of client.watchSessions(controller.signal)) {
+            events.push(event);
+        }
+
+        expect(events).toEqual([]);
+        expect(fake.dials).toBe(0);
     });
 
     it('create round-trips the full session spec', async () => {
@@ -533,7 +677,7 @@ describe('DaemonClient dialer routing', () => {
         }
     }
 
-    it('routes unary methods and wait via control, streaming methods via streams', async () => {
+    it('routes unary methods, wait, and watchSessions via control, streaming methods via streams', async () => {
         const fake = new FakeDaemon();
         const control = counted(fake.dialer());
         const streams = counted(fake.dialer());
@@ -550,7 +694,12 @@ describe('DaemonClient dialer routing', () => {
         await client.whoami();
         await client.authenticate('good');
         await client.wait(sampleInfo.id);
-        expect(control.count()).toBe(11);
+        // watch-sessions doubles as the control connection's liveness signal,
+        // so it must ride control, not a dedicated streams socket.
+        for await (const _event of client.watchSessions()) {
+            // drain to completion
+        }
+        expect(control.count()).toBe(12);
         expect(streams.count()).toBe(0);
 
         for await (const _batch of client.logs(sampleInfo.id, { tag: 'tail', val: 1 }, false)) {
@@ -562,7 +711,7 @@ describe('DaemonClient dialer routing', () => {
         }
         await client.send(sampleInfo.id, input());
         expect(streams.count()).toBe(3);
-        expect(control.count()).toBe(11);
+        expect(control.count()).toBe(12);
 
         await fake.settle();
         expect(fake.errors).toEqual([]);

@@ -4,6 +4,7 @@ pub mod meta;
 pub mod send;
 pub mod sessions;
 pub mod wait;
+pub mod watch;
 
 use cairn_protocol::cairn::daemon::types::ExitStatus as WireExit;
 

@@ -13,7 +13,13 @@
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DaemonHarness, dec, enc, reapSessions, spec } from './harness';
-import { DaemonClient, type MuxWebSocket, wsDialer, wsMuxDialer } from '../../src/lib/protocol';
+import {
+    DaemonClient,
+    type MuxWebSocket,
+    type SessionEvent,
+    wsDialer,
+    wsMuxDialer,
+} from '../../src/lib/protocol';
 
 let harness: DaemonHarness;
 /** Client under test: muxed control, one-shot streams. */
@@ -120,6 +126,54 @@ describe('two-dialer routing', () => {
 
         // send + every logs poll dialed fresh one-shot sockets; none of that
         // traffic touched (or grew) the mux connection.
+        expect(socketsOpened).toBe(1);
+    });
+});
+
+describe('watch-sessions on the muxed control connection', () => {
+    it('holds a live push stream on one mux channel; abort RSTs the channel, not the socket', async () => {
+        const controller = new AbortController();
+        const events: SessionEvent[] = [];
+        const watcher = (async () => {
+            for await (const ev of muxed.watchSessions(controller.signal)) {
+                events.push(ev);
+            }
+        })();
+
+        // The stream opens with a snapshot…
+        await expect.poll(() => events.length, { timeout: 5_000 }).toBeGreaterThan(0);
+        expect(events[0].tag).toBe('snapshot');
+
+        // …and while its channel stays open, unary calls (create) proceed on
+        // sibling channels of the SAME socket, and the daemon pushes the
+        // resulting upsert back over the held-open stream.
+        const created = await muxed.create(spec({ name: 'mux-watch', command: ['cat'] }));
+        await expect
+            .poll(
+                () => events.some((e) => e.tag === 'upsert' && e.val.name === 'mux-watch'),
+                { timeout: 5_000 },
+            )
+            .toBe(true);
+
+        // Exit lands as an upsert carrying the exit status (registry exit
+        // watcher → bus → this subscriber), still on the one socket.
+        await muxed.kill(created.id, { tag: 'named', val: 'kill' }, undefined);
+        await expect
+            .poll(
+                () =>
+                    events.some(
+                        (e) => e.tag === 'upsert' && e.val.id === created.id && e.val.exit !== undefined,
+                    ),
+                { timeout: 5_000 },
+            )
+            .toBe(true);
+
+        // Cancelling the subscription tears down only its channel: the
+        // iterator ends cleanly and the shared socket keeps serving.
+        controller.abort();
+        await watcher;
+        const info = await muxed.version();
+        expect(info.protocol).toBe('cairn:daemon@0.1.0');
         expect(socketsOpened).toBe(1);
     });
 });

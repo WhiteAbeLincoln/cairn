@@ -8,6 +8,7 @@ import {
     type ExitStatus,
     type LogWindow,
     type ServerEvent,
+    type SessionEvent,
     type SessionId,
     type SessionInfo,
     type SessionSpec,
@@ -23,14 +24,16 @@ import * as wit from './wit';
  * injected {@link Dialer}, runs exactly one wRPC invocation over it, and closes
  * it when the call (or its stream) completes. Unary methods return promises
  * that reject with a {@link CairnError} when the daemon returns `result::err`;
- * streaming methods (`attach`, `logs`) return async iterables and `wait`
- * returns a promise resolved by the daemon's `future`.
+ * streaming methods (`attach`, `logs`, `watchSessions`) return async iterables
+ * and `wait` returns a promise resolved by the daemon's `future`.
  *
- * Two dialer roles: unary methods and `wait` dial `control`, while `attach`,
- * `logs`, and `send` dial `streams`. This keeps bulk PTY/log streams off a
- * persistent multiplexed control connection (head-of-line blocking, buffer
- * pressure); `wait` is long-lived but tiny — a single `future` result — so it
- * rides `control`. Constructing with one dialer uses it for both roles.
+ * Two dialer roles: unary methods, `wait`, and `watchSessions` dial
+ * `control`, while `attach`, `logs`, and `send` dial `streams`. This keeps
+ * bulk PTY/log streams off a persistent multiplexed control connection
+ * (head-of-line blocking, buffer pressure); `wait` and `watchSessions` are
+ * long-lived but tiny — a single `future` result, sparse session events — so
+ * they ride `control`, where the watch stream doubles as the connection's
+ * liveness signal. Constructing with one dialer uses it for both roles.
  *
  * The `ctx` (`call-context`) parameter of every WIT method is sent as `none`
  * for now; trace propagation can be threaded through later without changing
@@ -67,6 +70,57 @@ export class DaemonClient {
             [t.result(wit.sessionInfo, wit.error)],
         );
         return unwrapResult<SessionInfo>(res);
+    }
+
+    /**
+     * Watch the session list. The first yielded event is always a `snapshot`
+     * of every current session; subsequent events are `upsert` (created or
+     * changed) and `removed` (gone). Wire batches are flattened so each
+     * yielded item is a single typed event, not a batch.
+     *
+     * `signal` lets a caller (the `ReconnectController`) cancel a stream it no
+     * longer wants. Closing the transport is the only way to unblock an async
+     * iterator parked on a network read, so abort closes it explicitly rather
+     * than relying on the caller to stop iterating; the `for await` below then
+     * ends on its own once the underlying read resolves to EOF, and `finally`
+     * runs as it would for a normal stream end. Already-aborted signals skip
+     * dialing entirely — there's nothing to close yet.
+     */
+    async *watchSessions(signal?: AbortSignal): AsyncIterable<SessionEvent> {
+        if (signal?.aborted) return;
+        const transport = await this.#control();
+        const onAbort = () => closeTransport(transport);
+        signal?.addEventListener('abort', onAbort);
+        try {
+            // Dialing is async: the signal may have been aborted while it was
+            // in flight, in which case the listener above registered too late
+            // to see the event fire. Catch that race explicitly and end the
+            // stream cleanly (same as the pre-dial check above) instead of
+            // falling through to `invoke()` on the transport `onAbort()` just
+            // closed, which would throw instead of ending quietly.
+            if (signal?.aborted) {
+                onAbort();
+                return;
+            }
+            const { results, done } = await invoke(
+                transport,
+                wit.SESSIONS_INSTANCE,
+                'watch-sessions',
+                [t.option(wit.callContext)],
+                asArgs([NO_CTX]),
+                [t.stream(wit.sessionEvent)],
+            );
+            const stream = results[0] as AsyncIterable<RawVariant[]>;
+            for await (const batch of stream) {
+                for (const event of batch) {
+                    yield event as SessionEvent;
+                }
+            }
+            await done;
+        } finally {
+            signal?.removeEventListener('abort', onAbort);
+            closeTransport(transport);
+        }
     }
 
     async create(spec: SessionSpec): Promise<SessionInfo> {

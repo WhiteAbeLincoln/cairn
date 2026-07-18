@@ -1,17 +1,11 @@
 <script lang="ts">
-import { onMount } from 'svelte';
 import SessionList from '$lib/components/SessionList.svelte';
-import { getSessionList, refreshSessions } from '$lib/stores/sessions.svelte';
+import { getSessionList } from '$lib/stores/sessions.svelte';
 
+// Purely declarative: the session list is kept live by the daemon's
+// watch-sessions push stream (see connection.svelte.ts/sessionListEngine.ts),
+// so there's no poll or manual refresh to drive here.
 const store = getSessionList();
-
-// Reconnect-triggered refresh lives in the stores layer (sessions.svelte.ts);
-// this poll just keeps the visible list current while the page is mounted.
-onMount(() => {
-    refreshSessions();
-    const interval = setInterval(refreshSessions, 5000);
-    return () => clearInterval(interval);
-});
 </script>
 
 <div class="page-header">
@@ -19,7 +13,7 @@ onMount(() => {
     <a href="/sessions/new" class="btn btn-primary">+ New session</a>
 </div>
 
-<SessionList sessions={store.sessions} loading={store.loading} error={store.error} />
+<SessionList sessions={store.sessions} loading={store.loading} />
 
 <style>
     .page-header {

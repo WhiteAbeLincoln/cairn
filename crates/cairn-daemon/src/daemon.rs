@@ -119,6 +119,21 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
         Ok(sess::inspect(self, id).instrument(span).await)
     }
 
+    async fn watch_sessions(
+        &self,
+        _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<BoxStream<'static, Vec<cairn_protocol::cairn::daemon::types::SessionEvent>>>
+    {
+        let span = tracing::info_span!("rpc", method = "sessions.watch_sessions");
+        link_remote_context(&span, &call_ctx);
+        // `watch_sessions` is a plain `fn` (it never awaits internally — see
+        // its doc comment), so there's no future to `.instrument()`; a scoped
+        // `enter()` guard over this synchronous call is the correct pattern.
+        let _enter = span.enter();
+        crate::handlers::watch::watch_sessions(self)
+    }
+
     async fn create(
         &self,
         _ctx: ConnCtx,
@@ -189,7 +204,11 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     ) -> anyhow::Result<BoxFuture<'static, cairn_protocol::cairn::daemon::types::ExitStatus>> {
         let span = tracing::info_span!("rpc", method = "sessions.wait");
         link_remote_context(&span, &call_ctx);
-        crate::handlers::wait::wait(self, id).instrument(span).await
+        // `wait` is a plain `fn` (it never awaits internally — see its doc
+        // comment), so there's no future to `.instrument()`; a scoped
+        // `enter()` guard over this synchronous call is the correct pattern.
+        let _enter = span.enter();
+        crate::handlers::wait::wait(self, id)
     }
 
     async fn logs(
@@ -202,8 +221,9 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     ) -> anyhow::Result<BoxStream<'static, Vec<bytes::Bytes>>> {
         let span = tracing::info_span!("rpc", method = "sessions.logs");
         link_remote_context(&span, &call_ctx);
-        let _enter = span.enter();
-        crate::handlers::logs::logs(self, id, window, follow).await
+        crate::handlers::logs::logs(self, id, window, follow)
+            .instrument(span)
+            .await
     }
 
     async fn attach(
@@ -217,8 +237,9 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     {
         let span = tracing::info_span!("rpc", method = "sessions.attach");
         link_remote_context(&span, &call_ctx);
-        let _enter = span.enter();
-        Ok(crate::handlers::attach::attach(self, id, init, events).await)
+        Ok(crate::handlers::attach::attach(self, id, init, events)
+            .instrument(span)
+            .await)
     }
 
     async fn send(
@@ -230,8 +251,9 @@ impl cairn_protocol::exports::cairn::daemon::sessions::Handler<ConnCtx> for Daem
     ) -> anyhow::Result<Result<(), WireError>> {
         let span = tracing::info_span!("rpc", method = "sessions.send");
         link_remote_context(&span, &call_ctx);
-        let _enter = span.enter();
-        Ok(crate::handlers::send::send(self, id, chunks).await)
+        Ok(crate::handlers::send::send(self, id, chunks)
+            .instrument(span)
+            .await)
     }
 }
 

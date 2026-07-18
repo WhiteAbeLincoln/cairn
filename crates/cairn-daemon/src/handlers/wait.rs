@@ -9,7 +9,11 @@ use crate::handlers::wire_exit;
 /// `sessions.wait`: resolve the session, return a future that yields its exit
 /// status. No in-band error channel (a bare `future<exit-status>`), so a
 /// resolve miss is an outer transport error.
-pub async fn wait(
+///
+/// Plain `fn`, not `async fn`: resolving the session and building the boxed
+/// future are both synchronous; the `.await` lives inside the returned
+/// future, not on this function's own execution path.
+pub fn wait(
     d: &Daemon,
     id: String,
 ) -> anyhow::Result<Pin<Box<dyn Future<Output = WireExit> + Send + 'static>>> {

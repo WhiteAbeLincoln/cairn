@@ -6,21 +6,25 @@
 //! never have to spell out the methods they don't use.
 //!
 //! When a new test needs to stub an operation not yet covered, add an `on_*`
-//! builder + field for it (the streaming ops — wait/logs/attach/send — are
-//! intentionally left unstubbed until a test needs them).
+//! builder + field for it (the streaming ops — wait/logs/attach/send/
+//! watch-sessions — are intentionally left unstubbed until a test needs them).
 
 #![allow(dead_code)] // builder methods are used à la carte by individual tests
 
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use futures::Stream;
 use futures::stream::{StreamExt as _, select_all};
 use tempfile::TempDir;
 
 use cairn_protocol as bindings;
 
-use bindings::cairn::daemon::types::{CallContext, Error, SessionInfo, SessionSpec, Signal};
+use bindings::cairn::daemon::types::{
+    CallContext, Error, SessionEvent, SessionInfo, SessionSpec, Signal,
+};
 use bindings::exports::cairn::daemon::meta::VersionInfo;
 
 /// Per-connection context the wRPC unix-socket server hands to handlers.
@@ -219,6 +223,14 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         _id: String,
     ) -> anyhow::Result<Result<SessionInfo, Error>> {
         unimplemented!("sessions.inspect not stubbed in this test")
+    }
+
+    async fn watch_sessions(
+        &self,
+        _ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = Vec<SessionEvent>> + Send + 'static>>> {
+        unimplemented!("sessions.watch-sessions not stubbed in this test")
     }
 
     async fn create(

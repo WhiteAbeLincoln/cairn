@@ -71,6 +71,13 @@ interface types {
         error(error),
     }
 
+    // Case ORDER is the wire format: snapshot, upsert, removed.
+    variant session-event {
+        snapshot(list<session-info>),
+        upsert(session-info),
+        removed(session-id),
+    }
+
     record call-context {
         trace-context: option<string>,
     }
@@ -84,12 +91,14 @@ interface types {
 interface sessions {
     use types.{
         session-id, client-id, session-spec, session-info, signal,
-        log-window, attach-init, client-event, server-event,
+        log-window, attach-init, client-event, server-event, session-event,
         exit-status, error, call-context,
     };
 
     list-all: func(ctx: option<call-context>) -> list<session-info>;
     inspect:  func(ctx: option<call-context>, id: session-id) -> result<session-info, error>;
+
+    watch-sessions: func(ctx: option<call-context>) -> stream<session-event>;
 
     create:  func(ctx: option<call-context>, spec: session-spec) -> result<session-info, error>;
     rename:  func(ctx: option<call-context>, id: session-id, new-name: string) -> result<_, error>;

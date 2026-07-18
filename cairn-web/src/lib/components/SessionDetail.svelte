@@ -12,7 +12,6 @@ import Terminal from '$lib/components/Terminal.svelte';
 import { commandBasename, describeExit, relativeTime } from '$lib/format';
 import type { SessionInfo } from '$lib/protocol';
 import { getClient, onConnectionStatusChange } from '$lib/stores/connection.svelte';
-import { refreshSessions } from '$lib/stores/sessions.svelte';
 import type { AttachPhase } from '$lib/terminal/attachController';
 
 interface Props {
@@ -54,7 +53,9 @@ async function refreshInfo(): Promise<void> {
     if (!c) return;
     const fresh = await c.inspect(session.id);
     onUpdated(fresh);
-    refreshSessions();
+    // The shared sessions list no longer needs a manual nudge here: rename,
+    // kill, attach, and detach all publish a registry event that the
+    // watch-sessions stream pushes to `sessionListEngine` on its own.
 }
 
 // Keep the metadata bar honest across the attach lifecycle: (re)attaching or

@@ -1,169 +1,170 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { DaemonClient, SessionInfo } from '$lib/protocol';
-import { ReconnectController } from './reconnect';
-import { SessionListEngine } from './sessionListEngine';
+import { afterEach, describe, expect, it } from 'vitest';
+import type { SessionEvent, SessionInfo } from '$lib/protocol';
+import { sessionListEngine, SessionListEngine } from './sessionListEngine';
 
-const sampleInfo: SessionInfo = {
-    id: '018f9a2b-0000-7000-8000-000000000001',
-    name: 'demo',
-    pid: 4242,
-    cols: 80,
-    rows: 24,
-    attachedClients: [],
-    createdAtUnixMs: 1_700_000_000_000n,
-    exit: undefined,
-    spec: {
-        command: ['bash'],
-        env: [],
-        envInherit: true,
-        tty: true,
-        stdin: true,
-        scrollbackLines: 1000,
-    },
-};
+function info(id: string, createdAtUnixMs: bigint, name = id): SessionInfo {
+    return {
+        id,
+        name,
+        pid: 4242,
+        cols: 80,
+        rows: 24,
+        attachedClients: [],
+        createdAtUnixMs,
+        exit: undefined,
+        spec: {
+            command: ['bash'],
+            env: [],
+            envInherit: true,
+            tty: true,
+            stdin: true,
+            scrollbackLines: 1000,
+        },
+    };
+}
 
-function fakeClient(listAll: () => Promise<SessionInfo[]>): DaemonClient {
-    return { listAll } as unknown as DaemonClient;
+const a = info('018f9a2b-0000-7000-8000-00000000000a', 1_700_000_000_000n);
+const b = info('018f9a2b-0000-7000-8000-00000000000b', 1_700_000_001_000n);
+const c = info('018f9a2b-0000-7000-8000-00000000000c', 1_700_000_002_000n);
+
+function snapshot(sessions: SessionInfo[]): SessionEvent {
+    return { tag: 'snapshot', val: sessions };
+}
+
+function upsert(session: SessionInfo): SessionEvent {
+    return { tag: 'upsert', val: session };
+}
+
+function removed(id: string): SessionEvent {
+    return { tag: 'removed', val: id };
 }
 
 describe('SessionListEngine', () => {
-    it('sets loading during the fetch and populates sessions on success', async () => {
+    it('starts empty and loading, before any event is applied', () => {
         const engine = new SessionListEngine();
-        const seen: boolean[] = [];
-        engine.subscribe(() => seen.push(engine.loading));
+        expect(engine.loading).toBe(true);
+        expect(engine.sessions).toEqual([]);
+    });
 
-        await engine.refresh(fakeClient(async () => [sampleInfo]));
-
-        expect(engine.sessions).toEqual([sampleInfo]);
-        expect(engine.error).toBeUndefined();
+    it('a snapshot replaces the whole set and flips loading false', () => {
+        const engine = new SessionListEngine();
+        engine.applyEvent(snapshot([a, b]));
         expect(engine.loading).toBe(false);
-        expect(seen).toEqual([true, false]); // notified on start (loading) and finish
+        expect(engine.sessions).toEqual([a, b]);
+
+        // A later snapshot replaces entirely, dropping anything not in it.
+        engine.applyEvent(snapshot([c]));
+        expect(engine.sessions).toEqual([c]);
     });
 
-    it('records a display error and rethrows on failure', async () => {
+    it('upsert inserts a new id', () => {
         const engine = new SessionListEngine();
-        const client = fakeClient(async () => {
-            throw new Error('daemon unreachable');
-        });
-
-        await expect(engine.refresh(client)).rejects.toThrow('daemon unreachable');
-        expect(engine.error).toBe('daemon unreachable');
-        expect(engine.sessions).toEqual([]); // no stale data replaced by a failed refresh
+        engine.applyEvent(snapshot([a]));
+        engine.applyEvent(upsert(b));
+        expect(engine.sessions).toEqual([a, b]);
     });
 
-    it('clears a previous error once a later refresh succeeds', async () => {
+    it('upsert replaces an existing id rather than duplicating it', () => {
         const engine = new SessionListEngine();
-        let fail = true;
-        const client = fakeClient(async () => {
-            if (fail) throw new Error('down');
-            return [sampleInfo];
-        });
-
-        await expect(engine.refresh(client)).rejects.toThrow();
-        expect(engine.error).toBe('down');
-
-        fail = false;
-        await engine.refresh(client);
-        expect(engine.error).toBeUndefined();
-        expect(engine.sessions).toEqual([sampleInfo]);
+        engine.applyEvent(snapshot([a]));
+        const renamed = { ...a, name: 'renamed' };
+        engine.applyEvent(upsert(renamed));
+        expect(engine.sessions).toEqual([renamed]);
     });
 
-    it('coalesces overlapping refreshes onto one in-flight fetch (no stale-overwrites-fresh race)', async () => {
+    it('removed deletes an existing id', () => {
         const engine = new SessionListEngine();
-        let resolveList!: (v: SessionInfo[]) => void;
-        const listAll = vi.fn(
-            () =>
-                new Promise<SessionInfo[]>((resolve) => {
-                    resolveList = resolve;
-                }),
-        );
-        const client = fakeClient(listAll);
+        engine.applyEvent(snapshot([a, b]));
+        engine.applyEvent(removed(a.id));
+        expect(engine.sessions).toEqual([b]);
+    });
 
-        const first = engine.refresh(client);
-        const second = engine.refresh(client); // overlaps: must join, not re-fetch
-        expect(listAll).toHaveBeenCalledTimes(1);
+    it('removed for an unknown id is a no-op', () => {
+        const engine = new SessionListEngine();
+        engine.applyEvent(snapshot([a]));
+        engine.applyEvent(removed('018f9a2b-0000-7000-8000-0000000000ff'));
+        expect(engine.sessions).toEqual([a]);
+    });
 
-        resolveList([sampleInfo]);
-        await Promise.all([first, second]);
-        expect(engine.sessions).toEqual([sampleInfo]);
+    it('orders by createdAtUnixMs ascending regardless of event arrival order', () => {
+        const engine = new SessionListEngine();
+        // Applied out of chronological order — the getter must still sort.
+        engine.applyEvent(snapshot([c]));
+        engine.applyEvent(upsert(a));
+        engine.applyEvent(upsert(b));
+        expect(engine.sessions).toEqual([a, b, c]);
+    });
 
-        // Once settled, a new refresh really does fetch again.
-        const third = engine.refresh(client);
-        expect(listAll).toHaveBeenCalledTimes(2);
-        resolveList([]);
-        await third;
+    it('breaks ties on equal createdAtUnixMs by id', () => {
+        const engine = new SessionListEngine();
+        const sameTime1 = info('018f9a2b-0000-7000-8000-00000000000z', 1_700_000_000_000n);
+        const sameTime2 = info('018f9a2b-0000-7000-8000-000000000001', 1_700_000_000_000n);
+        engine.applyEvent(snapshot([sameTime1, sameTime2]));
+        expect(engine.sessions).toEqual([sameTime2, sameTime1]); // '...001' < '...z'
+    });
+
+    it('reset() returns to empty + loading, until the next snapshot', () => {
+        const engine = new SessionListEngine();
+        engine.applyEvent(snapshot([a]));
+        expect(engine.loading).toBe(false);
+
+        engine.reset();
+        expect(engine.loading).toBe(true);
         expect(engine.sessions).toEqual([]);
+
+        engine.applyEvent(snapshot([b]));
+        expect(engine.loading).toBe(false);
+        expect(engine.sessions).toEqual([b]);
+    });
+
+    it('notifies listeners once per applied event', () => {
+        const engine = new SessionListEngine();
+        let notifications = 0;
+        engine.subscribe(() => {
+            notifications += 1;
+        });
+
+        engine.applyEvent(snapshot([a]));
+        engine.applyEvent(upsert(b));
+        engine.applyEvent(removed(a.id));
+        expect(notifications).toBe(3);
+    });
+
+    it('notifies on reset() too, so a reactive wrapper sees the loading flip immediately', () => {
+        const engine = new SessionListEngine();
+        engine.applyEvent(snapshot([a]));
+        let notifications = 0;
+        engine.subscribe(() => {
+            notifications += 1;
+        });
+
+        engine.reset();
+        expect(notifications).toBe(1);
+    });
+
+    it('an unsubscribed listener stops receiving notifications', () => {
+        const engine = new SessionListEngine();
+        let notifications = 0;
+        const unsubscribe = engine.subscribe(() => {
+            notifications += 1;
+        });
+
+        engine.applyEvent(snapshot([a]));
+        unsubscribe();
+        engine.applyEvent(upsert(b));
+        expect(notifications).toBe(1);
     });
 });
 
-describe('reconnect drives a session-list refresh (store refresh on reconnect)', () => {
-    it('re-fetches the session list on every probe, so recovery implies a fresh list', async () => {
-        const engine = new SessionListEngine();
-        let call = 0;
-        const client = fakeClient(async () => {
-            call += 1;
-            if (call <= 2) throw new Error(`unreachable-${call}`);
-            return [sampleInfo];
-        });
-
-        const scheduled: Array<() => void> = [];
-        const controller = new ReconnectController({
-            probe: () => engine.refresh(client),
-            backoff: { baseMs: 10, jitter: () => 0 },
-            schedule: (fn) => {
-                scheduled.push(fn);
-                return fn;
-            },
-            // Must actually remove: the controller arms (and clears) a
-            // probe-timeout timer per probe, which would otherwise linger
-            // ahead of the retry in this FIFO.
-            clearSchedule: (handle) => {
-                const idx = scheduled.indexOf(handle as () => void);
-                if (idx >= 0) scheduled.splice(idx, 1);
-            },
-        });
-
-        controller.start();
-        await tick();
-        expect(controller.status.state).toBe('reconnecting');
-        expect(engine.error).toBe('unreachable-1');
-        expect(engine.sessions).toEqual([]);
-
-        scheduled.shift()?.(); // retry #1 -> still fails
-        await tick();
-        expect(controller.status.state).toBe('reconnecting');
-        expect(engine.error).toBe('unreachable-2');
-
-        scheduled.shift()?.(); // retry #2 -> succeeds
-        await tick();
-        expect(controller.status).toEqual({ state: 'connected' });
-        expect(engine.error).toBeUndefined();
-        expect(engine.sessions).toEqual([sampleInfo]);
+describe('sessionListEngine singleton', () => {
+    afterEach(() => {
+        sessionListEngine.reset();
     });
 
-    it('does not swallow the underlying error — SessionListEngine.error mirrors ReconnectController.status', async () => {
-        const engine = new SessionListEngine();
-        const client = fakeClient(async () => {
-            throw new Error('boom');
-        });
-        const statuses: string[] = [];
-        const controller = new ReconnectController({
-            probe: () => engine.refresh(client),
-            backoff: { baseMs: 10, jitter: () => 0 },
-            schedule: () => undefined,
-            clearSchedule: () => {},
-        });
-        controller.onStatusChange((s) => statuses.push(s.state));
-
-        controller.start();
-        await tick();
-
-        expect(statuses).toEqual(['connecting', 'reconnecting']);
-        expect(engine.error).toBe('boom');
+    it('is a shared instance that folds applied events like any other engine', () => {
+        expect(sessionListEngine.loading).toBe(true);
+        sessionListEngine.applyEvent(snapshot([a]));
+        expect(sessionListEngine.loading).toBe(false);
+        expect(sessionListEngine.sessions).toEqual([a]);
     });
 });
-
-/** Let the microtask queue (async refresh/probe chains) settle. */
-function tick(): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, 0));
-}
