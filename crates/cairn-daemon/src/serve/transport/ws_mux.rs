@@ -16,14 +16,18 @@
 //!   protocol limits. A full channel buffer suspends the whole read loop:
 //!   flow control is socket-level by design (the mux carries small control
 //!   traffic; bulk streams use dedicated one-shot sockets).
-//! - One **writer task** is the sole sink consumer: data/FIN frames arrive in
-//!   order on a bounded queue, RST and connection-close jump it via an
-//!   unbounded control queue (aborts may overtake data; FIN must not, so FIN
-//!   rides the data queue). It flushes after every message (same rationale as
-//!   [`crate::ws::FlushOnWrite`]) and owns the keepalive ping interval.
+//! - One **writer task** is the sole sink consumer: data/FIN frames (and
+//!   over-limit RSTs, which need the queue's backpressure) arrive in order on
+//!   a bounded queue; local-abort RSTs and connection-close jump it via a
+//!   control queue that is unbounded but bounded in practice by the live
+//!   channel count (aborts may overtake data; FIN must not, so FIN rides the
+//!   data queue). It flushes after every message (same rationale as
+//!   [`crate::ws::FlushOnWrite`]), owns the keepalive ping interval, and
+//!   closes connections whose peer goes silent past [`LIVENESS_TIMEOUT`].
 //! - [`MuxReader`]/[`MuxWriter`] are the per-channel logical stream halves
-//!   handed to the wRPC frame server through [`MuxAcceptor`] — the repeating
-//!   sibling of the one-shot path's `OneShot` acceptor.
+//!   handed to the wRPC frame server through [`MuxAcceptor`]; each channel's
+//!   header read runs in its own spawned accept so no channel can stall the
+//!   others.
 //!
 //! ## Channel lifecycle
 //!
@@ -58,6 +62,16 @@ const OUTBOUND_QUEUE_FRAMES: usize = 64;
 /// Keepalive ping cadence: keeps NAT/proxy paths warm and detects dead
 /// clients (browsers auto-pong; `tokio-websockets` auto-replies likewise).
 const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// A connection with no inbound traffic (pongs included) for this long is
+/// declared dead and closed — the enforcement half of the keepalive pings,
+/// without which a silently-vanished peer holds its channels until the OS
+/// TCP timeout (~15 minutes). 2.5 ping intervals tolerates one lost pong.
+const LIVENESS_TIMEOUT: Duration = Duration::from_millis(75_000);
+/// Bounds for draining unread frames after the connection ends, so closing
+/// the socket with unread bytes doesn't turn into a TCP RST that destroys
+/// the in-flight close frame (same rationale as [`crate::ws::DrainOnDrop`]).
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
+const DRAIN_LIMIT: usize = 256 * 1024;
 
 /// Wire framing for `cairn-mux-v0`. Public (re-exported as
 /// [`crate::ws::mux`], the same pattern as [`crate::ws::split`]) so
@@ -244,27 +258,16 @@ impl Shared {
     }
 }
 
-/// Repeating [`Accept`] source for the wRPC frame server: yields one
-/// `(ConnCtx, MuxWriter, MuxReader)` triple per client-opened channel.
-///
-/// [`Accept`]: wrpc_transport::frame::Accept
+/// Source of the connection's client-opened channels: yields one
+/// `(ConnCtx, MuxWriter, MuxReader)` triple per channel.
 pub(crate) struct MuxAcceptor {
     rx: flume::Receiver<(ConnCtx, MuxWriter, MuxReader)>,
 }
 
-impl wrpc_transport::frame::Accept for &MuxAcceptor {
-    type Context = ConnCtx;
-    type Outgoing = MuxWriter;
-    type Incoming = MuxReader;
-
-    async fn accept(&self) -> io::Result<(Self::Context, Self::Outgoing, Self::Incoming)> {
-        match self.rx.recv_async().await {
-            Ok(chan) => Ok(chan),
-            // Mux ended: park forever (like the one-shot `OneShot` after its
-            // single yield) — the caller's cancellation token, cancelled by
-            // the reader task on connection death, ends the serve loop.
-            Err(_) => std::future::pending().await,
-        }
+impl MuxAcceptor {
+    /// Next opened channel, or `None` once the connection is over.
+    pub(crate) async fn next(&self) -> Option<(ConnCtx, MuxWriter, MuxReader)> {
+        self.rx.recv_async().await.ok()
     }
 }
 
@@ -280,7 +283,7 @@ where
     S: Stream<Item = Result<Message, E>> + Sink<Message, Error = E> + Send + Unpin + 'static,
     E: std::fmt::Display + Send + 'static,
 {
-    let (sink, stream) = ws.split();
+    let (sink, mut stream) = ws.split();
     let (ctl_tx, ctl_rx) = mpsc::unbounded_channel();
     let (data_tx, data_rx) = mpsc::channel::<Bytes>(OUTBOUND_QUEUE_FRAMES);
     let (accept_tx, accept_rx) = flume::bounded(frame::MAX_CHANNELS);
@@ -288,13 +291,50 @@ where
         channels: Mutex::new(ChannelMap::default()),
         ctl: ctl_tx,
     });
+    // Any inbound traffic (data, pongs, close) proves the peer is alive; the
+    // writer declares the connection dead when this goes stale.
+    let last_seen = Arc::new(Mutex::new(tokio::time::Instant::now()));
 
-    tokio::spawn(write_loop(sink, data_rx, ctl_rx, cancel.clone()));
+    tokio::spawn(write_loop(
+        sink,
+        data_rx,
+        ctl_rx,
+        last_seen.clone(),
+        cancel.clone(),
+    ));
     tokio::spawn(async move {
-        read_loop(ctx, stream, &shared, data_tx, accept_tx, &cancel).await;
+        let end = read_loop(
+            ctx,
+            &mut stream,
+            &shared,
+            data_tx,
+            accept_tx,
+            &last_seen,
+            &cancel,
+        )
+        .await;
         // Connection over (EOF, error, violation, or shutdown): stop the
-        // writer and the serve loop parked on the (now closed) acceptor.
+        // writer and the serve loop waiting on the (now closed) acceptor.
         cancel.cancel();
+        if matches!(end, ReadEnd::Peer) {
+            // Consume whatever the peer pipelined behind the last frame we
+            // acted on, so closing the socket with unread bytes in the kernel
+            // buffer doesn't answer with TCP RST and destroy the writer's
+            // close frame (see `crate::ws::DrainOnDrop` for the full story).
+            let _ = tokio::time::timeout(DRAIN_TIMEOUT, async {
+                let mut budget = DRAIN_LIMIT;
+                while let Some(Ok(msg)) = stream.next().await {
+                    if msg.is_close() {
+                        break;
+                    }
+                    budget = budget.saturating_sub(msg.as_payload().len().max(1));
+                    if budget == 0 {
+                        break;
+                    }
+                }
+            })
+            .await;
+        }
     });
 
     MuxAcceptor { rx: accept_rx }
@@ -302,6 +342,12 @@ where
 
 /// Serve wRPC invocations over one muxed WebSocket connection until it closes
 /// or `shutdown` fires. The muxed sibling of the one-shot path's `serve_one`.
+///
+/// Unlike `run_wrpc_server`'s single sequential accept, each channel's wRPC
+/// header is read in its own spawned task: `Server::accept` awaits the header
+/// inline on the accepted stream, so a channel opened without a (complete)
+/// header would otherwise stall every other invocation on the connection. A
+/// stalled task ends when its channel errors out on connection death.
 pub(crate) async fn serve_mux<S, E>(
     ctx: ConnCtx,
     ws: S,
@@ -314,17 +360,66 @@ where
 {
     let cancel = shutdown.child_token();
     let acceptor = start_mux(ctx, ws, cancel.clone());
-    crate::serve::wrpc::run_wrpc_server::<_, MuxReader, MuxWriter, ()>(acceptor, daemon, cancel)
-        .await
+
+    let server: Arc<wrpc_transport::Server<ConnCtx, MuxReader, MuxWriter, ()>> =
+        Arc::new(wrpc_transport::Server::new());
+    let invocations = cairn_protocol::serve(server.as_ref(), daemon).await?;
+    let mut invocations = futures::stream::select_all(
+        invocations
+            .into_iter()
+            .map(|(instance, name, stream)| stream.map(move |res| (instance, name, res))),
+    );
+
+    loop {
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+
+            chan = acceptor.next() => {
+                let Some((cx, tx, rx)) = chan else { break }; // mux died
+                let server = server.clone();
+                tokio::spawn(async move {
+                    let one = super::websocket::OneShot::new(cx, tx, rx);
+                    if let Err(error) = server.accept(&one).await {
+                        tracing::debug!(%error, "mux channel rejected");
+                    }
+                });
+            }
+
+            item = invocations.next() => {
+                match item {
+                    Some((_instance, _name, Ok(fut))) => {
+                        tokio::spawn(fut);
+                    }
+                    Some((instance, name, Err(error))) => {
+                        tracing::debug!(%error, %instance, %name, "mux invocation failed");
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// One outbound step: an ordinary message, or the connection's final message
+/// (a close frame) after which the writer stops.
+enum Out {
+    Msg(Message),
+    Last(Message),
 }
 
 /// Sole consumer of the WebSocket sink: serializes data frames, control
 /// frames (which jump the data queue), and keepalive pings, flushing after
-/// every message so streamed responses reach the peer promptly.
+/// every message so streamed responses reach the peer promptly. Also owns
+/// the liveness verdict: no inbound traffic for [`LIVENESS_TIMEOUT`] closes
+/// the connection. Cancels `cancel` on exit so the read side (which may be
+/// parked on a dead socket) tears down with it.
 async fn write_loop<Snk, E>(
     mut sink: Snk,
     mut data: mpsc::Receiver<Bytes>,
     mut ctl: mpsc::UnboundedReceiver<Ctl>,
+    last_seen: Arc<Mutex<tokio::time::Instant>>,
     cancel: CancellationToken,
 ) where
     Snk: Sink<Message, Error = E> + Unpin,
@@ -337,28 +432,69 @@ async fn write_loop<Snk, E>(
     loop {
         // Compute the message in the select arms, send once below (single
         // await point). `biased` gives aborts/closes priority over data.
-        let msg = tokio::select! {
+        let out = tokio::select! {
             biased;
-            _ = cancel.cancelled() => break,
+            // The read task queues Ctl::Close *then* cancels, so on
+            // cancellation a queued close (with its protocol-error code and
+            // reason) must still win over the generic goodbye.
+            _ = cancel.cancelled() => Out::Last(queued_close(&mut ctl)),
             Some(c) = ctl.recv() => match c {
-                Ctl::Rst(id) => Message::binary(frame::encode(id, frame::FLAG_RST, &[])),
-                Ctl::Close { code, reason } => {
-                    if let Err(error) = sink.send(Message::close(Some(code), &reason)).await {
-                        tracing::debug!(%error, "mux close-frame write failed");
-                    }
-                    break;
-                }
+                Ctl::Rst(id) => Out::Msg(Message::binary(frame::encode(id, frame::FLAG_RST, &[]))),
+                Ctl::Close { code, reason } => Out::Last(Message::close(Some(code), &reason)),
             },
-            Some(bytes) = data.recv() => Message::binary(bytes),
-            _ = ping.tick() => Message::ping(Bytes::new()),
+            Some(bytes) = data.recv() => Out::Msg(Message::binary(bytes)),
+            _ = ping.tick() => {
+                let stale = {
+                    let seen = last_seen.lock().unwrap_or_else(|p| p.into_inner());
+                    seen.elapsed() > LIVENESS_TIMEOUT
+                };
+                if stale {
+                    tracing::debug!("mux peer unresponsive; closing connection");
+                    Out::Last(Message::close(None, "keepalive timeout"))
+                } else {
+                    Out::Msg(Message::ping(Bytes::new()))
+                }
+            }
+        };
+        let (msg, last) = match out {
+            Out::Msg(msg) => (msg, false),
+            Out::Last(msg) => (msg, true),
         };
         if let Err(error) = sink.send(msg).await {
             tracing::debug!(%error, "mux write failed; closing connection");
+            // Best-effort goodbye on a transport that may already be gone.
+            let _ = sink.send(Message::close(None, "")).await;
+            break;
+        }
+        if last {
             break;
         }
     }
-    // Best-effort clean close on the way out (no-op if transport is gone).
-    let _ = sink.send(Message::close(None, "")).await;
+    // Writer-initiated deaths (keepalive timeout, sink error) must tear down
+    // the read side too; on other paths this is an idempotent no-op.
+    cancel.cancel();
+}
+
+/// Drain already-queued control frames for a close, so a protocol-error
+/// close (code + reason) is not lost to the cancellation race. Falls back
+/// to the generic goodbye.
+fn queued_close(ctl: &mut mpsc::UnboundedReceiver<Ctl>) -> Message {
+    while let Ok(c) = ctl.try_recv() {
+        if let Ctl::Close { code, reason } = c {
+            return Message::close(Some(code), &reason);
+        }
+    }
+    Message::close(None, "")
+}
+
+/// How the read side ended — decides whether the post-loop drain runs.
+enum ReadEnd {
+    /// Cancelled (shutdown, or writer-initiated teardown): the socket is
+    /// being abandoned deliberately; nothing to drain.
+    Cancelled,
+    /// The peer's traffic ended it (EOF, close, error, violation): unread
+    /// pipelined frames may remain and should be drained before close.
+    Peer,
 }
 
 /// Reads frames off the socket and routes them to channels until the
@@ -366,20 +502,22 @@ async fn write_loop<Snk, E>(
 /// the caller cancels the shared token.
 async fn read_loop<St, E>(
     ctx: ConnCtx,
-    mut stream: St,
+    stream: &mut St,
     shared: &Arc<Shared>,
     data_tx: mpsc::Sender<Bytes>,
     accept_tx: flume::Sender<(ConnCtx, MuxWriter, MuxReader)>,
+    last_seen: &Mutex<tokio::time::Instant>,
     cancel: &CancellationToken,
-) where
+) -> ReadEnd
+where
     St: Stream<Item = Result<Message, E>> + Unpin,
     E: std::fmt::Display,
 {
     loop {
         let next = tokio::select! {
             _ = cancel.cancelled() => {
-                shared.fail_all(io::ErrorKind::Interrupted, "daemon shutting down");
-                return;
+                shared.fail_all(io::ErrorKind::Interrupted, "mux connection closed");
+                return ReadEnd::Cancelled;
             }
             next = stream.next() => next,
         };
@@ -387,10 +525,15 @@ async fn read_loop<St, E>(
             Some(Ok(msg)) => msg,
             Some(Err(error)) => {
                 shared.fail_all(io::ErrorKind::ConnectionReset, &error.to_string());
-                return;
+                return ReadEnd::Peer;
             }
             None => break, // peer went away without a close frame
         };
+        // Any inbound message — pongs included — proves the peer is alive.
+        {
+            let mut seen = last_seen.lock().unwrap_or_else(|p| p.into_inner());
+            *seen = tokio::time::Instant::now();
+        }
 
         if msg.is_binary() {
             match frame::decode(Bytes::from(msg.into_payload())) {
@@ -399,12 +542,12 @@ async fn read_loop<St, E>(
                 }
                 Err(violation) => {
                     protocol_error(shared, &violation.to_string());
-                    return;
+                    return ReadEnd::Peer;
                 }
             }
         } else if msg.is_text() {
             protocol_error(shared, "text frame in muxed mode");
-            return;
+            return ReadEnd::Peer;
         } else if msg.is_close() {
             break;
         }
@@ -414,6 +557,7 @@ async fn read_loop<St, E>(
         io::ErrorKind::ConnectionReset,
         "WebSocket connection closed",
     );
+    ReadEnd::Peer
 }
 
 fn protocol_error(shared: &Shared, reason: &str) {
@@ -533,7 +677,11 @@ async fn handle_frame(
             if remote_done {
                 shared.remote_done(id);
             }
-            // Full only if the serve loop stopped accepting; drop then.
+            // A full queue blocks here, pausing the whole socket until the
+            // serve loop catches up (it drains promptly — each channel's
+            // header read is spawned, never awaited inline). If the serve
+            // loop is gone entirely, the send fails and the channel is
+            // dropped; connection teardown is already underway.
             let _ = accept_tx.send_async((ctx.clone(), writer, reader)).await;
         }
         Action::Deliver { tx, fin } => {
@@ -550,7 +698,13 @@ async fn handle_frame(
         }
         Action::RstOverLimit => {
             tracing::debug!(channel = id, "mux channel limit exceeded; resetting");
-            let _ = shared.ctl.send(Ctl::Rst(id));
+            // Through the *bounded* data queue, not ctl: an open flood past
+            // the channel limit would grow the unbounded ctl queue without
+            // limit (one RST per inbound frame) while the biased select
+            // starved data frames. Here a backlog pauses the read loop
+            // instead — the same whole-socket backpressure as data. Abort
+            // ordering doesn't matter for a channel that never existed.
+            let _ = data_tx.send(frame::encode(id, frame::FLAG_RST, &[])).await;
         }
         Action::Ignore => {}
     }
@@ -688,7 +842,6 @@ mod tests {
 
     use futures::channel::mpsc as fmpsc;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use wrpc_transport::frame::Accept as _;
 
     /// In-memory stand-in for a `WebSocketStream`: messages the test pushes
     /// into `client_tx` arrive at the mux; messages the mux writes appear on
@@ -778,10 +931,10 @@ mod tests {
     }
 
     async fn accept(peer: &Peer) -> (ConnCtx, MuxWriter, MuxReader) {
-        tokio::time::timeout(Duration::from_secs(5), (&peer.acceptor).accept())
+        tokio::time::timeout(Duration::from_secs(5), peer.acceptor.next())
             .await
             .expect("timed out waiting for accept")
-            .expect("accept failed")
+            .expect("mux ended before yielding a channel")
     }
 
     /// Next daemon->client message, skipping pings.
@@ -985,10 +1138,21 @@ mod tests {
                 .expect_err(&format!("{name}: live reader must error"));
             assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{name}");
 
-            // Daemon announces the protocol error with a close frame.
+            // Daemon announces the protocol error with a close frame carrying
+            // code 1002 and a reason — not the generic goodbye (that close is
+            // queued on ctl and races the cancellation; the writer must
+            // prefer it).
             loop {
                 let msg = next_msg(&mut peer).await;
                 if msg.is_close() {
+                    // Close payload: 2-byte big-endian code, then UTF-8 reason.
+                    let payload = msg.as_payload();
+                    assert!(
+                        payload.len() > 2,
+                        "{name}: close frame must carry code + reason, got {payload:?}"
+                    );
+                    let code = u16::from_be_bytes([payload[0], payload[1]]);
+                    assert_eq!(code, 1002, "{name}: close code must be PROTOCOL_ERROR");
                     break;
                 }
             }
@@ -1020,6 +1184,66 @@ mod tests {
             next_frame(&mut peer).await,
             (1, 0, Bytes::from_static(b"alive"))
         );
+
+        peer.cancel.cancel();
+    }
+
+    /// A peer that never sends anything (not even pongs — the fake socket
+    /// swallows pings) must be declared dead after [`LIVENESS_TIMEOUT`]:
+    /// close frame sent, live channels failed, tasks torn down.
+    #[tokio::test(start_paused = true)]
+    async fn silent_peer_is_closed_after_liveness_timeout() {
+        let mut peer = start();
+
+        // A live channel to observe the teardown through.
+        send_frame(&mut peer, 1, 0, b"pending").await;
+        let (_ctx, _w, mut r) = accept(&peer).await;
+
+        // Consume outbound traffic until the keepalive verdict arrives;
+        // paused time auto-advances through the ping ticks.
+        let saw_close = tokio::time::timeout(LIVENESS_TIMEOUT * 3, async {
+            loop {
+                let msg = peer.from_mux.next().await.expect("mux writer ended");
+                if msg.is_close() {
+                    return true;
+                }
+            }
+        })
+        .await
+        .expect("connection must be closed after the liveness timeout");
+        assert!(saw_close);
+
+        // The teardown propagates to live channels and the read side.
+        let err = read_all(&mut r)
+            .await
+            .expect_err("live reader must fail when the peer is declared dead");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+    }
+
+    /// Inbound traffic (any message) resets the liveness clock: a peer that
+    /// keeps talking is never declared dead, even with time advancing far
+    /// past the timeout.
+    #[tokio::test(start_paused = true)]
+    async fn active_peer_is_not_closed_by_liveness_timeout() {
+        let mut peer = start();
+
+        send_frame(&mut peer, 1, 0, b"pending").await;
+        let (_ctx, _w, _r) = accept(&peer).await;
+
+        // Talk periodically for several timeout windows; the daemon must
+        // only ever send pings, never a close.
+        for i in 0..12u32 {
+            tokio::time::sleep(LIVENESS_TIMEOUT / 2).await;
+            send_frame(&mut peer, 1, 0, &[i as u8]).await;
+            while let Ok(Some(msg)) =
+                tokio::time::timeout(Duration::from_millis(1), peer.from_mux.next()).await
+            {
+                assert!(
+                    !msg.is_close(),
+                    "an active peer must not be closed for liveness"
+                );
+            }
+        }
 
         peer.cancel.cancel();
     }

@@ -140,6 +140,52 @@ async fn concurrent_invocations_share_one_socket() {
     assert_eq!(again.daemon, version.daemon);
 }
 
+/// One stalled channel must not block other invocations: the daemon reads
+/// each channel's wRPC header in its own task, so a channel that is opened
+/// but never sends its header (or anything at all) cannot park the accept
+/// path that every other channel goes through.
+#[tokio::test]
+async fn stalled_channel_does_not_block_other_invocations() {
+    let harness = DaemonHarness::start_with_ws().await;
+    let client = MuxClient::connect(harness.ws_addr.unwrap()).await;
+
+    // Open channels that never send a wRPC header — one completely empty,
+    // one with a partial header (just the version byte).
+    client.open_raw_channel(&[]);
+    client.open_raw_channel(&[0x00]);
+
+    // Invocations on other channels must still complete promptly.
+    let version = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        api::meta::version(&client, (), None),
+    )
+    .await
+    .expect("version must not be blocked by a stalled channel")
+    .expect("version over mux");
+    assert!(version.daemon.starts_with("cairn-daemon/"));
+}
+
+/// A burst of stalled channels (under the concurrency limit) still leaves
+/// the connection fully serviceable.
+#[tokio::test]
+async fn many_stalled_channels_do_not_wedge_the_connection() {
+    let harness = DaemonHarness::start_with_ws().await;
+    let client = MuxClient::connect(harness.ws_addr.unwrap()).await;
+
+    for _ in 0..100 {
+        client.open_raw_channel(&[]);
+    }
+
+    let version = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        api::meta::version(&client, (), None),
+    )
+    .await
+    .expect("version must not be blocked by stalled channels")
+    .expect("version over mux");
+    assert!(version.daemon.starts_with("cairn-daemon/"));
+}
+
 #[tokio::test]
 async fn mux_survives_a_failing_invocation() {
     let harness = DaemonHarness::start_with_ws().await;
@@ -240,6 +286,16 @@ impl MuxClient {
             out,
             channels,
         }
+    }
+}
+
+impl MuxClient {
+    /// Open a channel by sending a single raw frame with the given payload
+    /// and never touch it again — simulates a stalled or misbehaving client
+    /// (e.g. a channel whose wRPC header never arrives).
+    fn open_raw_channel(&self, payload: &[u8]) {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let _ = self.out.send(frame::encode(id, 0, payload));
     }
 }
 

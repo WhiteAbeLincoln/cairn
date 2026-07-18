@@ -186,15 +186,16 @@ pub(crate) async fn serve_upgraded(
     }
 }
 
-/// A one-shot [`Accept`] implementation: yields the already-established WebSocket
-/// stream once, then parks. The frame server calls `accept` a single time to
-/// route the connection's lone invocation.
-struct OneShot<I, O> {
+/// A one-shot [`Accept`] implementation: yields the already-established byte
+/// stream pair once, then parks. The frame server calls `accept` a single
+/// time to route one invocation — the whole connection here, or a single mux
+/// channel in [`super::ws_mux`].
+pub(super) struct OneShot<I, O> {
     conn: std::sync::Mutex<Option<(ConnCtx, O, I)>>,
 }
 
 impl<I, O> OneShot<I, O> {
-    fn new(ctx: ConnCtx, tx: O, rx: I) -> Self {
+    pub(super) fn new(ctx: ConnCtx, tx: O, rx: I) -> Self {
         Self {
             conn: std::sync::Mutex::new(Some((ctx, tx, rx))),
         }
