@@ -194,6 +194,13 @@ function connectWith(ep: EndpointConfig): void {
                 sessionListEngine.applyEvent(ev);
             }
         },
+        // A pending stream can't distinguish "no session changes" from a
+        // silently dead path (NAT drop, network switch), so a slow, cheap,
+        // data-free probe converts that silence into a verdict — see the mux
+        // design spec's Liveness section. Kept for WebTransport too: QUIC's
+        // own idle detection makes it near-redundant there, but a uniform
+        // fallback is cheaper than reasoning about transport differences.
+        watchdog: { probe: () => c.version().then(() => undefined) },
     });
     next.onStatusChange((s) => {
         status = s;

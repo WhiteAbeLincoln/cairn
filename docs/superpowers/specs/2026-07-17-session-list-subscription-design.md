@@ -168,3 +168,29 @@ out) — no shape-only assertions.
 - `cairn list --watch` (follow-up once the interface exists).
 - Any emitter for `removed` (reserved in the wire format only).
 - Session removal / GC semantics.
+
+## Addendum: rebase onto `cairn-mux-v0` (post-#14)
+
+The mux ticket landed first, so two assumptions above changed when this work
+was rebased onto it:
+
+- **Transport.** The subscription no longer costs a dedicated WebSocket: over
+  WS endpoints `watchSessions` dials the `control` role (a channel on the
+  persistent muxed connection), exactly as the mux spec's follow-ups
+  anticipated. Cancellation composes unchanged — the channel transport's
+  `close()` RSTs only that channel — and mux-socket death fails the riding
+  watch channel in the same event turn, so "stream settled" and "connection
+  died" coincide by construction. `attach`/`logs`/`send` keep dedicated
+  one-shot sockets, per the mux spec.
+- **Probe retirement became probe retuning.** This spec retired the 15s
+  `version()` probe outright; the mux spec kept a probe because a *pending*
+  stream cannot distinguish "no session changes" from silent path death
+  (NAT drop, network switch — invisible to the browser), and a wedged
+  establishment would park the controller in `connecting` forever. The
+  run-based `ReconnectController` therefore keeps stream supervision as the
+  primary signal and adds two backstops: an establishment deadline
+  (`upTimeoutMs`, default 10s — the first snapshot must arrive or the attempt
+  is declared down) and a steady-state `watchdog` probe (default 30s interval,
+  10s timeout — `version()` over the mux) that aborts the run on failure.
+  Steady-state RPC traffic on a healthy, quiet connection is one tiny probe
+  per 30s instead of the old 5s poll + 15s probe.

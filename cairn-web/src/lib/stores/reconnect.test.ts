@@ -480,3 +480,212 @@ describe('ReconnectController', () => {
         controller.stop();
     });
 });
+
+describe('ReconnectController establishment timeout (upTimeoutMs)', () => {
+    /** A run that stays pending and never reaches `onUp()` — models a zombie
+     * socket that connects but never delivers the first snapshot. */
+    function neverUpRun(signal: AbortSignal): Promise<void> {
+        return new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+    }
+
+    it('aborts a run that never reaches onUp() and goes reconnecting with a timeout error', async () => {
+        let signal: AbortSignal | undefined;
+        const run = vi.fn((_onUp: () => void, s: AbortSignal) => {
+            signal = s;
+            return neverUpRun(s);
+        });
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            run,
+            upTimeoutMs: 5000,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connecting' });
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([5000]); // the up-guard, armed
+
+        await scheduler.fireNext(); // up-guard fires
+        expect(signal?.aborted).toBe(true); // the stale stream is torn down
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        expect((controller.status as { error: Error }).error.message).toContain('5000ms');
+    });
+
+    it('declares down even when the aborted run never settles, and its late settle stays inert', async () => {
+        // A run that ignores abort entirely — the worst-case wedge. The guard
+        // itself must produce the reconnecting transition; waiting for the
+        // run to settle would wait forever.
+        let rejectRun: ((err: Error) => void) | undefined;
+        const run = vi.fn(
+            (_onUp: () => void, _s: AbortSignal) =>
+                new Promise<void>((_resolve, reject) => {
+                    rejectRun = reject;
+                }),
+        );
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            run,
+            upTimeoutMs: 5000,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+        const statuses: string[] = [];
+        controller.onStatusChange((s) => statuses.push(s.state));
+
+        controller.start();
+        await flush();
+        await scheduler.fireNext(); // up-guard fires with the run still pending
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+
+        // The wedged run finally rejects, long after the guard declared down:
+        // no second reconnecting notification, no double-scheduled retry.
+        rejectRun?.(new Error('late wedge death'));
+        await flush();
+        expect(statuses).toEqual(['connecting', 'reconnecting']);
+        expect(scheduler.scheduled).toHaveLength(1); // exactly one retry timer
+    });
+
+    it('clears the up-guard once onUp() arrives, so it never fires', async () => {
+        const run = vi.fn((onUp: () => void, signal: AbortSignal) => openEndedRun(onUp, signal));
+        const scheduler = fakeScheduler();
+        const controller = new ReconnectController({
+            run,
+            upTimeoutMs: 5000,
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connected' });
+        expect(scheduler.scheduled).toHaveLength(0); // guard cleared, nothing pending
+
+        controller.stop();
+    });
+});
+
+describe('ReconnectController watchdog', () => {
+    function fixture(probe: () => Promise<void>) {
+        const scheduler = fakeScheduler();
+        let signal: AbortSignal | undefined;
+        const run = vi.fn((onUp: () => void, s: AbortSignal) => {
+            signal = s;
+            return openEndedRun(onUp, s);
+        });
+        const controller = new ReconnectController({
+            run,
+            upTimeoutMs: 5000,
+            watchdog: { probe, intervalMs: 30_000, timeoutMs: 10_000 },
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+        return { scheduler, run, controller, signal: () => signal };
+    }
+
+    it('arms on onUp(), and successful probes re-arm without status noise', async () => {
+        const probe = vi.fn(async () => {});
+        const { scheduler, controller } = fixture(probe);
+        const statuses: string[] = [];
+        controller.onStatusChange((s) => statuses.push(s.state));
+
+        controller.start();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connected' });
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([30_000]); // the watchdog tick
+
+        await scheduler.fireNext(); // tick -> probe resolves (its 10s timeout is cleared)
+        expect(probe).toHaveBeenCalledTimes(1);
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([30_000]); // re-armed
+
+        await scheduler.fireNext();
+        expect(probe).toHaveBeenCalledTimes(2);
+        expect(statuses).toEqual(['connecting', 'connected']); // probes are not news
+
+        controller.stop();
+    });
+
+    it('a failing probe aborts the run and goes reconnecting with the probe failure as cause', async () => {
+        const probe = vi.fn(async () => {
+            throw new Error('probe-boom');
+        });
+        const { scheduler, controller, signal } = fixture(probe);
+
+        controller.start();
+        await flush();
+        await scheduler.fireNext(); // tick -> probe rejects
+        expect(signal()?.aborted).toBe(true);
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        expect((controller.status as { error: Error }).error.message).toContain('probe-boom');
+    });
+
+    it('a probe that never settles times out and aborts the run', async () => {
+        const probe = vi.fn(() => new Promise<void>(() => {}));
+        const { scheduler, controller, signal } = fixture(probe);
+
+        controller.start();
+        await flush();
+        await scheduler.fireNext(); // tick: probe starts, its timeout timer is armed
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([10_000]);
+
+        await scheduler.fireNext(); // the probe timeout fires
+        expect(signal()?.aborted).toBe(true);
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        expect((controller.status as { error: Error }).error.message).toContain('10000ms');
+    });
+
+    it('the run settling on its own clears the pending watchdog tick', async () => {
+        const probe = vi.fn(async () => {});
+        const scheduler = fakeScheduler();
+        let die: ((err: Error) => void) | undefined;
+        const run = (onUp: () => void, _s: AbortSignal): Promise<void> => {
+            onUp();
+            return new Promise<void>((_resolve, reject) => {
+                die = reject;
+            });
+        };
+        const controller = new ReconnectController({
+            run,
+            watchdog: { probe, intervalMs: 30_000, timeoutMs: 10_000 },
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule: scheduler.clearSchedule,
+        });
+
+        controller.start();
+        await flush();
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([30_000]); // watchdog armed
+
+        die?.(new Error('stream died'));
+        await flush();
+        expect(controller.status).toMatchObject({ state: 'reconnecting' });
+        // Only the retry timer remains — the orphaned watchdog tick was
+        // cleared, so it can never probe a connection already declared down.
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([100]);
+        expect(probe).not.toHaveBeenCalled();
+    });
+
+    it('stop() while connected leaves the pending watchdog tick inert', async () => {
+        const probe = vi.fn(async () => {});
+        const { scheduler, controller } = fixture(probe);
+
+        controller.start();
+        await flush();
+        expect(scheduler.scheduled.map((s) => s.ms)).toEqual([30_000]);
+
+        controller.stop();
+        // The tick may still be queued (stop() only guarantees inertness, not
+        // cancellation) — firing it must not probe or change status.
+        while (scheduler.scheduled.length > 0) {
+            await scheduler.fireNext();
+        }
+        expect(probe).not.toHaveBeenCalled();
+        expect(controller.status).toEqual({ state: 'connected' }); // untouched since stop()
+    });
+});

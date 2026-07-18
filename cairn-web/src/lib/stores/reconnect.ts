@@ -4,7 +4,11 @@
 // `run` wraps a long-lived server-push stream (the daemon's `watch-sessions`)
 // rather than a one-shot probe — it stays pending for as long as the stream
 // is healthy, and its eventual settling (resolve or reject) is itself the
-// "connection dropped" signal. Framework-free (no Svelte, no timers imported
+// "connection dropped" signal. Because "pending" is also what a silently dead
+// connection looks like, two timers backstop the stream: an establishment
+// deadline (`upTimeoutMs`) and an optional steady-state `watchdog` probe —
+// both declare the attempt down and abort it rather than waiting on a settle
+// that may never come. Framework-free (no Svelte, no timers imported
 // directly — both injectable) so the state machine is unit-testable without a
 // browser or fake-timer gymnastics.
 
@@ -48,11 +52,36 @@ export interface ReconnectControllerOptions {
      * promptly and must not apply further effects after abort.
      */
     run: (onUp: () => void, signal: AbortSignal) => Promise<void>;
+    /**
+     * How long a run may take to reach `onUp()` before the attempt is
+     * declared down and retried. Guards against zombie sockets that connect
+     * but never deliver the first snapshot: without a deadline such a run
+     * stays pending forever and the controller wedges in `connecting`.
+     * Default 10s.
+     */
+    upTimeoutMs?: number;
+    /**
+     * Steady-state liveness watchdog, armed while a run is up. A quietly
+     * *pending* stream is indistinguishable from a silently dead path (NAT
+     * drop, network switch — the browser may not notice for minutes), so a
+     * cheap probe converts that silence into a verdict; see the mux design
+     * spec's Liveness section. Omit to rely on stream death alone.
+     */
+    watchdog?: WatchdogOptions;
     backoff?: BackoffOptions;
     /** Injectable in place of `setTimeout`, for deterministic tests. */
     schedule?: (fn: () => void, ms: number) => unknown;
     /** Injectable in place of `clearTimeout`. */
     clearSchedule?: (handle: unknown) => void;
+}
+
+export interface WatchdogOptions {
+    /** The connectivity check. Resolve = healthy; reject = the run is aborted and retried. */
+    probe: () => Promise<void>;
+    /** Delay between successful probes. Default 30s. */
+    intervalMs?: number;
+    /** How long a probe may run before it counts as failed (a black-holed path never rejects on its own). Default 10s. */
+    timeoutMs?: number;
 }
 
 /**
@@ -129,12 +158,19 @@ export class ReconnectController {
     /** Cancel and clear the pending retry timer, if any. Shared by `start()` and `stop()`. */
     #clearTimer(): void {
         if (this.#timer !== undefined) {
-            const clear =
-                this.#opts.clearSchedule ??
-                ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
-            clear(this.#timer);
+            this.#clearFn()(this.#timer);
             this.#timer = undefined;
         }
+    }
+
+    #scheduleFn(): (fn: () => void, ms: number) => unknown {
+        return this.#opts.schedule ?? ((fn, d) => setTimeout(fn, d));
+    }
+
+    #clearFn(): (handle: unknown) => void {
+        return (
+            this.#opts.clearSchedule ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>))
+        );
     }
 
     async #runNow(gen: number): Promise<void> {
@@ -143,8 +179,80 @@ export class ReconnectController {
         this.#abort?.abort();
         const abort = new AbortController();
         this.#abort = abort;
+
+        const schedule = this.#scheduleFn();
+        const clear = this.#clearFn();
+
+        // The guard slot holds whichever attempt-scoped timer is live: the
+        // up-guard until `onUp()`, then the watchdog tick. Never both.
+        let guardTimer: unknown;
+        const clearGuard = (): void => {
+            if (guardTimer !== undefined) {
+                clear(guardTimer);
+                guardTimer = undefined;
+            }
+        };
+
+        // Every way this attempt can end funnels through here exactly once:
+        // normal settle (resolve or reject), up-guard expiry, watchdog probe
+        // failure. The first caller wins; later calls — e.g. a wedged run
+        // finally rejecting after the up-guard already declared down — are
+        // inert, as is anything after a stale generation. Declaring down here
+        // rather than waiting for the run to settle is deliberate: a run
+        // wedged on a zombie socket may never settle, even when aborted. The
+        // abort() is repeat-safe and matters on the timeout paths: it tears
+        // the stream down so a zombie can't keep feeding events after the
+        // controller has moved on.
+        let finished = false;
+        const finish = (error: Error): void => {
+            // The guard timer is attempt-local, so clean it even when the
+            // settle is stale — a superseded attempt must not leave its
+            // (inert, but armed) timer behind.
+            clearGuard();
+            if (finished || gen !== this.#generation) return;
+            finished = true;
+            this.#abort = undefined;
+            abort.abort();
+            this.#down(error);
+        };
+
+        const upTimeoutMs = this.#opts.upTimeoutMs ?? 10_000;
+        guardTimer = schedule(() => {
+            guardTimer = undefined;
+            finish(new Error(`watch stream not live after ${upTimeoutMs}ms`));
+        }, upTimeoutMs);
+
+        const watchdog = this.#opts.watchdog;
+        const armWatchdog = (): void => {
+            if (!watchdog) return;
+            guardTimer = schedule(() => {
+                guardTimer = undefined;
+                void watchdogTick(watchdog);
+            }, watchdog.intervalMs ?? 30_000);
+        };
+        const watchdogTick = async (dog: WatchdogOptions): Promise<void> => {
+            if (finished || gen !== this.#generation) return;
+            try {
+                await withTimeout(dog.probe(), dog.timeoutMs ?? 10_000, schedule, clear);
+                // Re-check: the run may have settled while the probe was in
+                // flight — its finish() cleared the guard slot, and re-arming
+                // would resurrect a watchdog for a connection already down.
+                if (!finished && gen === this.#generation) armWatchdog();
+            } catch (err) {
+                finish(
+                    new Error(
+                        `watchdog probe failed: ${err instanceof Error ? err.message : String(err)}`,
+                    ),
+                );
+            }
+        };
+
+        let up = false;
         const onUp = (): void => {
-            if (gen !== this.#generation) return; // stale — superseded by a later start()/retry
+            if (finished || gen !== this.#generation || up) return; // stale — superseded or already handled
+            up = true;
+            clearGuard(); // the establishment deadline is met...
+            armWatchdog(); // ...and steady-state supervision takes over
             this.#attempt = 0;
             // Only notify on the connecting/reconnecting -> connected
             // *transition* — re-notifying on a call after we're already
@@ -155,13 +263,9 @@ export class ReconnectController {
         };
         try {
             await this.#opts.run(onUp, abort.signal);
-            if (gen !== this.#generation) return; // stale settle — leave the current attempt's #abort alone
-            this.#abort = undefined;
-            this.#down(new Error('watch stream ended'));
+            finish(new Error('watch stream ended'));
         } catch (err) {
-            if (gen !== this.#generation) return;
-            this.#abort = undefined;
-            this.#down(err instanceof Error ? err : new Error(String(err)));
+            finish(err instanceof Error ? err : new Error(String(err)));
         }
     }
 
@@ -179,8 +283,7 @@ export class ReconnectController {
     }
 
     #scheduleNext(ms: number): void {
-        const schedule = this.#opts.schedule ?? ((fn, d) => setTimeout(fn, d));
-        this.#timer = schedule(() => {
+        this.#timer = this.#scheduleFn()(() => {
             const gen = ++this.#generation;
             void this.#runNow(gen);
         }, ms);
@@ -190,4 +293,28 @@ export class ReconnectController {
         this.#status = status;
         for (const listener of this.#listeners) listener(status);
     }
+}
+
+/**
+ * Race a promise against a deadline armed via the injectable scheduler. The
+ * deadline timer is cleared once the race settles either way; a promise that
+ * settles *after* losing the race is simply ignored (`race` keeps handlers on
+ * both, so a late rejection is not an unhandled rejection).
+ */
+function withTimeout(
+    promise: Promise<void>,
+    timeoutMs: number,
+    schedule: (fn: () => void, ms: number) => unknown,
+    clear: (handle: unknown) => void,
+): Promise<void> {
+    let handle: unknown;
+    return Promise.race([
+        promise,
+        new Promise<never>((_, reject) => {
+            handle = schedule(
+                () => reject(new Error(`probe timed out after ${timeoutMs}ms`)),
+                timeoutMs,
+            );
+        }),
+    ]).finally(() => clear(handle));
 }
