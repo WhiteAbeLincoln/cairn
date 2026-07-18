@@ -154,11 +154,13 @@ impl SessionRegistry {
         self.events.subscribe()
     }
 
-    /// Number of live bus subscribers (each `watch-sessions` stream holds
-    /// exactly one for its lifetime). Exists for observability/tests — e.g.
-    /// asserting a disconnected watcher's task actually tears down instead of
-    /// lingering until the next registry event.
-    pub fn watch_subscriber_count(&self) -> usize {
+    /// Number of live receivers on the `RegistryEvent` bus — currently always
+    /// one per `watch-sessions` stream (the only subscriber today), but this
+    /// counts the bus itself, not "watch streams" specifically; any future
+    /// subscriber would show up here too. Exists for observability/tests —
+    /// e.g. asserting a disconnected watcher's task actually tears down
+    /// instead of lingering until the next registry event.
+    pub fn event_subscriber_count(&self) -> usize {
         self.events.receiver_count()
     }
 

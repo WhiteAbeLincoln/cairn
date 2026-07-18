@@ -40,9 +40,7 @@ async fn create(
 async fn wait_resolves_with_exit_code() {
     let daemon = test_daemon();
     let info = create(&daemon, "w", &["sh", "-c", "exit 7"]).await;
-    let fut = cairn_daemon::handlers::wait::wait(&daemon, info.id.clone())
-        .await
-        .expect("wait setup");
+    let fut = cairn_daemon::handlers::wait::wait(&daemon, info.id.clone()).expect("wait setup");
     let exit = fut.await;
     assert_eq!(exit.code, Some(7));
 }
@@ -50,11 +48,7 @@ async fn wait_resolves_with_exit_code() {
 #[tokio::test]
 async fn wait_unknown_is_err() {
     let daemon = test_daemon();
-    assert!(
-        cairn_daemon::handlers::wait::wait(&daemon, "nope".into())
-            .await
-            .is_err()
-    );
+    assert!(cairn_daemon::handlers::wait::wait(&daemon, "nope".into()).is_err());
 }
 
 // ── send ──────────────────────────────────────────────────────────────────
@@ -432,9 +426,8 @@ async fn watch_sessions_first_item_is_snapshot_of_preexisting_sessions() {
     let a = create(&daemon, "wa", &["sleep", "100"]).await;
     let b = create(&daemon, "wb", &["sleep", "100"]).await;
 
-    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup");
+    let mut stream =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup");
     let first = next_watch(&mut stream).await;
 
     assert_eq!(first.len(), 1, "first batch should be exactly one Snapshot");
@@ -454,9 +447,8 @@ async fn watch_sessions_first_item_is_snapshot_of_preexisting_sessions() {
 #[tokio::test]
 async fn watch_sessions_create_emits_upsert_with_new_id() {
     let daemon = test_daemon();
-    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup");
+    let mut stream =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup");
     let _snapshot = next_watch(&mut stream).await;
 
     let info = create(&daemon, "wc", &["sleep", "100"]).await;
@@ -474,9 +466,8 @@ async fn watch_sessions_rename_emits_upsert_with_new_name() {
     let daemon = test_daemon();
     let info = create(&daemon, "wd", &["sleep", "100"]).await;
 
-    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup");
+    let mut stream =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup");
     let _snapshot = next_watch(&mut stream).await;
 
     daemon
@@ -494,9 +485,8 @@ async fn watch_sessions_rename_emits_upsert_with_new_name() {
 #[tokio::test]
 async fn watch_sessions_exit_emits_upsert_with_exit_code() {
     let daemon = test_daemon();
-    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup");
+    let mut stream =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup");
     let _snapshot = next_watch(&mut stream).await;
 
     // Exercises Task 1's exit watcher through the full watch-sessions pipeline.
@@ -517,13 +507,12 @@ async fn watch_sessions_exit_emits_upsert_with_exit_code() {
 #[tokio::test]
 async fn watch_sessions_task_exits_promptly_on_disconnect_without_a_later_event() {
     let daemon = test_daemon();
-    let baseline = daemon.registry.watch_subscriber_count();
+    let baseline = daemon.registry.event_subscriber_count();
 
-    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup");
+    let mut stream =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup");
     assert_eq!(
-        daemon.registry.watch_subscriber_count(),
+        daemon.registry.event_subscriber_count(),
         baseline + 1,
         "subscribing should register exactly one bus receiver"
     );
@@ -542,7 +531,7 @@ async fn watch_sessions_task_exits_promptly_on_disconnect_without_a_later_event(
 
     let cleaned_up = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
-            if daemon.registry.watch_subscriber_count() == baseline {
+            if daemon.registry.event_subscriber_count() == baseline {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -559,12 +548,10 @@ async fn watch_sessions_task_exits_promptly_on_disconnect_without_a_later_event(
 #[tokio::test]
 async fn watch_sessions_two_subscribers_each_get_snapshot_and_shared_upsert() {
     let daemon = test_daemon();
-    let mut s1 = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup (1)");
-    let mut s2 = cairn_daemon::handlers::watch::watch_sessions(&daemon)
-        .await
-        .expect("watch_sessions setup (2)");
+    let mut s1 =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup (1)");
+    let mut s2 =
+        cairn_daemon::handlers::watch::watch_sessions(&daemon).expect("watch_sessions setup (2)");
 
     let first1 = next_watch(&mut s1).await;
     let first2 = next_watch(&mut s2).await;

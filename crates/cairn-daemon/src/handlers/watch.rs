@@ -16,7 +16,12 @@ use crate::registry::{RegistryEvent, session_info};
 /// (create/rename/restart/exit/attach/detach) is coalesced into a batch of
 /// `Upsert`/`Removed` events built from fresh state, so slow sends never
 /// carry stale data.
-pub async fn watch_sessions(
+///
+/// Plain `fn`, not `async fn`: everything here (subscribing, cloning the
+/// handle, spawning the background task) is synchronous — the only `.await`
+/// points live inside the spawned task's own future, which this function
+/// never awaits itself.
+pub fn watch_sessions(
     d: &Daemon,
 ) -> anyhow::Result<Pin<Box<dyn Stream<Item = Vec<SessionEvent>> + Send + 'static>>> {
     // Subscribe BEFORE building the snapshot — nothing falls in the gap
