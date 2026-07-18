@@ -67,8 +67,9 @@ class FakeDaemon {
     /** Count of transports dialed — used to assert an already-aborted `watchSessions()` skips dialing entirely. */
     dials = 0;
     /**
-     * Override the `watch-sessions` event source (default: two fixed batches
-     * that end the stream on their own). Tests that need to hold the stream
+     * Override the `watch-sessions` event source (default: three fixed
+     * batches — snapshot, upsert, removed — that end the stream on their
+     * own). Tests that need to hold the stream
      * open — e.g. to abort mid-stream — supply their own never-closed `Chan`.
      */
     watchSource: (() => AsyncIterable<Value[]>) | undefined;
@@ -139,6 +140,11 @@ class FakeDaemon {
                             { tag: 'upsert', val: asValue(infoVariant(3)) },
                             { tag: 'upsert', val: asValue(infoVariant(4)) },
                         ];
+                        // Exercise all three variant cases through the real
+                        // codec — a payload-descriptor typo on `removed`
+                        // (e.g. the wrong wire type) would otherwise go
+                        // unnoticed since nothing else round-trips it.
+                        yield [{ tag: 'removed', val: infoVariant(2).id }];
                     })();
                 await inv.sendResults([t.stream(wit.sessionEvent)], [source]);
                 return;
@@ -410,6 +416,7 @@ describe('DaemonClient round-trips', () => {
             { tag: 'snapshot', val: [sampleInfo, infoVariant(2)] },
             { tag: 'upsert', val: infoVariant(3) },
             { tag: 'upsert', val: infoVariant(4) },
+            { tag: 'removed', val: infoVariant(2).id },
         ]);
         await fake.settle();
         expect(fake.errors).toEqual([]);
@@ -443,6 +450,38 @@ describe('DaemonClient round-trips', () => {
         serverEvents.close(); // release the daemon-side writer, otherwise blocked on more app data
         await fake.settle();
         expect(fake.errors).toEqual([]);
+    });
+
+    it('watchSessions(signal) ends cleanly with zero events when aborted after dial but before invoke', async () => {
+        const { fake } = fixture();
+        const controller = new AbortController();
+        let closeCalls = 0;
+        const baseDialer = fake.dialer();
+        // Simulate the signal aborting while the dial itself was in flight:
+        // by the time dial() resolves here and control returns to
+        // `watchSessions`, its `addEventListener('abort', ...)` call hasn't
+        // happened yet, so the pre-dial check can't have caught it either —
+        // only the post-dial re-check can.
+        const dialer: Dialer = async () => {
+            const transport = await baseDialer();
+            controller.abort();
+            return {
+                ...transport,
+                close: () => {
+                    closeCalls += 1;
+                    (transport as { close?: () => void }).close?.();
+                },
+            } as Transport;
+        };
+        const client = new DaemonClient(dialer);
+
+        const events: SessionEvent[] = [];
+        for await (const event of client.watchSessions(controller.signal)) {
+            events.push(event);
+        }
+
+        expect(events).toEqual([]);
+        expect(closeCalls).toBeGreaterThan(0);
     });
 
     it('watchSessions(signal) skips dialing entirely when the signal is already aborted', async () => {

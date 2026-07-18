@@ -91,11 +91,17 @@ export class DaemonClient {
         const transport = await this.#control();
         const onAbort = () => closeTransport(transport);
         signal?.addEventListener('abort', onAbort);
-        // Dialing is async: the signal may have been aborted while it was in
-        // flight, in which case the listener above registered too late to see
-        // the event fire. Catch that race explicitly.
-        if (signal?.aborted) onAbort();
         try {
+            // Dialing is async: the signal may have been aborted while it was
+            // in flight, in which case the listener above registered too late
+            // to see the event fire. Catch that race explicitly and end the
+            // stream cleanly (same as the pre-dial check above) instead of
+            // falling through to `invoke()` on the transport `onAbort()` just
+            // closed, which would throw instead of ending quietly.
+            if (signal?.aborted) {
+                onAbort();
+                return;
+            }
             const { results, done } = await invoke(
                 transport,
                 wit.SESSIONS_INSTANCE,

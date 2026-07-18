@@ -37,30 +37,48 @@ pub async fn watch_sessions(
         }
 
         loop {
-            match recv_batch(&mut events).await {
-                BatchOutcome::Events(raw) => {
-                    let batch = coalesce(&daemon, raw).await;
-                    // A batch can be empty in principle (all events deduped
-                    // away is impossible today, but stay defensive) — don't
-                    // send a vacuous update.
-                    if !batch.is_empty() && tx.send(batch).await.is_err() {
-                        return;
+            // Race the bus against the subscriber hanging up. `tx.closed()`
+            // resolves once wRPC drops its receiver (client disconnect); a
+            // later `tx.send` failing (the old behavior) only happens to
+            // notice this on the NEXT bus event, so a disconnect during a
+            // quiet period leaves the task (and its bus receiver) parked
+            // indefinitely. Both arms are cancel-safe: `broadcast::Receiver::
+            // recv` and `mpsc::Sender::closed` document no lost state on
+            // cancellation, and `recv_batch`'s try_recv drain runs entirely
+            // after its one await point resolves, so there's no partial
+            // batch to lose if `tx.closed()` wins the race instead.
+            tokio::select! {
+                _ = tx.closed() => return,
+                outcome = recv_batch(&mut events) => match outcome {
+                    BatchOutcome::Events(raw) => {
+                        let batch = coalesce(&daemon, raw).await;
+                        // A batch can be empty in principle (all events deduped
+                        // away is impossible today, but stay defensive) — don't
+                        // send a vacuous update.
+                        if !batch.is_empty() && tx.send(batch).await.is_err() {
+                            return;
+                        }
                     }
-                }
-                BatchOutcome::Lagged => {
-                    // Resync: the subscriber fell behind the bus; a fresh
-                    // snapshot is cheaper and simpler than reasoning about
-                    // which deltas were missed.
-                    let snapshot = list_all(&daemon).await;
-                    if tx
-                        .send(vec![SessionEvent::Snapshot(snapshot)])
-                        .await
-                        .is_err()
-                    {
-                        return;
+                    BatchOutcome::Lagged => {
+                        // Resync: the subscriber fell behind the bus; a fresh
+                        // snapshot is cheaper and simpler than reasoning about
+                        // which deltas were missed.
+                        let snapshot = list_all(&daemon).await;
+                        if tx
+                            .send(vec![SessionEvent::Snapshot(snapshot)])
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
                     }
-                }
-                BatchOutcome::Closed => return, // daemon shutting down
+                    // Defense in depth, not a reachable path today: this task
+                    // holds `daemon` (and, through it, the registry `Arc` that
+                    // owns the bus sender), so the sender can't actually drop
+                    // while this loop is running. Shutdown is process exit,
+                    // not a bus close. Exit cleanly if this ever fires anyway.
+                    BatchOutcome::Closed => return,
+                },
             }
         }
     });

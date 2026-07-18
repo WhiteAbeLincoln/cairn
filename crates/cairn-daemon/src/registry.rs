@@ -154,6 +154,14 @@ impl SessionRegistry {
         self.events.subscribe()
     }
 
+    /// Number of live bus subscribers (each `watch-sessions` stream holds
+    /// exactly one for its lifetime). Exists for observability/tests — e.g.
+    /// asserting a disconnected watcher's task actually tears down instead of
+    /// lingering until the next registry event.
+    pub fn watch_subscriber_count(&self) -> usize {
+        self.events.receiver_count()
+    }
+
     pub fn mint_client_id(&self) -> ClientId {
         ClientId::from_u64(self.next_client_id.fetch_add(1, Ordering::Relaxed))
     }
@@ -278,6 +286,13 @@ impl SessionRegistry {
     }
 
     /// Re-spawn under the same id/name; rejects a still-running session unless `force`.
+    ///
+    /// The old child (if any) is explicitly SIGKILLed, best-effort, in a
+    /// spawned task, with exit reason `"restarted"` — Drop-on-refcount-zero
+    /// isn't a reliable trigger here (see the comment at the kill site below).
+    /// Emits a `Changed` event for the session id once the new handle is
+    /// swapped in. Requires an ambient tokio runtime (`tokio::spawn`), same as
+    /// `create()`.
     pub fn restart(&self, key: &str, force: bool, default_shell: &str) -> Result<(), DaemonError> {
         let entry = self.resolve(key).ok_or(DaemonError::NotFound)?;
         let old = entry.handle();

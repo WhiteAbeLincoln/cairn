@@ -97,7 +97,16 @@ export class ReconnectController {
         return () => this.#listeners.delete(listener);
     }
 
+    /**
+     * A bare `start()` (no intervening `stop()`) can still race a pending
+     * backoff retry timer left over from an earlier `#down()` — e.g. the
+     * endpoint store re-dialing directly after a failure, without going
+     * through `stop()` first. Left uncancelled, that timer fires later,
+     * mints a fresh generation, and supersedes (aborts) the very attempt
+     * this `start()` just launched. Clear it up front so it can never fire.
+     */
     start(): void {
+        this.#clearTimer();
         this.#setStatus({ state: 'connecting' });
         const gen = ++this.#generation;
         void this.#runNow(gen);
@@ -112,6 +121,13 @@ export class ReconnectController {
      */
     stop(): void {
         this.#generation += 1;
+        this.#clearTimer();
+        this.#abort?.abort();
+        this.#abort = undefined;
+    }
+
+    /** Cancel and clear the pending retry timer, if any. Shared by `start()` and `stop()`. */
+    #clearTimer(): void {
         if (this.#timer !== undefined) {
             const clear =
                 this.#opts.clearSchedule ??
@@ -119,8 +135,6 @@ export class ReconnectController {
             clear(this.#timer);
             this.#timer = undefined;
         }
-        this.#abort?.abort();
-        this.#abort = undefined;
     }
 
     async #runNow(gen: number): Promise<void> {

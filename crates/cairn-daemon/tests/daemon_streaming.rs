@@ -515,6 +515,48 @@ async fn watch_sessions_exit_emits_upsert_with_exit_code() {
 }
 
 #[tokio::test]
+async fn watch_sessions_task_exits_promptly_on_disconnect_without_a_later_event() {
+    let daemon = test_daemon();
+    let baseline = daemon.registry.watch_subscriber_count();
+
+    let mut stream = cairn_daemon::handlers::watch::watch_sessions(&daemon)
+        .await
+        .expect("watch_sessions setup");
+    assert_eq!(
+        daemon.registry.watch_subscriber_count(),
+        baseline + 1,
+        "subscribing should register exactly one bus receiver"
+    );
+    // Drain the initial snapshot so the task has moved past its first `send`
+    // and is genuinely parked waiting on the bus (the "quiet period" state a
+    // real idle subscriber sits in) — dropping before this point would exit
+    // the task via the ordinary first-send failure regardless of the fix.
+    let _snapshot = next_watch(&mut stream).await;
+
+    // Drop the stream — the wRPC-side equivalent of a client disconnecting.
+    // Deliberately no registry mutation anywhere below: the old code only
+    // noticed a dropped subscriber when a LATER bus event made `tx.send`
+    // fail, so this test would hang (no event ever arrives to trigger that)
+    // without the `tx.closed()` race in the fix.
+    drop(stream);
+
+    let cleaned_up = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if daemon.registry.watch_subscriber_count() == baseline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        cleaned_up.is_ok(),
+        "watch task should exit (dropping its bus receiver) promptly after the \
+         subscriber disconnects, without waiting for a later registry event"
+    );
+}
+
+#[tokio::test]
 async fn watch_sessions_two_subscribers_each_get_snapshot_and_shared_upsert() {
     let daemon = test_daemon();
     let mut s1 = cairn_daemon::handlers::watch::watch_sessions(&daemon)

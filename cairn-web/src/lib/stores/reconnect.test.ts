@@ -216,6 +216,53 @@ describe('ReconnectController', () => {
         expect(run).toHaveBeenCalledTimes(2); // a fresh start() still runs normally
     });
 
+    it('a bare start() clears a pending retry timer from a previous down(), so it cannot later supersede the new attempt', async () => {
+        let call = 0;
+        // #1 fails outright, scheduling a retry timer. #2+ (triggered by the
+        // bare start() below, not by that timer) goes live and stays open —
+        // this is the state the stale timer would tear down if left uncleared.
+        const run = vi.fn((onUp: () => void, signal: AbortSignal) => {
+            call += 1;
+            if (call === 1) return Promise.reject(new Error('boom'));
+            return openEndedRun(onUp, signal);
+        });
+        const statuses: string[] = [];
+        const scheduler = fakeScheduler();
+        const clearSchedule = vi.fn(scheduler.clearSchedule);
+        const controller = new ReconnectController({
+            run,
+            backoff: { baseMs: 100, jitter: () => 1 },
+            schedule: scheduler.schedule,
+            clearSchedule,
+        });
+        controller.onStatusChange((s) => statuses.push(s.state));
+
+        controller.start();
+        await flush();
+        expect(controller.status).toMatchObject({ state: 'reconnecting', attempt: 1 });
+        expect(scheduler.scheduled).toHaveLength(1);
+        const staleTimer = scheduler.scheduled[0];
+
+        // A bare start() — e.g. the endpoint store re-dialing directly —
+        // before the scheduled retry ever fires.
+        controller.start();
+        await flush();
+        expect(controller.status).toEqual({ state: 'connected' });
+
+        expect(clearSchedule).toHaveBeenCalledWith(staleTimer);
+        expect(scheduler.scheduled).not.toContain(staleTimer);
+
+        // Fire the stale callback directly, simulating the one thing a fake
+        // timer can do that a real cleared `setTimeout` cannot: prove that
+        // even if it somehow ran, it has no observable effect on the new,
+        // now-connected attempt (no extra status transitions).
+        staleTimer.fn();
+        await flush();
+
+        expect(statuses).toEqual(['connecting', 'reconnecting', 'connecting', 'connected']);
+        controller.stop();
+    });
+
     it('stop() aborts the in-flight run() signal', async () => {
         let capturedSignal: AbortSignal | undefined;
         const run = vi.fn((onUp: () => void, signal: AbortSignal) => {
