@@ -504,3 +504,84 @@ describe('DaemonClient round-trips', () => {
         expect(fake.errors).toEqual([]);
     });
 });
+
+describe('DaemonClient dialer routing', () => {
+    /** Wrap a dialer so each dial is counted; the calls still reach `inner`. */
+    function counted(inner: Dialer): { dialer: Dialer; count: () => number } {
+        let dials = 0;
+        return {
+            dialer: () => {
+                dials += 1;
+                return inner();
+            },
+            count: () => dials,
+        };
+    }
+
+    /** Run a minimal attach (immediate detach) to completion. */
+    async function drainAttach(client: DaemonClient): Promise<void> {
+        const clientEvents = new Chan<ClientEvent>();
+        clientEvents.push({ tag: 'detach' });
+        clientEvents.close();
+        const stream = client.attach(
+            sampleInfo.id,
+            { cols: 80, rows: 24, noStdin: false },
+            clientEvents,
+        );
+        for await (const _batch of stream) {
+            // drain to completion
+        }
+    }
+
+    it('routes unary methods and wait via control, streaming methods via streams', async () => {
+        const fake = new FakeDaemon();
+        const control = counted(fake.dialer());
+        const streams = counted(fake.dialer());
+        const client = new DaemonClient(control.dialer, streams.dialer);
+
+        await client.listAll();
+        await client.inspect(sampleInfo.id);
+        await client.create(sampleSpec);
+        await client.rename(sampleInfo.id, 'renamed');
+        await client.restart(sampleInfo.id, false);
+        await client.kill(sampleInfo.id, { tag: 'named', val: 'term' });
+        await client.kick(sampleInfo.id);
+        await client.version();
+        await client.whoami();
+        await client.authenticate('good');
+        await client.wait(sampleInfo.id);
+        expect(control.count()).toBe(11);
+        expect(streams.count()).toBe(0);
+
+        for await (const _batch of client.logs(sampleInfo.id, { tag: 'tail', val: 1 }, false)) {
+            // drain to completion
+        }
+        await drainAttach(client);
+        async function* input(): AsyncIterable<Uint8Array> {
+            yield enc('x');
+        }
+        await client.send(sampleInfo.id, input());
+        expect(streams.count()).toBe(3);
+        expect(control.count()).toBe(11);
+
+        await fake.settle();
+        expect(fake.errors).toEqual([]);
+    });
+
+    it('one-arg construction routes every method through the single dialer', async () => {
+        const fake = new FakeDaemon();
+        const only = counted(fake.dialer());
+        const client = new DaemonClient(only.dialer);
+
+        await client.version();
+        await client.wait(sampleInfo.id);
+        for await (const _batch of client.logs(sampleInfo.id, { tag: 'tail', val: 1 }, false)) {
+            // drain to completion
+        }
+        await drainAttach(client);
+        expect(only.count()).toBe(4);
+
+        await fake.settle();
+        expect(fake.errors).toEqual([]);
+    });
+});

@@ -13,7 +13,7 @@ pub(crate) mod assets;
 mod auth;
 pub(crate) mod cairn_json;
 mod http;
-mod transport;
+pub(crate) mod transport;
 mod wrpc;
 
 /// Per-connection context handed to every `Handler` method.

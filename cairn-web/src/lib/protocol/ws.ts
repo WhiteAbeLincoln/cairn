@@ -92,14 +92,28 @@ function makeTransport(ws: WebSocket, inbound: Chan<Uint8Array>): ClosableTransp
     };
 }
 
-async function writeWithBackpressure(ws: WebSocket, bytes: Uint8Array): Promise<void> {
-    if (ws.readyState !== WebSocket.OPEN) {
+/** `WebSocket.readyState` value for an open socket (RFC 6455 numbering). */
+export const WS_OPEN = 1;
+
+/**
+ * The slice of the WebSocket surface the write path needs — structural so
+ * `wsMuxDialer` (and test fakes) can share the backpressure logic.
+ */
+export interface WsWire {
+    readonly readyState: number;
+    readonly bufferedAmount: number;
+    send(data: Uint8Array | string): void;
+}
+
+/** Send with backpressure; shared by {@link wsDialer} and `wsMuxDialer`. */
+export async function writeWithBackpressure(ws: WsWire, bytes: Uint8Array): Promise<void> {
+    if (ws.readyState !== WS_OPEN) {
         throw new Error('WebSocket is not open');
     }
     ws.send(bytes);
     // No `drain` event exists for WebSocket; poll bufferedAmount, but only while
     // it is actually above the high-water mark (idle otherwise, so no busy spin).
-    while (ws.bufferedAmount > WRITE_HIGH_WATER && ws.readyState === WebSocket.OPEN) {
+    while (ws.bufferedAmount > WRITE_HIGH_WATER && ws.readyState === WS_OPEN) {
         await delay(DRAIN_POLL_MS);
     }
 }

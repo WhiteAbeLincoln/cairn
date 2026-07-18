@@ -32,6 +32,13 @@
 //! Exposed at crate root (like [`crate::tls`]) so integration tests can build a
 //! matching client-side dialer.
 
+/// The `cairn-mux-v0` frame codec, re-exported for integration tests and
+/// client implementations (see the `ws_mux` module docs).
+pub use crate::serve::transport::ws_mux::frame as mux;
+/// The `/ws` subprotocol names, re-exported so clients offer the exact
+/// strings the daemon's negotiation table matches.
+pub use crate::serve::transport::ws_mux::{MUX_SUBPROTOCOL, ONESHOT_SUBPROTOCOL};
+
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};

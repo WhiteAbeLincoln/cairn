@@ -344,6 +344,7 @@ dependencies = [
  "cairn-protocol",
  "cairn-pty",
  "clap",
+ "flume",
  "futures",
  "http",
  "http-body-util",

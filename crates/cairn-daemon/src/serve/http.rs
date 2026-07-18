@@ -37,6 +37,7 @@ use super::ListenerId;
 use super::assets::Assets;
 use super::auth::Authenticator;
 use super::cairn_json::{self, CairnJsonInfo};
+use super::transport::websocket::WsMode;
 
 /// The GUID from RFC 6455 §4.2.2 used to derive the `Sec-WebSocket-Accept`
 /// value from the client's `Sec-WebSocket-Key`.
@@ -154,12 +155,50 @@ async fn spa_fallback(State(state): State<Arc<SpaState>>, uri: Uri) -> Response 
     }
 }
 
+/// The `/ws` negotiation table (see the design spec): each supported
+/// `Sec-WebSocket-Protocol` name paired with the mode it selects, in one
+/// place so a future name (e.g. `cairn-mux-v1`) cannot be added to the
+/// recognized list without also deciding what the daemon speaks for it.
+/// Offering nothing selects one-shot with no echo — stock `wrpc-websockets`
+/// clients send no subprotocol.
+const SUBPROTOCOLS: [(&str, WsMode); 2] = [
+    (
+        crate::serve::transport::ws_mux::MUX_SUBPROTOCOL,
+        WsMode::Mux,
+    ),
+    (
+        crate::serve::transport::ws_mux::ONESHOT_SUBPROTOCOL,
+        WsMode::OneShot,
+    ),
+];
+
+/// Pick the first client-offered subprotocol the daemon supports, with the
+/// mode it selects. `None` means no offer or no supported name: serve
+/// one-shot and echo nothing (a browser that offered names fails the
+/// connection itself per RFC 6455 §4.1, which is the intended outcome for
+/// unsupported-only offers).
+fn negotiate_subprotocol(headers: &HeaderMap) -> Option<(&'static str, WsMode)> {
+    headers
+        .get_all(header::SEC_WEBSOCKET_PROTOCOL)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .map(str::trim)
+        .find_map(|name| {
+            SUBPROTOCOLS
+                .iter()
+                .find(|(supported, _)| *supported == name)
+                .copied()
+        })
+}
+
 /// Handle a `GET /ws` WebSocket upgrade.
 ///
 /// Validates the upgrade headers, applies origin and peer-address gating,
-/// completes the RFC 6455 handshake by hand (so the upgraded stream can be
-/// driven by `tokio-websockets` rather than axum's own socket type), and spawns
-/// the wRPC serve task before returning `101 Switching Protocols`.
+/// negotiates the wire protocol via `Sec-WebSocket-Protocol`, completes the
+/// RFC 6455 handshake by hand (so the upgraded stream can be driven by
+/// `tokio-websockets` rather than axum's own socket type), and spawns the
+/// wRPC serve task before returning `101 Switching Protocols`.
 async fn ws_upgrade(
     State(state): State<Arc<HttpState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -196,6 +235,9 @@ async fn ws_upgrade(
         return (StatusCode::BAD_REQUEST, "missing Sec-WebSocket-Key").into_response();
     };
     let accept = sec_websocket_accept(key.as_bytes());
+    let negotiated = negotiate_subprotocol(headers);
+    let mode = negotiated.map_or(WsMode::OneShot, |(_, mode)| mode);
+    let subprotocol = negotiated.map(|(name, _)| name);
 
     // Take ownership of the pending upgrade before we commit to a 101. hyper
     // (via axum::serve's upgrade-aware connection) stashes this in the request
@@ -212,16 +254,18 @@ async fn ws_upgrade(
     state
         .conns
         .spawn(super::transport::websocket::serve_upgraded(
-            on_upgrade, ctx, peer, daemon, shutdown,
+            on_upgrade, ctx, peer, daemon, shutdown, mode,
         ));
 
-    match Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(header::CONNECTION, "upgrade")
         .header(header::UPGRADE, "websocket")
-        .header(header::SEC_WEBSOCKET_ACCEPT, accept)
-        .body(Body::empty())
-    {
+        .header(header::SEC_WEBSOCKET_ACCEPT, accept);
+    if let Some(name) = subprotocol {
+        builder = builder.header(header::SEC_WEBSOCKET_PROTOCOL, name);
+    }
+    match builder.body(Body::empty()) {
         Ok(response) => response,
         Err(error) => {
             tracing::error!(%error, "failed to build WS upgrade response");
