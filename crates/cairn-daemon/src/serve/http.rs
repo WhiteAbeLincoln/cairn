@@ -37,6 +37,7 @@ use super::ListenerId;
 use super::assets::Assets;
 use super::auth::Authenticator;
 use super::cairn_json::{self, CairnJsonInfo};
+use super::transport::websocket::WsMode;
 
 /// The GUID from RFC 6455 §4.2.2 used to derive the `Sec-WebSocket-Accept`
 /// value from the client's `Sec-WebSocket-Key`.
@@ -154,28 +155,40 @@ async fn spa_fallback(State(state): State<Arc<SpaState>>, uri: Uri) -> Response 
     }
 }
 
-/// Subprotocol names recognized on `/ws` (see the design spec's negotiation
-/// table): many invocations muxed over one socket, or the one-shot protocol
-/// under its explicit name (offering nothing also selects one-shot, with no
-/// echo — stock `wrpc-websockets` clients send no subprotocol).
-const MUX_SUBPROTOCOL: &str = "cairn-mux-v0";
-const ONESHOT_SUBPROTOCOL: &str = "cairn-oneshot-v0";
+/// The `/ws` negotiation table (see the design spec): each supported
+/// `Sec-WebSocket-Protocol` name paired with the mode it selects, in one
+/// place so a future name (e.g. `cairn-mux-v1`) cannot be added to the
+/// recognized list without also deciding what the daemon speaks for it.
+/// Offering nothing selects one-shot with no echo — stock `wrpc-websockets`
+/// clients send no subprotocol.
+const SUBPROTOCOLS: [(&str, WsMode); 2] = [
+    (
+        crate::serve::transport::ws_mux::MUX_SUBPROTOCOL,
+        WsMode::Mux,
+    ),
+    (
+        crate::serve::transport::ws_mux::ONESHOT_SUBPROTOCOL,
+        WsMode::OneShot,
+    ),
+];
 
-/// Pick the first client-offered subprotocol the daemon supports. `None`
-/// means no offer or no supported name: serve one-shot and echo nothing (a
-/// browser that offered names fails the connection itself per RFC 6455 §4.1,
-/// which is the intended outcome for unsupported-only offers).
-fn negotiate_subprotocol(headers: &HeaderMap) -> Option<&'static str> {
+/// Pick the first client-offered subprotocol the daemon supports, with the
+/// mode it selects. `None` means no offer or no supported name: serve
+/// one-shot and echo nothing (a browser that offered names fails the
+/// connection itself per RFC 6455 §4.1, which is the intended outcome for
+/// unsupported-only offers).
+fn negotiate_subprotocol(headers: &HeaderMap) -> Option<(&'static str, WsMode)> {
     headers
         .get_all(header::SEC_WEBSOCKET_PROTOCOL)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .map(str::trim)
-        .find_map(|name| match name {
-            MUX_SUBPROTOCOL => Some(MUX_SUBPROTOCOL),
-            ONESHOT_SUBPROTOCOL => Some(ONESHOT_SUBPROTOCOL),
-            _ => None,
+        .find_map(|name| {
+            SUBPROTOCOLS
+                .iter()
+                .find(|(supported, _)| *supported == name)
+                .copied()
         })
 }
 
@@ -222,12 +235,9 @@ async fn ws_upgrade(
         return (StatusCode::BAD_REQUEST, "missing Sec-WebSocket-Key").into_response();
     };
     let accept = sec_websocket_accept(key.as_bytes());
-    let subprotocol = negotiate_subprotocol(headers);
-    let mode = if subprotocol == Some(MUX_SUBPROTOCOL) {
-        super::transport::websocket::WsMode::Mux
-    } else {
-        super::transport::websocket::WsMode::OneShot
-    };
+    let negotiated = negotiate_subprotocol(headers);
+    let mode = negotiated.map_or(WsMode::OneShot, |(_, mode)| mode);
+    let subprotocol = negotiated.map(|(name, _)| name);
 
     // Take ownership of the pending upgrade before we commit to a 101. hyper
     // (via axum::serve's upgrade-aware connection) stashes this in the request

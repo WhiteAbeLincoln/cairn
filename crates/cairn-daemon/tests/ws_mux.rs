@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, ready};
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use cairn_daemon::ws::mux as frame;
@@ -25,12 +25,13 @@ use cairn_protocol::client::cairn::daemon as api;
 use common::DaemonHarness;
 use futures::{SinkExt as _, StreamExt as _};
 use http::header::SEC_WEBSOCKET_PROTOCOL;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::AsyncWrite;
 use tokio::sync::mpsc;
 use wrpc_websockets::tokio_websockets::{ClientBuilder, Message};
 
-const MUX: &str = "cairn-mux-v0";
-const ONESHOT: &str = "cairn-oneshot-v0";
+// The daemon's own negotiation names: a typo'd offer here would be a compile
+// error instead of a confusing no-echo failure.
+use cairn_daemon::ws::{MUX_SUBPROTOCOL as MUX, ONESHOT_SUBPROTOCOL as ONESHOT};
 
 // ── negotiation table ──────────────────────────────────────────────────────
 
@@ -323,11 +324,11 @@ impl wrpc_transport::Invoke for MuxClient {
             out: self.out.clone(),
             fin_sent: false,
         };
-        let rx = ChannelReader {
-            rx: in_rx,
-            chunk: Bytes::new(),
-            done: false,
-        };
+        // Chunk-buffered AsyncRead over the demux feed: EOF when the daemon
+        // FINs (feed dropped) or the connection dies (table cleared).
+        let rx = tokio_util::io::StreamReader::new(
+            tokio_stream::wrappers::UnboundedReceiverStream::new(in_rx).map(Ok::<_, io::Error>),
+        );
         wrpc_transport::frame::invoke(tx, rx, instance, func, params, paths).await
     }
 }
@@ -370,40 +371,6 @@ impl Drop for ChannelWriter {
     fn drop(&mut self) {
         if !self.fin_sent {
             let _ = self.out.send(frame::encode(self.id, frame::FLAG_RST, &[]));
-        }
-    }
-}
-
-/// Read half of one client channel: the demux task feeds it; EOF when the
-/// daemon FINs (feed dropped) or the connection dies (table cleared).
-struct ChannelReader {
-    rx: mpsc::UnboundedReceiver<Bytes>,
-    chunk: Bytes,
-    done: bool,
-}
-
-impl AsyncRead for ChannelReader {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        loop {
-            if !self.chunk.is_empty() {
-                let n = self.chunk.len().min(buf.remaining());
-                buf.put_slice(&self.chunk.split_to(n));
-                return Poll::Ready(Ok(()));
-            }
-            if self.done {
-                return Poll::Ready(Ok(()));
-            }
-            match ready!(self.rx.poll_recv(cx)) {
-                Some(bytes) => self.chunk = bytes,
-                None => {
-                    self.done = true;
-                    return Poll::Ready(Ok(()));
-                }
-            }
         }
     }
 }

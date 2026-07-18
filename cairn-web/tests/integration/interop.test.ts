@@ -10,16 +10,16 @@
 import { spawn as spawnProcess } from 'node:child_process';
 import { Chan } from '@bytecodealliance/wrpc';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { DaemonHarness, parseCpuTime, sampleCpuFraction } from './harness';
 import {
-    CairnError,
-    type ClientEvent,
-    type ServerEvent,
-    type SessionSpec,
-} from '../../src/lib/protocol';
-
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
-const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+    DaemonHarness,
+    dec,
+    enc,
+    parseCpuTime,
+    reapSessions,
+    sampleCpuFraction,
+    spec,
+} from './harness';
+import { CairnError, type ClientEvent, type ServerEvent } from '../../src/lib/protocol';
 
 let harness: DaemonHarness;
 
@@ -34,28 +34,8 @@ afterAll(async () => {
 // Keep the daemon quiet between tests: SIGKILL every session so a leftover
 // interactive session can never perturb the CPU-regression window.
 afterEach(async () => {
-    const sessions = await harness.client.listAll();
-    await Promise.all(
-        sessions.map((s) =>
-            harness.client.kill(s.id, { tag: 'named', val: 'kill' }).catch(() => {}),
-        ),
-    );
+    await reapSessions(harness.client);
 });
-
-/** A session spec with interactive defaults; override per test. */
-function spec(overrides: Partial<SessionSpec> & { command: string[] }): SessionSpec {
-    return {
-        name: undefined,
-        env: [],
-        envInherit: true,
-        workdir: undefined,
-        tty: true,
-        stdin: true,
-        idleTimeoutSecs: undefined,
-        scrollbackLines: 1000,
-        ...overrides,
-    };
-}
 
 /** `it.next()` with a deadline so a wire hang fails the test instead of it. */
 function nextWithin<T>(

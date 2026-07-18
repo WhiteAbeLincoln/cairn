@@ -54,6 +54,15 @@ use wrpc_websockets::tokio_websockets::{CloseCode, Message};
 
 use crate::serve::ConnCtx;
 
+/// The `Sec-WebSocket-Protocol` name selecting this muxed protocol. Public
+/// (re-exported via [`crate::ws`]) so tests and client implementations offer
+/// the exact string the daemon's negotiation table matches.
+pub const MUX_SUBPROTOCOL: &str = "cairn-mux-v0";
+/// The explicit name for the one-shot protocol (the default when no
+/// subprotocol is offered) — pins the wire format against future default
+/// changes.
+pub const ONESHOT_SUBPROTOCOL: &str = "cairn-oneshot-v0";
+
 /// Inbound frames buffered per channel before the read loop suspends
 /// (whole-socket pause = TCP backpressure, per the design spec).
 const INBOUND_BUFFER_FRAMES: usize = 16;
@@ -576,12 +585,13 @@ enum Action {
         in_tx: mpsc::Sender<Bytes>,
         in_rx: mpsc::Receiver<Bytes>,
         err: Arc<Mutex<Option<io::Error>>>,
-        remote_done: bool,
     },
     Deliver {
         tx: Option<mpsc::Sender<Bytes>>,
         fin: bool,
     },
+    /// A live channel reset by the peer.
+    Rst,
     RstOverLimit,
     Ignore,
 }
@@ -610,6 +620,9 @@ async fn handle_frame(
             } else {
                 let (in_tx, in_rx) = mpsc::channel(INBOUND_BUFFER_FRAMES);
                 let err = Arc::new(Mutex::new(None));
+                // A FIN'd open is inserted already remote-done with no feed:
+                // the payload below still reaches the reader through `in_tx`,
+                // whose drop then delivers EOF.
                 map.live.insert(
                     id,
                     Entry {
@@ -619,20 +632,11 @@ async fn handle_frame(
                         local_done: false,
                     },
                 );
-                Action::Open {
-                    in_tx,
-                    in_rx,
-                    err,
-                    remote_done: fin,
-                }
+                Action::Open { in_tx, in_rx, err }
             }
         } else if let Some(entry) = map.live.get(&id) {
             if rst {
-                // Handled outside the lock via remote_rst (needs removal).
-                Action::Deliver {
-                    tx: None,
-                    fin: false,
-                }
+                Action::Rst
             } else {
                 Action::Deliver {
                     tx: entry.inbound.clone(),
@@ -645,18 +649,8 @@ async fn handle_frame(
         }
     };
 
-    if rst && matches!(action, Action::Deliver { .. }) {
-        shared.remote_rst(id);
-        return;
-    }
-
     match action {
-        Action::Open {
-            in_tx,
-            in_rx,
-            err,
-            remote_done,
-        } => {
+        Action::Open { in_tx, in_rx, err } => {
             if !payload.is_empty() {
                 // Fresh channel with capacity; cannot meaningfully fail.
                 let _ = in_tx.send(payload).await;
@@ -674,9 +668,6 @@ async fn handle_frame(
                 shared: shared.clone(),
                 fin_sent: false,
             };
-            if remote_done {
-                shared.remote_done(id);
-            }
             // A full queue blocks here, pausing the whole socket until the
             // serve loop catches up (it drains promptly — each channel's
             // header read is spawned, never awaited inline). If the serve
@@ -696,6 +687,7 @@ async fn handle_frame(
                 shared.remote_done(id);
             }
         }
+        Action::Rst => shared.remote_rst(id),
         Action::RstOverLimit => {
             tracing::debug!(channel = id, "mux channel limit exceeded; resetting");
             // Through the *bounded* data queue, not ctl: an open flood past

@@ -12,17 +12,8 @@
 // needed in the harness.)
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { DaemonHarness } from './harness';
-import {
-    DaemonClient,
-    type MuxWebSocket,
-    type SessionSpec,
-    wsDialer,
-    wsMuxDialer,
-} from '../../src/lib/protocol';
-
-const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
-const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+import { DaemonHarness, dec, enc, reapSessions, spec } from './harness';
+import { DaemonClient, type MuxWebSocket, wsDialer, wsMuxDialer } from '../../src/lib/protocol';
 
 let harness: DaemonHarness;
 /** Client under test: muxed control, one-shot streams. */
@@ -52,28 +43,8 @@ afterAll(async () => {
 // Cleanup goes through the harness's own one-shot client so it can never
 // perturb the mux socket count.
 afterEach(async () => {
-    const sessions = await harness.client.listAll();
-    await Promise.all(
-        sessions.map((s) =>
-            harness.client.kill(s.id, { tag: 'named', val: 'kill' }).catch(() => {}),
-        ),
-    );
+    await reapSessions(harness.client);
 });
-
-/** A session spec with interactive defaults; override per test. */
-function spec(overrides: Partial<SessionSpec> & { command: string[] }): SessionSpec {
-    return {
-        name: undefined,
-        env: [],
-        envInherit: true,
-        workdir: undefined,
-        tty: true,
-        stdin: true,
-        idleTimeoutSecs: undefined,
-        scrollbackLines: 1000,
-        ...overrides,
-    };
-}
 
 describe('muxed control connection', () => {
     it('concurrent unary calls interleave on one socket with correct results', async () => {

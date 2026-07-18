@@ -13,7 +13,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { DaemonClient, wsDialer } from '../../src/lib/protocol';
+import { DaemonClient, type SessionSpec, wsDialer } from '../../src/lib/protocol';
 
 const execFileAsync = promisify(execFile);
 
@@ -255,4 +255,35 @@ function freePort(): Promise<number> {
 
 export function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Shared helpers for the integration suites ──────────────────────────────
+
+export const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+export const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+/** A session spec with interactive defaults; override per test. */
+export function spec(overrides: Partial<SessionSpec> & { command: string[] }): SessionSpec {
+    return {
+        name: undefined,
+        env: [],
+        envInherit: true,
+        workdir: undefined,
+        tty: true,
+        stdin: true,
+        idleTimeoutSecs: undefined,
+        scrollbackLines: 1000,
+        ...overrides,
+    };
+}
+
+/**
+ * SIGKILL every session, for `afterEach`: keeps the daemon quiet between
+ * tests so a leftover interactive session can never perturb the next one.
+ */
+export async function reapSessions(client: DaemonClient): Promise<void> {
+    const sessions = await client.listAll();
+    await Promise.all(
+        sessions.map((s) => client.kill(s.id, { tag: 'named', val: 'kill' }).catch(() => {})),
+    );
 }

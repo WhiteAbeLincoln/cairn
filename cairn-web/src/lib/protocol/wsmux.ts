@@ -16,9 +16,12 @@ import { WS_OPEN, type WsWire, writeWithBackpressure } from './ws';
  */
 export const MUX_SUBPROTOCOL = 'cairn-mux-v0';
 
-const HEADER_LEN = 5;
-const FLAG_FIN = 1;
-const FLAG_RST = 1 << 1;
+/** Wire constants, exported so tests assert against the single source of
+ * truth instead of re-declaring them (the Rust mirror exports its copies the
+ * same way, as `cairn_daemon::ws::mux`). */
+export const HEADER_LEN = 5;
+export const FLAG_FIN = 1;
+export const FLAG_RST = 1 << 1;
 /** Maximum frame payload; larger writes are chunked. */
 const MAX_PAYLOAD = 1 << 20;
 
@@ -80,7 +83,15 @@ export function wsMuxDialer(url: string, opts: WsMuxOptions = {}): CloseableDial
     const open = (): Promise<MuxConn> => {
         if (closed) return Promise.reject(new Error('mux dialer closed'));
         if (current) return current;
-        const attempt = MuxConn.connect(url, opts, () => {
+        // A retired dialer's socket death is deliberate, not an outage:
+        // suppress its onDown so it can't spuriously kick reconnect logic.
+        const connOpts: WsMuxOptions = {
+            ...opts,
+            onDown: (err) => {
+                if (!closed) opts.onDown?.(err);
+            },
+        };
+        const attempt = MuxConn.connect(url, connOpts, () => {
             // Established socket died: forget it so the next dial redials.
             if (current === attempt) current = undefined;
         });
@@ -246,8 +257,10 @@ class MuxConn {
                 this.#channels.delete(id);
                 state.inbound.close();
                 // Cancelling an incomplete invocation: tell the daemon so it
-                // stops serving the channel. A completed one needs nothing.
-                if (!(state.localFin && state.remoteFin) && this.#ws.readyState === WS_OPEN) {
+                // stops serving the channel. (A completed channel needs
+                // nothing, but it is never still in the map here —
+                // forgetIfComplete removed it the moment both FINs met.)
+                if (this.#ws.readyState === WS_OPEN) {
                     this.#ws.send(buildFrame(id, FLAG_RST, EMPTY));
                 }
             },

@@ -37,7 +37,7 @@ http-body-util = "0.1"
 # Header types shared by the auth layer (`TransportContext::Http`) and axum,
 # which re-exports this same crate/version.
 http = "1"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "io"] }
 # Multi-consumer-friendly channel whose `recv_async` works on `&Receiver` —
 # lets the mux acceptor implement wRPC's `Accept` (which takes `&self`)
 # without a mutex around a tokio receiver. Same crate cairn-pty uses.

@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import type { Transport } from './transport';
-import { MUX_SUBPROTOCOL, type MuxWebSocket, type WsMuxOptions, wsMuxDialer } from './wsmux';
-
-const HEADER_LEN = 5;
-const FLAG_FIN = 1;
-const FLAG_RST = 1 << 1;
+import {
+    FLAG_FIN,
+    FLAG_RST,
+    HEADER_LEN,
+    MUX_SUBPROTOCOL,
+    type MuxWebSocket,
+    type WsMuxOptions,
+    wsMuxDialer,
+} from './wsmux';
 
 /** Let queued microtasks/macrotasks (socket callbacks, Chan pumps) run. */
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
@@ -296,6 +300,12 @@ describe('wsMuxDialer', () => {
         expect(ws.closed).toBe(true);
         // No new socket was opened by the rejected dial.
         expect(fixture.sockets).toHaveLength(1);
+
+        // The retired socket's death is deliberate — its close event must
+        // not fire onDown and spuriously kick reconnect logic.
+        ws.drop();
+        await tick();
+        expect(downs).toBe(0);
     });
 
     it('rejects the dial when the daemon does not select the subprotocol', async () => {

@@ -142,26 +142,22 @@ export function onConnectionStatusChange(fn: (status: ConnectionStatus) => void)
 function connectWith(ep: EndpointConfig): void {
     endpoint = ep;
     needsManualEndpoint = false;
-    // Retire the previous control connection: without this, the old mux
-    // socket stays open on both ends (the daemon's keepalive pings keep it
-    // warm), leaking one socket + daemon serve loop per endpoint switch.
+    // Retire the previous connection: stop its probe loop and close its
+    // control socket — without the close, the old mux socket stays open on
+    // both ends (the daemon's keepalive pings keep it warm), leaking one
+    // socket + daemon serve loop per endpoint switch.
+    controller?.stop();
     controlDialer?.close();
     controlDialer = undefined;
 
-    // Forward reference: the mux dialer's `onDown` needs the controller, but
-    // the controller's probe needs the client built from the dialer. Safe
-    // because `onDown` only fires when an *established* socket dies — long
-    // after `next` is assigned below. If a stale dialer's socket dies after a
-    // newer `connectWith`, its captured controller is stopped and `kick()`
-    // no-ops.
-    let next: ReconnectController | undefined;
     const isWs = ep.transport === 'ws';
     let c: DaemonClient;
     if (isWs) {
         // Control traffic (unary + wait) rides one persistent muxed socket;
         // attach/logs/send keep dedicated one-shot sockets so bulk streams
-        // stay off the control connection.
-        const control = wsMuxDialer(ep.url, { onDown: () => next?.kick() });
+        // stay off the control connection. `onDown` kicks whatever controller
+        // is current when the socket dies (retired dialers suppress it).
+        const control = wsMuxDialer(ep.url, { onDown: () => controller?.kick() });
         controlDialer = control;
         c = new DaemonClient(control, wsDialer(ep.url));
     } else {
@@ -169,8 +165,7 @@ function connectWith(ep: EndpointConfig): void {
     }
     client = c;
 
-    controller?.stop();
-    next = new ReconnectController({
+    const next = new ReconnectController({
         // A cheap, data-free connectivity check — keeps the connection status
         // independent of any particular RPC (sessions, attach, ...).
         probe: () => c.version().then(() => undefined),
