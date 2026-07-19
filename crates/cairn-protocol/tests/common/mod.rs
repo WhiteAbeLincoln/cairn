@@ -160,6 +160,14 @@ type ProxyEvents = Pin<
     >,
 >;
 type ProxyInterceptFn = Arc<dyn Fn(Ctx, String, ProxyActions) -> ProxyEvents + Send + Sync>;
+type ProxyObservations = Pin<
+    Box<
+        dyn Stream<Item = Vec<bindings::exports::cairn::daemon::http_proxy::ObservationEvent>>
+            + Send
+            + 'static,
+    >,
+>;
+type ProxyWatchFn = Arc<dyn Fn(Ctx, String) -> ProxyObservations + Send + Sync>;
 
 /// A `Handler` whose operations are individually configurable. Unset
 /// operations panic via `unimplemented!`, so a test only wires up the
@@ -171,6 +179,7 @@ pub struct StubHandler {
     authenticate: Option<AuthenticateFn>,
     kill: Option<KillFn>,
     proxy_intercept: Option<ProxyInterceptFn>,
+    proxy_watch: Option<ProxyWatchFn>,
 }
 
 impl StubHandler {
@@ -212,6 +221,14 @@ impl StubHandler {
         f: impl Fn(Ctx, String, ProxyActions) -> ProxyEvents + Send + Sync + 'static,
     ) -> Self {
         self.proxy_intercept = Some(Arc::new(f));
+        self
+    }
+
+    pub fn on_proxy_watch(
+        mut self,
+        f: impl Fn(Ctx, String) -> ProxyObservations + Send + Sync + 'static,
+    ) -> Self {
+        self.proxy_watch = Some(Arc::new(f));
         self
     }
 }
@@ -380,9 +397,9 @@ impl bindings::exports::cairn::daemon::http_proxy::Handler<Ctx> for StubHandler 
 
     async fn watch(
         &self,
-        _ctx: Ctx,
+        ctx: Ctx,
         _call_ctx: Option<CallContext>,
-        _id: String,
+        id: String,
     ) -> anyhow::Result<
         Pin<
             Box<
@@ -393,7 +410,10 @@ impl bindings::exports::cairn::daemon::http_proxy::Handler<Ctx> for StubHandler 
             >,
         >,
     > {
-        unimplemented!("http-proxy.watch not stubbed in this test")
+        match &self.proxy_watch {
+            Some(f) => Ok(f(ctx, id)),
+            None => unimplemented!("http-proxy.watch not stubbed in this test"),
+        }
     }
 }
 
