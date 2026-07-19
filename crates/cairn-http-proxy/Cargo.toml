@@ -15,6 +15,7 @@ futures.workspace = true
 http = "1"
 http-body-util = "0.1"
 hudsucker = { version = "0.25", default-features = false, features = ["http2", "rcgen-ca", "rustls-client"] }
+pem = "3"
 rustls-native-certs.workspace = true
 tokio = { workspace = true, features = ["fs", "net", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
