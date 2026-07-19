@@ -10,6 +10,7 @@ mod common;
 
 use cairn_protocol as bindings;
 use common::{StubHandler, sample_session_info, spawn_server};
+use futures::StreamExt as _;
 
 #[tokio::test]
 async fn meta_version_round_trips_record_fields() {
@@ -175,4 +176,94 @@ async fn sessions_kill_round_trips_grace_ms() {
     .expect("kill invocation");
     let err = res.expect_err("stub echoes via Err");
     assert_eq!(err.message, "id=dev named=true grace=Some(5000)");
+}
+
+#[tokio::test]
+async fn http_proxy_intercept_round_trips_streamed_actions_and_raw_request_data() {
+    use bindings::client::cairn::daemon::http_proxy as client_proxy;
+    use bindings::exports::cairn::daemon::http_proxy as server_proxy;
+
+    let stub = StubHandler::new().on_proxy_intercept(|_ctx, id, mut actions| {
+        Box::pin(futures::stream::once(async move {
+            let valid_actions = matches!(actions.next().await.as_deref(), Some([
+                server_proxy::InterceptorAction::ResponseStart(server_proxy::ResponseStart {
+                    id: 77,
+                    head: server_proxy::ResponseHead { status: 202, .. },
+                }),
+                server_proxy::InterceptorAction::ResponseBody(server_proxy::BodyChunk { id: 77, bytes }),
+                server_proxy::InterceptorAction::ResponseEnd(77),
+            ]) if bytes.as_ref() == b"streamed");
+            if !valid_actions {
+                return vec![server_proxy::InterceptorEvent::Error(
+                    bindings::cairn::daemon::types::Error {
+                        code: "test.invalid_actions".to_string(),
+                        message: "interceptor actions changed in transit".to_string(),
+                    },
+                )];
+            }
+            vec![server_proxy::InterceptorEvent::Request(
+                server_proxy::InterceptedRequest {
+                    id: 77,
+                    head: server_proxy::RequestHead {
+                        method: "POST".to_string(),
+                        uri: format!("https://api.example.com/{id}"),
+                        version: "HTTP/2".to_string(),
+                        headers: vec![(
+                            "x-audit".to_string(),
+                            bytes::Bytes::from_static(&[0, 255]),
+                        )],
+                    },
+                    body: bytes::Bytes::from_static(b"request body"),
+                },
+            )]
+        }))
+    });
+    let harness = spawn_server(stub).await.expect("spawn_server");
+    let actions: std::pin::Pin<
+        Box<dyn futures::Stream<Item = Vec<client_proxy::InterceptorAction>> + Send>,
+    > = Box::pin(futures::stream::once(async {
+        vec![
+            client_proxy::InterceptorAction::ResponseStart(client_proxy::ResponseStart {
+                id: 77,
+                head: client_proxy::ResponseHead {
+                    status: 202,
+                    version: "HTTP/2".to_string(),
+                    headers: vec![(
+                        "content-type".to_string(),
+                        bytes::Bytes::from_static(b"text/event-stream"),
+                    )],
+                },
+            }),
+            client_proxy::InterceptorAction::ResponseBody(client_proxy::BodyChunk {
+                id: 77,
+                bytes: bytes::Bytes::from_static(b"streamed"),
+            }),
+            client_proxy::InterceptorAction::ResponseEnd(77),
+        ]
+    }));
+
+    let (mut events, io) = bindings::client::cairn::daemon::http_proxy::intercept(
+        &harness.unix_client(),
+        (),
+        None,
+        "audit",
+        actions,
+    )
+    .await
+    .expect("intercept invocation");
+    if let Some(io) = io {
+        tokio::spawn(async move {
+            let _ = io.await;
+        });
+    }
+    let batch = events.next().await.expect("interceptor event batch");
+    let client_proxy::InterceptorEvent::Request(request) = &batch[0] else {
+        panic!("expected request event");
+    };
+    assert_eq!(request.id, 77);
+    assert_eq!(request.head.method, "POST");
+    assert_eq!(request.head.uri, "https://api.example.com/audit");
+    assert_eq!(request.head.version, "HTTP/2");
+    assert_eq!(request.head.headers[0].1.as_ref(), &[0, 255]);
+    assert_eq!(request.body.as_ref(), b"request body");
 }

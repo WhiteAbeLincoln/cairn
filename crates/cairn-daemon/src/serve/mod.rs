@@ -74,12 +74,23 @@ pub async fn serve(
     // processes deserve the SIGTERM grace path regardless of why we're
     // shutting down.
     drain_sessions(&daemon, daemon.cfg.shutdown_grace).await;
+    drain_proxies(&daemon).await;
     tasks.shutdown().await;
 
     match transport_error {
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+async fn drain_proxies(daemon: &crate::daemon::Daemon) {
+    let proxies: Vec<_> = daemon
+        .registry
+        .list()
+        .into_iter()
+        .filter_map(|entry| entry.proxy())
+        .collect();
+    futures::future::join_all(proxies.iter().map(|proxy| proxy.shutdown())).await;
 }
 
 #[derive(Clone, Debug)]

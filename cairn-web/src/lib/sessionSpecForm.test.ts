@@ -33,6 +33,7 @@ describe('buildSessionSpec', () => {
             stdin: true,
             idleTimeoutSecs: undefined,
             scrollbackLines: DEFAULT_SCROLLBACK_LINES,
+            httpProxy: undefined,
         });
     });
 

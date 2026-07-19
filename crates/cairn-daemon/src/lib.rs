@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon;
 pub mod error;
 pub mod handlers;
+pub mod http_proxy;
 pub mod identity;
 pub mod listen;
 pub mod registry;

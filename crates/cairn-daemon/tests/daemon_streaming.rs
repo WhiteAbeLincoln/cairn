@@ -26,6 +26,7 @@ async fn create(
         stdin: true,
         idle_timeout_secs: None,
         scrollback_lines: 100,
+        http_proxy: None,
     };
     daemon
         .registry
@@ -115,6 +116,7 @@ async fn explicit_env_overrides_inherited() {
         stdin: true,
         idle_timeout_secs: None,
         scrollback_lines: 100,
+        http_proxy: None,
     };
     let info = daemon
         .registry

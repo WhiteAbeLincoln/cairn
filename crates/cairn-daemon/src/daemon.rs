@@ -295,6 +295,46 @@ impl cairn_protocol::exports::cairn::daemon::meta::Handler<ConnCtx> for Daemon {
     }
 }
 
+impl cairn_protocol::exports::cairn::daemon::http_proxy::Handler<ConnCtx> for Daemon {
+    async fn intercept(
+        &self,
+        _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+        id: String,
+        actions: BoxStream<
+            'static,
+            Vec<cairn_protocol::exports::cairn::daemon::http_proxy::InterceptorAction>,
+        >,
+    ) -> anyhow::Result<
+        BoxStream<
+            'static,
+            Vec<cairn_protocol::exports::cairn::daemon::http_proxy::InterceptorEvent>,
+        >,
+    > {
+        let span = tracing::info_span!("rpc", method = "http_proxy.intercept");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
+        Ok(handlers::http_proxy::intercept(self, id, actions))
+    }
+
+    async fn watch(
+        &self,
+        _ctx: ConnCtx,
+        call_ctx: Option<CallContext>,
+        id: String,
+    ) -> anyhow::Result<
+        BoxStream<
+            'static,
+            Vec<cairn_protocol::exports::cairn::daemon::http_proxy::ObservationEvent>,
+        >,
+    > {
+        let span = tracing::info_span!("rpc", method = "http_proxy.watch");
+        link_remote_context(&span, &call_ctx);
+        let _enter = span.enter();
+        Ok(handlers::http_proxy::watch(self, id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

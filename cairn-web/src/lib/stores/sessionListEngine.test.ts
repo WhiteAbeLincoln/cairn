@@ -19,6 +19,7 @@ function info(id: string, createdAtUnixMs: bigint, name = id): SessionInfo {
             tty: true,
             stdin: true,
             scrollbackLines: 1000,
+            httpProxy: undefined,
         },
     };
 }

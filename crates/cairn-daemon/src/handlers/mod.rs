@@ -1,4 +1,5 @@
 pub mod attach;
+pub mod http_proxy;
 pub mod logs;
 pub mod meta;
 pub mod send;

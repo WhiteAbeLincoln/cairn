@@ -1,0 +1,28 @@
+[package]
+name = "cairn-http-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+description = "Reusable HTTP/HTTPS interception backend for Cairn sessions"
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+base64.workspace = true
+bytes.workspace = true
+futures.workspace = true
+http = "1"
+http-body-util = "0.1"
+hudsucker = { version = "0.25", default-features = false, features = ["http2", "rcgen-ca", "rustls-client"] }
+rustls-native-certs.workspace = true
+tokio = { workspace = true, features = ["fs", "net", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread"] }
+tempfile = { version = "3", default-features = false }
+rustls.workspace = true
+rustls-pemfile = "2"
+tokio-rustls = "0.26"

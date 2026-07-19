@@ -33,6 +33,15 @@ const sampleSpec: SessionSpec = {
     stdin: true,
     idleTimeoutSecs: 300n,
     scrollbackLines: 1000,
+    httpProxy: {
+        routes: [
+            {
+                methods: ['POST'],
+                host: 'api.example.com',
+                pathPrefix: '/v1/audit',
+            },
+        ],
+    },
 };
 
 const sampleInfo: SessionInfo = {

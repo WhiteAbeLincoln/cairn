@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use bytes::BytesMut;
-use cairn_protocol::cairn::daemon::types::{Error, ExitStatus, SessionSpec};
+use cairn_protocol::cairn::daemon::types::{
+    Error, ExitStatus, HttpProxySpec, HttpRoute, SessionSpec,
+};
 use cairn_protocol::exports::cairn::daemon::meta::VersionInfo;
 
 // ── Concrete writer type used to satisfy the Encode<W> bound ────────────────
@@ -129,7 +131,8 @@ fn golden_exit_status_killed() {
 }
 
 /// `session-spec` record: name option, command list, env list of tuples,
-/// bool fields, workdir option, idle-timeout option, scrollback-lines u32.
+/// bool fields, workdir option, idle-timeout option, scrollback-lines u32,
+/// and HTTP proxy option.
 #[test]
 fn golden_session_spec() {
     let value = SessionSpec {
@@ -149,8 +152,15 @@ fn golden_session_spec() {
         stdin: true,
         idle_timeout_secs: None,
         scrollback_lines: 10_000,
+        http_proxy: Some(HttpProxySpec {
+            routes: vec![HttpRoute {
+                methods: vec!["POST".to_string()],
+                host: Some("api.example.com".to_string()),
+                path_prefix: Some("/v1/audit".to_string()),
+            }],
+        }),
     };
     let bytes = encode_to_bytes::<SessionSpec, SessionSpecEncoder>(value);
-    let json = r#"{"name":"my-session","command":["bash","-c","echo hello"],"env":[["FOO","bar"],["BAZ","qux"]],"envInherit":true,"workdir":"/home/user/project","tty":true,"stdin":true,"idleTimeoutSecs":null,"scrollbackLines":10000}"#;
+    let json = r#"{"name":"my-session","command":["bash","-c","echo hello"],"env":[["FOO","bar"],["BAZ","qux"]],"envInherit":true,"workdir":"/home/user/project","tty":true,"stdin":true,"idleTimeoutSecs":null,"scrollbackLines":10000,"httpProxy":{"routes":[{"methods":["POST"],"host":"api.example.com","pathPrefix":"/v1/audit"}]}}"#;
     write_golden("session-spec", &bytes, json);
 }

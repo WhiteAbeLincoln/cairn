@@ -37,7 +37,7 @@ enum LocalApi {
     Tcp {
         base_url: String,
         token: String,
-        client: HttpClient,
+        client: Box<HttpClient>,
     },
     Unix {
         socket_path: PathBuf,
@@ -109,7 +109,7 @@ fn detect_local_api() -> anyhow::Result<LocalApi> {
         return Ok(LocalApi::Tcp {
             base_url: format!("http://127.0.0.1:{}", creds.port),
             token: creds.token,
-            client,
+            client: Box::new(client),
         });
     }
 
