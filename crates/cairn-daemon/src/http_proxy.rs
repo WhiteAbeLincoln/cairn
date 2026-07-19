@@ -1,7 +1,7 @@
 //! Daemon ownership and environment wiring for per-session HTTP proxies.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 
 use cairn_http_proxy::{ProxyAuthority, ProxySession, ProxySessionConfig, Route};
 use cairn_protocol::cairn::daemon::types::HttpProxySpec;
@@ -53,19 +53,12 @@ impl ProxyManager {
     }
 
     fn authority(&self) -> anyhow::Result<Arc<ProxyAuthority>> {
-        let mut authority = lock_recover(&self.authority);
+        let mut authority = self.authority.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(authority) = authority.as_ref() {
             return Ok(Arc::clone(authority));
         }
         let created = Arc::new(ProxyAuthority::create(&self.runtime_parent)?);
         *authority = Some(Arc::clone(&created));
         Ok(created)
-    }
-}
-
-fn lock_recover<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
     }
 }
