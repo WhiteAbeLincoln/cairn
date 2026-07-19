@@ -283,4 +283,24 @@ describe('AttachController — phase / overlay derivation', () => {
 
         expect(c.phase).toEqual({ kind: 'exited', status });
     });
+
+    it('treats a sink throw (e.g. WASM trap) as a disconnected drop', async () => {
+        const fake = new FakeClient();
+        const phases: AttachPhase[] = [];
+        const sink: AttachSink = {
+            onSnapshot: () => {
+                throw new WebAssembly.RuntimeError('unreachable');
+            },
+            onOutput: () => {},
+            onPhase: (p) => phases.push(p),
+        };
+        const c = makeController(fake, sink);
+        c.start('sess', INIT);
+
+        fake.server.push([{ tag: 'snapshot', val: enc('screen') }]);
+        await tick();
+
+        expect(c.phase.kind).toBe('disconnected');
+        expect((c.phase as { message?: string }).message).toContain('unreachable');
+    });
 });
