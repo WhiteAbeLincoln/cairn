@@ -136,3 +136,15 @@ The interceptor cannot modify an origin response after choosing `forward`.
 Passive watchers still observe forwarded responses. The current Claude Code v2
 remote-control SSE path is supported; its v1 WebSocket path requires the later
 WebSocket extension.
+
+HTTP trailers survive on the forwarded path (request and response) and on origin
+responses seen by watchers, but the wRPC interceptor protocol cannot carry them:
+`intercepted-request` exposes only a buffered body, and the `interceptor-action`
+`response-end` case carries no trailers, so a wRPC interceptor can neither observe
+request trailers nor emit a trailer-bearing synthetic response (e.g. gRPC's
+`grpc-status`). This is a limit of the interim wRPC action protocol, not the proxy
+engine. It is resolved by the WASI middleware phase, whose `wasi:http` body model
+represents trailers natively — see `2026-07-18-http-mitm-wasi-middleware-design.md`
+(Reconciliation item 5). Extending the wRPC action protocol to carry trailers is
+warranted only if a wRPC interceptor must serve trailer-dependent synthetic
+responses before the plugin runtime lands.
