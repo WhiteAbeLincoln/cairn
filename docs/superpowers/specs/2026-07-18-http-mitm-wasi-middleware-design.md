@@ -164,6 +164,27 @@ the standard streaming handler call onto the correlated event/action protocol
 implemented by the base proxy. The proxy engine must not contain separate
 routing implementations for wRPC and WASI.
 
+The correlated event/action protocol is interim. It is a bespoke,
+client-initiated shape — the client opens the stream and the daemon pushes
+requests as events while the client replies with actions — and it cannot carry
+HTTP trailers (see the base proxy design's Exclusions). The preferred end state
+is a single handler contract shared by every implementation: the hosted WASI
+guest uses `wasi:http` natively; a remote wRPC client (a remote CLI, or any
+process acting as a live interceptor without shipping a component) uses a
+value-typed projection of the same request/response-with-trailers semantics —
+the `wrpc:http` pattern, i.e. `stream<u8>` bodies and a trailers `future` in
+place of wasi:http's host-owned resources, never raw resources over the wire;
+and native middleware calls the abstraction directly. Converging on one contract
+also closes the wRPC interceptor's trailer gap. Its feasibility hinges on
+whether the wRPC transport supports the daemon invoking a handler *exported* by
+a connected client (reverse invocation); if it does not, the fallback is a
+client-initiated stream whose framing is reshaped to mirror the handler
+request/response (including trailers) rather than the current action set. This
+handler path is only for on-critical-path interception: the web UI and a remote
+CLI acting as passive observers use the observation facility instead, and in the
+plugin model most browser interaction is with a plugin's authenticated API mount
+rather than a raw interceptor.
+
 The public WIT shape for naming handlers and binding chains is intentionally
 deferred until the implemented session spec and plugin registry can be
 examined together. It must preserve these behavioral requirements:
@@ -335,6 +356,14 @@ writing the adapter:
    CLI and record its exact REST/SSE routes and API-base behavior.
 7. Define manifest syntax, mount-path normalization, handler health checks,
    reload drain deadlines, and capability grants in the plugin-system spec.
+8. Decide whether the wRPC interceptor keeps its correlated event/action wire
+   protocol or is re-expressed as a handler-shaped interface (a `wrpc:http`-style
+   value projection of request/response with streaming bodies and trailers) so
+   remote wRPC clients and the WASI guest share one handler contract. Confirm
+   whether the wRPC transport supports the daemon invoking a client-exported
+   handler (reverse invocation); if not, choose the client-initiated fallback
+   framing. This decision also determines whether the wRPC path gains HTTP
+   trailer support (see item 5).
 
 ## Testing And Acceptance
 
