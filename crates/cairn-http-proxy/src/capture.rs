@@ -1,6 +1,6 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use crate::{ExchangeId, RequestHead, ResponseHead};
 
@@ -86,45 +86,140 @@ pub enum ObservationEvent {
     Failed(ExchangeFailed),
 }
 
+/// Mutable, internal representation of a body's captured bytes while its
+/// exchange is tracked by the store. Bytes accumulate in a `BytesMut`, which
+/// grows/reuses its backing allocation on `extend_from_slice` (amortized
+/// O(1) per append), instead of the old approach of reallocating and
+/// `memcpy`-ing the *entire* captured-so-far buffer on every chunk (O(n)
+/// per chunk, O(n^2) over a whole body). It is only frozen into the public,
+/// immutable `ObservedBody` (backed by `Bytes`) when a snapshot is taken.
+#[derive(Debug, Default)]
+struct CapturedBody {
+    buf: BytesMut,
+    total_bytes: u64,
+    truncated: bool,
+    complete: bool,
+}
+
+impl CapturedBody {
+    fn to_observed(&self) -> ObservedBody {
+        ObservedBody {
+            bytes: Bytes::copy_from_slice(&self.buf),
+            total_bytes: self.total_bytes,
+            truncated: self.truncated,
+            complete: self.complete,
+        }
+    }
+}
+
+/// Mutable, internal representation of a tracked exchange. Mirrors
+/// `ObservedExchange` field-for-field except that bodies are the
+/// `BytesMut`-backed `CapturedBody` rather than the public, `Bytes`-backed
+/// `ObservedBody`; `to_observed` performs the (only-here) conversion.
+struct CapturedExchange {
+    id: ExchangeId,
+    request: RequestHead,
+    request_body: CapturedBody,
+    response: Option<ResponseHead>,
+    response_body: CapturedBody,
+    started_at_unix_ms: u64,
+    completed_at_unix_ms: Option<u64>,
+    failure: Option<ProxyFailure>,
+}
+
+impl CapturedExchange {
+    fn to_observed(&self) -> ObservedExchange {
+        ObservedExchange {
+            id: self.id,
+            request: self.request.clone(),
+            request_body: self.request_body.to_observed(),
+            response: self.response.clone(),
+            response_body: self.response_body.to_observed(),
+            started_at_unix_ms: self.started_at_unix_ms,
+            completed_at_unix_ms: self.completed_at_unix_ms,
+            failure: self.failure.clone(),
+        }
+    }
+
+    /// Bytes currently buffered across both bodies of this exchange, used to
+    /// keep the store's running `captured_total` in sync when the whole
+    /// record is evicted.
+    fn buffered_len(&self) -> usize {
+        self.request_body.buf.len() + self.response_body.buf.len()
+    }
+}
+
 pub(crate) struct CaptureStore {
-    exchanges: VecDeque<ObservedExchange>,
+    /// Exchange ids in insertion order, oldest first. Drives eviction order
+    /// and `snapshot()`'s output order; the records themselves live in
+    /// `exchanges`, keyed by id.
+    order: VecDeque<ExchangeId>,
+    /// Exchange records keyed by id. Using a map (rather than the previous
+    /// linear `VecDeque<ObservedExchange>`) makes `find_mut`'s lookup --
+    /// taken on every byte written by every concurrent request -- O(1)
+    /// instead of an O(n) scan.
+    exchanges: HashMap<ExchangeId, CapturedExchange>,
     max_exchanges: usize,
     max_bytes: usize,
     body_limit: usize,
+    /// Running total of bytes currently captured (request + response body
+    /// bytes) across every exchange in `exchanges`. Maintained incrementally
+    /// on every mutation so checking it against `max_bytes` is O(1) instead
+    /// of re-summing every exchange's body length on every `evict` loop
+    /// iteration (which made eviction of several exchanges O(n^2)).
+    captured_total: usize,
 }
 
 impl CaptureStore {
     pub(crate) fn new(max_exchanges: usize, max_bytes: usize, body_limit: usize) -> Self {
         Self {
-            exchanges: VecDeque::new(),
+            order: VecDeque::new(),
+            exchanges: HashMap::new(),
             max_exchanges,
             max_bytes,
             body_limit,
+            captured_total: 0,
         }
     }
 
     pub(crate) fn snapshot(&self) -> Vec<ObservedExchange> {
-        self.exchanges.iter().cloned().collect()
+        self.order
+            .iter()
+            .filter_map(|id| self.exchanges.get(id))
+            .map(CapturedExchange::to_observed)
+            .collect()
     }
 
     pub(crate) fn start(&mut self, id: ExchangeId, head: RequestHead, unix_ms: u64) {
-        self.exchanges.push_back(ObservedExchange {
+        self.order.push_back(id);
+        self.exchanges.insert(
             id,
-            request: head,
-            request_body: ObservedBody::default(),
-            response: None,
-            response_body: ObservedBody::default(),
-            started_at_unix_ms: unix_ms,
-            completed_at_unix_ms: None,
-            failure: None,
-        });
+            CapturedExchange {
+                id,
+                request: head,
+                request_body: CapturedBody::default(),
+                response: None,
+                response_body: CapturedBody::default(),
+                started_at_unix_ms: unix_ms,
+                completed_at_unix_ms: None,
+                failure: None,
+            },
+        );
         self.evict();
     }
 
     pub(crate) fn request_chunk(&mut self, id: ExchangeId, bytes: &Bytes) -> Option<Bytes> {
-        let body_limit = self.body_limit;
+        let local_limit = self.body_limit;
+        let global_budget = self.max_bytes.saturating_sub(self.captured_total);
         let exchange = self.find_mut(id)?;
-        capture_chunk(&mut exchange.request_body, bytes, body_limit)
+        let (captured, added) = capture_chunk(
+            &mut exchange.request_body,
+            bytes,
+            local_limit,
+            global_budget,
+        );
+        self.captured_total += added;
+        captured
     }
 
     pub(crate) fn end_request(&mut self, id: ExchangeId) -> Option<BodyEnded> {
@@ -144,9 +239,17 @@ impl CaptureStore {
     }
 
     pub(crate) fn response_chunk(&mut self, id: ExchangeId, bytes: &Bytes) -> Option<Bytes> {
-        let body_limit = self.body_limit;
+        let local_limit = self.body_limit;
+        let global_budget = self.max_bytes.saturating_sub(self.captured_total);
         let exchange = self.find_mut(id)?;
-        capture_chunk(&mut exchange.response_body, bytes, body_limit)
+        let (captured, added) = capture_chunk(
+            &mut exchange.response_body,
+            bytes,
+            local_limit,
+            global_budget,
+        );
+        self.captured_total += added;
+        captured
     }
 
     pub(crate) fn end_response(&mut self, id: ExchangeId) -> Option<BodyEnded> {
@@ -174,45 +277,80 @@ impl CaptureStore {
         self.evict();
     }
 
-    fn find_mut(&mut self, id: ExchangeId) -> Option<&mut ObservedExchange> {
-        self.exchanges.iter_mut().find(|exchange| exchange.id == id)
+    fn find_mut(&mut self, id: ExchangeId) -> Option<&mut CapturedExchange> {
+        self.exchanges.get_mut(&id)
     }
 
+    /// Evicts completed exchanges, oldest first, while the store is over
+    /// either cap: `max_exchanges` records, or `max_bytes` of captured body
+    /// content.
+    ///
+    /// Policy for the byte cap (this is the fix for the memory-bound bug: an
+    /// all-active workload -- nothing ever completes -- used to retain
+    /// unbounded captured bytes because this loop could only reclaim
+    /// *completed* exchanges): this loop still never removes an in-flight
+    /// exchange's record outright, so a slow/hung request doesn't vanish
+    /// from the observable history. Instead, `max_bytes` is enforced where
+    /// the bytes are actually produced -- see `request_chunk`/
+    /// `response_chunk`'s `global_budget` computation, passed into
+    /// `capture_chunk` -- which stops capturing further body content (and
+    /// marks the body `truncated`) the instant the store-wide cap would be
+    /// exceeded, regardless of how many exchanges are active concurrently.
+    /// That write-time gate is what makes `captured_total <= max_bytes` an
+    /// invariant; the check in this loop is a defensive backstop, and what
+    /// promptly reclaims memory from *historical* completed exchanges once
+    /// the exchange-count cap alone wouldn't have.
     fn evict(&mut self) {
-        while self.exchanges.len() > self.max_exchanges || self.captured_bytes() > self.max_bytes {
-            let Some(index) = self
-                .exchanges
-                .iter()
-                .position(|exchange| exchange.completed_at_unix_ms.is_some())
-            else {
+        while self.exchanges.len() > self.max_exchanges || self.captured_total > self.max_bytes {
+            let Some(index) = self.order.iter().position(|id| {
+                self.exchanges
+                    .get(id)
+                    .is_some_and(|exchange| exchange.completed_at_unix_ms.is_some())
+            }) else {
                 break;
             };
-            self.exchanges.remove(index);
+            let Some(id) = self.order.remove(index) else {
+                break;
+            };
+            if let Some(exchange) = self.exchanges.remove(&id) {
+                self.captured_total -= exchange.buffered_len();
+            }
         }
-    }
-
-    fn captured_bytes(&self) -> usize {
-        self.exchanges
-            .iter()
-            .map(|exchange| exchange.request_body.bytes.len() + exchange.response_body.bytes.len())
-            .sum()
     }
 }
 
-fn capture_chunk(body: &mut ObservedBody, bytes: &Bytes, limit: usize) -> Option<Bytes> {
+/// Appends `bytes` to `body`'s captured buffer, subject to two independent
+/// caps:
+/// - `local_limit` (`capture_body_bytes`): the max bytes captured for this
+///   one body (request or response).
+/// - `global_budget`: bytes remaining under the store-wide `max_bytes`
+///   (`replay_max_bytes`) cap, shared across every body of every exchange
+///   currently held. This is what keeps memory bounded even when every
+///   exchange is still in flight and `evict` cannot reclaim anything by
+///   dropping records.
+///
+/// Returns the slice actually captured (forwarded on to the peer) and the
+/// number of bytes added to `body`'s buffer, so the caller can keep its
+/// running store-wide total (`captured_total`) in sync in O(1) instead of
+/// re-summing every body's length.
+fn capture_chunk(
+    body: &mut CapturedBody,
+    bytes: &Bytes,
+    local_limit: usize,
+    global_budget: usize,
+) -> (Option<Bytes>, usize) {
     body.total_bytes = body.total_bytes.saturating_add(bytes.len() as u64);
-    let remaining = limit.saturating_sub(body.bytes.len());
-    if remaining == 0 {
+    let local_remaining = local_limit.saturating_sub(body.buf.len());
+    let allowed = local_remaining.min(global_budget);
+    if allowed == 0 {
         body.truncated |= !bytes.is_empty();
-        return None;
+        return (None, 0);
     }
-    let captured = bytes.slice(..bytes.len().min(remaining));
-    let mut combined = Vec::with_capacity(body.bytes.len() + captured.len());
-    combined.extend_from_slice(&body.bytes);
-    combined.extend_from_slice(&captured);
-    body.bytes = Bytes::from(combined);
+    let captured = bytes.slice(..bytes.len().min(allowed));
+    body.buf.extend_from_slice(&captured);
     body.truncated |= captured.len() < bytes.len();
-    Some(captured)
+    let added = captured.len();
+    (Some(captured), added)
 }
 
 #[cfg(test)]
@@ -241,6 +379,74 @@ mod tests {
         assert!(end.truncated);
         let snapshot = store.snapshot();
         assert_eq!(snapshot[0].request_body.bytes, Bytes::from_static(b"abcd"));
+    }
+
+    #[test]
+    fn capture_bounds_total_bytes_across_many_active_exchanges() {
+        // Regression test for the memory-bound bug: an all-active workload
+        // (nothing ever completes, so `evict` has nothing it can reclaim)
+        // must still be capped by `max_bytes` across every exchange's
+        // captured body bytes combined, not just per-exchange/per-body.
+        let max_bytes = 1024;
+        // body_limit is intentionally far larger than max_bytes so the
+        // per-body cap never binds first -- only the store-wide budget can
+        // be the thing that stops capture here.
+        let mut store = CaptureStore::new(1000, max_bytes, 4096);
+        let chunk = Bytes::from(vec![b'x'; 100]);
+        for id in 0..50u64 {
+            store.start(id, head("/"), id);
+            // Never call complete()/fail() -- every exchange stays active.
+            for _ in 0..3 {
+                store.request_chunk(id, &chunk);
+            }
+        }
+
+        let total: usize = store
+            .snapshot()
+            .iter()
+            .map(|exchange| exchange.request_body.bytes.len() + exchange.response_body.bytes.len())
+            .sum();
+
+        assert!(
+            total <= max_bytes,
+            "captured {total} bytes but max_bytes is {max_bytes}"
+        );
+        assert_eq!(total, max_bytes, "budget should be filled exactly");
+    }
+
+    #[test]
+    fn capture_chunk_accumulates_exact_prefix_across_many_chunks() {
+        // Correctness guard for the BytesMut-accumulator refactor: writing
+        // many small chunks must produce exactly the same captured prefix
+        // (and truncation behavior) as writing one big chunk would, proving
+        // the amortized-append path doesn't drop, reorder, or duplicate
+        // bytes at chunk boundaries.
+        let mut store = CaptureStore::new(8, 1024, 10);
+        store.start(1, head("/"), 0);
+
+        let chunks: [&[u8]; 6] = [b"ab", b"cd", b"ef", b"gh", b"ij", b"kl"];
+        let mut returned = Vec::new();
+        for chunk in chunks {
+            if let Some(captured) = store.request_chunk(1, &Bytes::copy_from_slice(chunk)) {
+                returned.extend_from_slice(&captured);
+            }
+        }
+
+        // body_limit is 10: the first five 2-byte chunks (10 bytes) are
+        // captured in full; the sixth is entirely past the limit.
+        assert_eq!(returned, b"abcdefghij");
+
+        let end = store.end_request(1).unwrap();
+        assert_eq!(end.total_bytes, 12);
+        assert!(end.truncated);
+
+        let snapshot = store.snapshot();
+        assert_eq!(
+            snapshot[0].request_body.bytes,
+            Bytes::from_static(b"abcdefghij")
+        );
+        assert_eq!(snapshot[0].request_body.total_bytes, 12);
+        assert!(snapshot[0].request_body.truncated);
     }
 
     #[test]
