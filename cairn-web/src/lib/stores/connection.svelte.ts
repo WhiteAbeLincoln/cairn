@@ -30,6 +30,7 @@ let endpoint = $state<EndpointConfig | undefined>(undefined);
 let status = $state<ConnectionStatus>({ state: 'connecting' });
 let needsManualEndpoint = $state(false);
 let manualError = $state<string | undefined>(undefined);
+let identity = $state<string | undefined>(undefined);
 
 let controller: ReconnectController | undefined;
 /** The live muxed control dialer (WS endpoints only), retired on replacement. */
@@ -114,6 +115,7 @@ export function forgetEndpoint(): void {
     controlDialer = undefined;
     client = undefined;
     endpoint = undefined;
+    identity = undefined;
     status = { state: 'connecting' };
     manualError = undefined;
     needsManualEndpoint = true;
@@ -137,6 +139,10 @@ export function getNeedsManualEndpoint(): boolean {
 
 export function getManualError(): string | undefined {
     return manualError;
+}
+
+export function getIdentity(): string | undefined {
+    return identity;
 }
 
 /** Notified on every connection status transition — used by `SessionDetail.svelte` to nudge a reattach on recovery. */
@@ -204,6 +210,14 @@ function connectWith(ep: EndpointConfig): void {
     });
     next.onStatusChange((s) => {
         status = s;
+        if (s.state === 'connected') {
+            c.whoami().then(
+                (id) => {
+                    identity = id;
+                },
+                () => {},
+            );
+        }
         for (const listener of statusListeners) listener(s);
     });
     controller = next;
