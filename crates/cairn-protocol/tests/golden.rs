@@ -21,6 +21,10 @@ use bytes::BytesMut;
 use cairn_protocol::cairn::daemon::types::{
     Error, ExitStatus, HttpProxySpec, HttpRoute, SessionSpec,
 };
+use cairn_protocol::exports::cairn::daemon::http_proxy::{
+    InterceptorAction, ObservationEvent, ObservedBody, ObservedExchange, RequestHead,
+    RequestStarted, ResponseHead,
+};
 use cairn_protocol::exports::cairn::daemon::meta::VersionInfo;
 
 // ── Concrete writer type used to satisfy the Encode<W> bound ────────────────
@@ -74,6 +78,10 @@ type VersionInfoEncoder = <VersionInfo as wrpc_transport::Encode<PhantomWriter>>
 type ErrorEncoder = <Error as wrpc_transport::Encode<PhantomWriter>>::Encoder;
 type ExitStatusEncoder = <ExitStatus as wrpc_transport::Encode<PhantomWriter>>::Encoder;
 type SessionSpecEncoder = <SessionSpec as wrpc_transport::Encode<PhantomWriter>>::Encoder;
+type ObservedExchangeEncoder = <ObservedExchange as wrpc_transport::Encode<PhantomWriter>>::Encoder;
+type InterceptorActionEncoder =
+    <InterceptorAction as wrpc_transport::Encode<PhantomWriter>>::Encoder;
+type ObservationEventEncoder = <ObservationEvent as wrpc_transport::Encode<PhantomWriter>>::Encoder;
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
@@ -163,4 +171,102 @@ fn golden_session_spec() {
     let bytes = encode_to_bytes::<SessionSpec, SessionSpecEncoder>(value);
     let json = r#"{"name":"my-session","command":["bash","-c","echo hello"],"env":[["FOO","bar"],["BAZ","qux"]],"envInherit":true,"workdir":"/home/user/project","tty":true,"stdin":true,"idleTimeoutSecs":null,"scrollbackLines":10000,"httpProxy":{"routes":[{"methods":["POST"],"host":"api.example.com","pathPrefix":"/v1/audit"}]}}"#;
     write_golden("session-spec", &bytes, json);
+}
+
+// ── http-proxy interface ────────────────────────────────────────────────────
+//
+// `header` (`tuple<string, list<u8>>`) values and body chunks are opaque
+// bytes, not necessarily UTF-8 text. No TS decoder for these types exists yet
+// (unlike the `types` fixtures above), so there is no established JSON
+// convention to match; sidecars below represent a `list<u8>` field as a plain
+// JSON array of byte values (0-255) — the most direct, unambiguous encoding
+// of raw bytes available in JSON. Variant payloads use the `{"tag","val"}`
+// shape the TS side already uses for `types` variants (see
+// `cairn-web/src/lib/protocol/types.ts`), with case names camelCased the same
+// way multi-word field names are camelCased elsewhere in this file.
+
+/// `observed-exchange` record: nested `request-head` with duplicate header
+/// names and a non-UTF-8 header value, an empty request body, a present
+/// `response`, a truncated response body, and a present `failure` — the
+/// fields the interceptor/observer design most depends on getting right.
+#[test]
+fn golden_observed_exchange() {
+    let value = ObservedExchange {
+        id: 42,
+        request: RequestHead {
+            method: "GET".to_string(),
+            uri: "https://a/x".to_string(),
+            version: "HTTP/1.1".to_string(),
+            headers: vec![
+                ("h".to_string(), bytes::Bytes::from_static(&[0, 255])),
+                ("h".to_string(), bytes::Bytes::from_static(b"ok")),
+            ],
+        },
+        request_body: ObservedBody {
+            bytes: bytes::Bytes::new(),
+            total_bytes: 0,
+            truncated: false,
+            complete: true,
+        },
+        response: Some(ResponseHead {
+            status: 404,
+            version: "HTTP/1.1".to_string(),
+            headers: vec![],
+        }),
+        response_body: ObservedBody {
+            bytes: bytes::Bytes::from_static(b"no"),
+            total_bytes: 2,
+            truncated: true,
+            complete: false,
+        },
+        started_at_unix_ms: 1_700_000_000_000,
+        completed_at_unix_ms: Some(1_700_000_000_050),
+        failure: Some(Error {
+            code: "upstream.timeout".to_string(),
+            message: "gateway timed out".to_string(),
+        }),
+    };
+    let bytes = encode_to_bytes::<ObservedExchange, ObservedExchangeEncoder>(value);
+    let json = r#"{"id":42,"request":{"method":"GET","uri":"https://a/x","version":"HTTP/1.1","headers":[["h",[0,255]],["h",[111,107]]]},"requestBody":{"bytes":[],"totalBytes":0,"truncated":false,"complete":true},"response":{"status":404,"version":"HTTP/1.1","headers":[]},"responseBody":{"bytes":[110,111],"totalBytes":2,"truncated":true,"complete":false},"startedAtUnixMs":1700000000000,"completedAtUnixMs":1700000000050,"failure":{"code":"upstream.timeout","message":"gateway timed out"}}"#;
+    write_golden("observed-exchange", &bytes, json);
+}
+
+/// `interceptor-action::fail` — the variant missing from `round_trip.rs`'s
+/// coverage until this PR. Non-trivial payload: `tuple<exchange-id, error>`.
+#[test]
+fn golden_interceptor_action_fail() {
+    let value = InterceptorAction::Fail((
+        99,
+        Error {
+            code: "proxy.upstream_error".to_string(),
+            message: "connection reset".to_string(),
+        },
+    ));
+    let bytes = encode_to_bytes::<InterceptorAction, InterceptorActionEncoder>(value);
+    let json =
+        r#"{"tag":"fail","val":[99,{"code":"proxy.upstream_error","message":"connection reset"}]}"#;
+    write_golden("interceptor-action-fail", &bytes, json);
+}
+
+/// `observation-event::request-start` — non-trivial payload: a
+/// `request-started` record nesting a `request-head` (with a header) plus a
+/// `unix-ms` timestamp.
+#[test]
+fn golden_observation_event_request_start() {
+    let value = ObservationEvent::RequestStart(RequestStarted {
+        id: 5,
+        head: RequestHead {
+            method: "POST".to_string(),
+            uri: "https://api.example.com/v1/items".to_string(),
+            version: "HTTP/1.1".to_string(),
+            headers: vec![(
+                "content-type".to_string(),
+                bytes::Bytes::from_static(b"application/json"),
+            )],
+        },
+        unix_ms: 1_700_000_000_777,
+    });
+    let bytes = encode_to_bytes::<ObservationEvent, ObservationEventEncoder>(value);
+    let json = r#"{"tag":"requestStart","val":{"id":5,"head":{"method":"POST","uri":"https://api.example.com/v1/items","version":"HTTP/1.1","headers":[["content-type",[97,112,112,108,105,99,97,116,105,111,110,47,106,115,111,110]]]},"unixMs":1700000000777}}"#;
+    write_golden("observation-event-request-start", &bytes, json);
 }
