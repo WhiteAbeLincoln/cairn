@@ -1,12 +1,14 @@
 <script lang="ts">
 import { page } from '$app/state';
-import { forgetEndpoint, getConnectionEndpoint } from '$lib/stores/connection.svelte';
+import { forgetEndpoint, getConnectionEndpoint, getIdentity } from '$lib/stores/connection.svelte';
 import ConnectionIndicator from './ConnectionIndicator.svelte';
 
 const isActive = $derived(page.url.pathname.startsWith('/sessions'));
 // Only worth offering once *some* endpoint has been resolved — otherwise the
 // manual-entry screen is already showing.
 const hasEndpoint = $derived(!!getConnectionEndpoint());
+const identity = $derived(getIdentity());
+const showIdentity = $derived(identity != null && identity !== 'anonymous');
 </script>
 
 <nav class="nav">
@@ -15,6 +17,9 @@ const hasEndpoint = $derived(!!getConnectionEndpoint());
         <a href="/sessions" class:active={isActive}>Sessions</a>
     </div>
     <ConnectionIndicator />
+    {#if showIdentity}
+        <span class="identity" title={identity}>{identity}</span>
+    {/if}
     {#if hasEndpoint}
         <button type="button" class="change-endpoint" onclick={forgetEndpoint}>
             Change endpoint
@@ -64,6 +69,22 @@ const hasEndpoint = $derived(!!getConnectionEndpoint());
     .nav-links a.active {
         color: var(--color-text);
         background: var(--color-surface-hover);
+    }
+
+    .identity {
+        font-size: 0.75rem;
+        color: var(--color-text-muted);
+        font-family: var(--font-mono);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 12rem;
+    }
+
+    @media (max-width: 639px) {
+        .identity {
+            display: none;
+        }
     }
 
     .change-endpoint {
