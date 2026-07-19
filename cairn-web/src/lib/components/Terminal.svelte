@@ -39,6 +39,7 @@ let phase = $state<AttachPhase>({ kind: 'connecting' });
 let term: WTerm | undefined;
 let controller: AttachController | undefined;
 let loadError = $state<string | undefined>(undefined);
+let termCorrupted = false;
 const encoder = new TextEncoder();
 
 const hostStyle = $derived(
@@ -86,10 +87,28 @@ function measureGrid(hostEl: HTMLElement): { cols: number; rows: number } {
     return { cols, rows };
 }
 
+function writeToTerm(bytes: Uint8Array): void {
+    try {
+        term?.write(bytes);
+    } catch (e) {
+        termCorrupted = true;
+        throw e;
+    }
+}
+
+function createTerm(core: GhosttyCore): WTerm {
+    return new WTerm(host, {
+        core,
+        autoResize: true,
+        onData: (data: string) => controller?.write(encoder.encode(data)),
+        onResize: (c: number, r: number) => controller?.resize(c, r),
+    });
+}
+
 function startAttach(cols: number, rows: number): void {
     controller = new AttachController(client, {
-        onSnapshot: (bytes) => term?.write(bytes),
-        onOutput: (bytes) => term?.write(bytes),
+        onSnapshot: writeToTerm,
+        onOutput: writeToTerm,
         onPhase: (p) => {
             phase = p;
             onPhase?.(p);
@@ -98,9 +117,27 @@ function startAttach(cols: number, rows: number): void {
     controller.start(sessionId, { cols, rows, noStdin: false });
 }
 
-function reattach(): void {
+async function reattach(): Promise<void> {
     controller?.stop();
     phase = { kind: 'connecting' };
+    if (termCorrupted) {
+        const cols = term?.cols ?? 80;
+        const rows = term?.rows ?? 24;
+        term?.destroy();
+        term = undefined;
+        termCorrupted = false;
+        try {
+            const core = await GhosttyCore.load();
+            const t = createTerm(core);
+            t.cols = cols;
+            t.rows = rows;
+            await t.init();
+            term = t;
+        } catch (err) {
+            loadError = err instanceof Error ? err.message : String(err);
+            return;
+        }
+    }
     startAttach(term?.cols ?? 80, term?.rows ?? 24);
     term?.focus();
 }
@@ -116,12 +153,7 @@ onMount(() => {
             // Construct first (adds the `.wterm` class + padding), then size from
             // the measured grid before init so the first render is at the real
             // size and the PTY is right-sized from the first byte.
-            const t = new WTerm(host, {
-                core,
-                autoResize: true,
-                onData: (data) => controller?.write(encoder.encode(data)),
-                onResize: (cols, rows) => controller?.resize(cols, rows),
-            });
+            const t = createTerm(core);
             const { cols, rows } = measureGrid(host);
             t.cols = cols;
             t.rows = rows;
