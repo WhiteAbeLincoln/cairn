@@ -25,6 +25,7 @@ fn cat_spec() -> SessionSpec {
         stdin: true,
         idle_timeout_secs: None,
         scrollback_lines: 100,
+        http_proxy: None,
     }
 }
 

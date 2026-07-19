@@ -45,6 +45,7 @@ export function buildSessionSpec(form: SessionFormValues): SessionSpec {
         stdin: form.stdin,
         idleTimeoutSecs: toIdleTimeout(form.idleTimeoutSecs),
         scrollbackLines: toScrollbackLines(form.scrollbackLines),
+        httpProxy: undefined,
     };
 }
 

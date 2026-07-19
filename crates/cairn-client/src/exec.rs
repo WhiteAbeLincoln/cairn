@@ -80,6 +80,7 @@ pub async fn run_exec(
         stdin,
         idle_timeout_secs: args.timeout.map(|d| d.as_secs()),
         scrollback_lines: 1000,
+        http_proxy: None,
     };
 
     let info = match sessions::create(client, (), None, &spec)

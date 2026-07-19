@@ -165,6 +165,7 @@ mod tests {
             stdin: false,
             idle_timeout_secs: None,
             scrollback_lines: 1000,
+            http_proxy: None,
         }
     }
 

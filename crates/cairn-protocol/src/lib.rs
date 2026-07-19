@@ -12,6 +12,7 @@ wit_bindgen_wrpc::generate!({
         "cairn:daemon/types@0.1.0": generate,
         "cairn:daemon/sessions@0.1.0": generate,
         "cairn:daemon/meta@0.1.0": generate,
+        "cairn:daemon/http-proxy@0.1.0": generate,
     },
 });
 
@@ -26,6 +27,7 @@ pub mod client {
             "cairn:daemon/types@0.1.0": crate::cairn::daemon::types,
             "cairn:daemon/sessions@0.1.0": generate,
             "cairn:daemon/meta@0.1.0": generate,
+            "cairn:daemon/http-proxy@0.1.0": generate,
         },
     });
 }

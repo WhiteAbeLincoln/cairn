@@ -35,6 +35,18 @@ export const exitStatus: Type = t.record({
     reason: t.option(t.string),
 });
 
+/** `types.http-route`. */
+export const httpRoute: Type = t.record({
+    methods: t.list(t.string),
+    host: t.option(t.string),
+    pathPrefix: t.option(t.string),
+});
+
+/** `types.http-proxy-spec`. */
+export const httpProxySpec: Type = t.record({
+    routes: t.list(httpRoute),
+});
+
 /** `types.session-spec`. */
 export const sessionSpec: Type = t.record({
     name: t.option(t.string),
@@ -46,6 +58,7 @@ export const sessionSpec: Type = t.record({
     stdin: t.bool,
     idleTimeoutSecs: t.option(t.u64),
     scrollbackLines: t.u32,
+    httpProxy: t.option(httpProxySpec),
 });
 
 /** `types.session-info`. */

@@ -6,8 +6,8 @@
 //! never have to spell out the methods they don't use.
 //!
 //! When a new test needs to stub an operation not yet covered, add an `on_*`
-//! builder + field for it (the streaming ops — wait/logs/attach/send/
-//! watch-sessions — are intentionally left unstubbed until a test needs them).
+//! builder + field for it. Most streaming operations are intentionally left
+//! unstubbed until a test needs them.
 
 #![allow(dead_code)] // builder methods are used à la carte by individual tests
 
@@ -62,6 +62,7 @@ pub async fn spawn_server<H>(handler: H) -> anyhow::Result<Harness>
 where
     H: bindings::exports::cairn::daemon::sessions::Handler<Ctx>
         + bindings::exports::cairn::daemon::meta::Handler<Ctx>
+        + bindings::exports::cairn::daemon::http_proxy::Handler<Ctx>
         + Clone
         + Send
         + Sync
@@ -133,6 +134,7 @@ pub fn sample_session_info(id: &str) -> SessionInfo {
             stdin: true,
             idle_timeout_secs: None,
             scrollback_lines: 1000,
+            http_proxy: None,
         },
     }
 }
@@ -143,6 +145,29 @@ type VersionFn = Arc<dyn Fn(Ctx) -> VersionInfo + Send + Sync>;
 type ListAllFn = Arc<dyn Fn(Ctx) -> Vec<SessionInfo> + Send + Sync>;
 type AuthenticateFn = Arc<dyn Fn(Ctx, String) -> Result<(), Error> + Send + Sync>;
 type KillFn = Arc<dyn Fn(Ctx, String, Signal, Option<u32>) -> Result<(), Error> + Send + Sync>;
+type ProxyActions = Pin<
+    Box<
+        dyn Stream<Item = Vec<bindings::exports::cairn::daemon::http_proxy::InterceptorAction>>
+            + Send
+            + 'static,
+    >,
+>;
+type ProxyEvents = Pin<
+    Box<
+        dyn Stream<Item = Vec<bindings::exports::cairn::daemon::http_proxy::InterceptorEvent>>
+            + Send
+            + 'static,
+    >,
+>;
+type ProxyInterceptFn = Arc<dyn Fn(Ctx, String, ProxyActions) -> ProxyEvents + Send + Sync>;
+type ProxyObservations = Pin<
+    Box<
+        dyn Stream<Item = Vec<bindings::exports::cairn::daemon::http_proxy::ObservationEvent>>
+            + Send
+            + 'static,
+    >,
+>;
+type ProxyWatchFn = Arc<dyn Fn(Ctx, String) -> ProxyObservations + Send + Sync>;
 
 /// A `Handler` whose operations are individually configurable. Unset
 /// operations panic via `unimplemented!`, so a test only wires up the
@@ -153,6 +178,8 @@ pub struct StubHandler {
     list_all: Option<ListAllFn>,
     authenticate: Option<AuthenticateFn>,
     kill: Option<KillFn>,
+    proxy_intercept: Option<ProxyInterceptFn>,
+    proxy_watch: Option<ProxyWatchFn>,
 }
 
 impl StubHandler {
@@ -186,6 +213,22 @@ impl StubHandler {
         f: impl Fn(Ctx, String, Signal, Option<u32>) -> Result<(), Error> + Send + Sync + 'static,
     ) -> Self {
         self.kill = Some(Arc::new(f));
+        self
+    }
+
+    pub fn on_proxy_intercept(
+        mut self,
+        f: impl Fn(Ctx, String, ProxyActions) -> ProxyEvents + Send + Sync + 'static,
+    ) -> Self {
+        self.proxy_intercept = Some(Arc::new(f));
+        self
+    }
+
+    pub fn on_proxy_watch(
+        mut self,
+        f: impl Fn(Ctx, String) -> ProxyObservations + Send + Sync + 'static,
+    ) -> Self {
+        self.proxy_watch = Some(Arc::new(f));
         self
     }
 }
@@ -335,6 +378,42 @@ impl bindings::exports::cairn::daemon::sessions::Handler<Ctx> for StubHandler {
         _chunks: std::pin::Pin<Box<dyn futures::Stream<Item = Vec<bytes::Bytes>> + Send + 'static>>,
     ) -> anyhow::Result<Result<(), Error>> {
         unimplemented!("sessions.send not stubbed in this test")
+    }
+}
+
+impl bindings::exports::cairn::daemon::http_proxy::Handler<Ctx> for StubHandler {
+    async fn intercept(
+        &self,
+        ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+        id: String,
+        actions: ProxyActions,
+    ) -> anyhow::Result<ProxyEvents> {
+        match &self.proxy_intercept {
+            Some(f) => Ok(f(ctx, id, actions)),
+            None => unimplemented!("http-proxy.intercept not stubbed in this test"),
+        }
+    }
+
+    async fn watch(
+        &self,
+        ctx: Ctx,
+        _call_ctx: Option<CallContext>,
+        id: String,
+    ) -> anyhow::Result<
+        Pin<
+            Box<
+                dyn Stream<
+                        Item = Vec<bindings::exports::cairn::daemon::http_proxy::ObservationEvent>,
+                    > + Send
+                    + 'static,
+            >,
+        >,
+    > {
+        match &self.proxy_watch {
+            Some(f) => Ok(f(ctx, id)),
+            None => unimplemented!("http-proxy.watch not stubbed in this test"),
+        }
     }
 }
 

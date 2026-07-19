@@ -11,6 +11,16 @@ export type SessionId = string;
 /** `types.client-id`. */
 export type ClientId = string;
 
+export interface HttpRoute {
+    methods: string[];
+    host?: string;
+    pathPrefix?: string;
+}
+
+export interface HttpProxySpec {
+    routes: HttpRoute[];
+}
+
 /** `types.session-spec`. */
 export interface SessionSpec {
     name?: string;
@@ -22,6 +32,7 @@ export interface SessionSpec {
     stdin: boolean;
     idleTimeoutSecs?: bigint;
     scrollbackLines: number;
+    httpProxy?: HttpProxySpec;
 }
 
 /** `types.exit-status`. */

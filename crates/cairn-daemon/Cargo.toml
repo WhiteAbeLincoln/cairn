@@ -17,6 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 cairn-pty = { path = "../cairn-pty" }
 cairn-protocol = { path = "../cairn-protocol" }
+cairn-http-proxy = { path = "../cairn-http-proxy" }
 wrpc-transport.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "signal", "macros", "sync", "time", "io-util"] }
 wrpc-transport-web.workspace = true
@@ -44,6 +45,7 @@ tokio-util = { version = "0.7", features = ["rt", "io"] }
 flume = "0.12"
 futures.workspace = true
 anyhow.workspace = true
+async-stream.workspace = true
 clap.workspace = true
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }

@@ -228,6 +228,7 @@ async fn create(State(st): State<AppState>, Form(f): Form<CreateForm>) -> impl I
         stdin: true,
         idle_timeout_secs: None,
         scrollback_lines: 1000,
+        http_proxy: None,
     };
     match api::sessions::create(&wc(&st), (), None, &spec).await {
         Ok(Ok(info)) => Redirect::to(&format!("/s/{}", info.id)).into_response(),

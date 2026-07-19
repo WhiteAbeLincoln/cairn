@@ -11,6 +11,7 @@ pub enum DaemonError {
     NameInUse,
     Running,
     SpawnFailed,
+    ProxyFailed,
     InvalidSignal,
 }
 
@@ -24,6 +25,9 @@ impl DaemonError {
             ),
             DaemonError::Running => ("session.running", "session is still running (use --force)"),
             DaemonError::SpawnFailed => ("session.spawn_failed", "failed to spawn the session"),
+            DaemonError::ProxyFailed => {
+                ("session.proxy_failed", "failed to start the session proxy")
+            }
             DaemonError::InvalidSignal => ("signal.invalid", "unknown or out-of-range signal"),
         };
         WireError {
@@ -70,6 +74,10 @@ mod tests {
         assert_eq!(DaemonError::NotFound.to_wire().code, "session.not_found");
         assert_eq!(DaemonError::NameInUse.to_wire().code, "session.name_in_use");
         assert_eq!(DaemonError::Running.to_wire().code, "session.running");
+        assert_eq!(
+            DaemonError::ProxyFailed.to_wire().code,
+            "session.proxy_failed"
+        );
         assert_eq!(DaemonError::InvalidSignal.to_wire().code, "signal.invalid");
     }
 }

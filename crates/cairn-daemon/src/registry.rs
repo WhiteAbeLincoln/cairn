@@ -11,6 +11,7 @@ use cairn_pty::{ClientId, GhosttyPty, PtySession};
 use tokio::sync::{broadcast, oneshot};
 
 use crate::error::DaemonError;
+use crate::http_proxy::{ProxyEnvironment, ProxyManager};
 use crate::spawn::options_from;
 
 /// Session-lifecycle notifications. Carries ids, not snapshots: two emission
@@ -43,6 +44,8 @@ pub struct SessionEntry {
     pub spec: SessionSpec,
     name: Mutex<Option<String>>,
     running: RwLock<Running>,
+    proxy: Option<Arc<cairn_http_proxy::ProxySession>>,
+    proxy_environment: Option<ProxyEnvironment>,
     pub attached: Mutex<HashMap<ClientId, AttachHandle>>,
     /// Clone of the registry's bus sender — lets attach/detach (which happen
     /// on the entry, not the registry) emit `Changed` without a back-pointer.
@@ -114,6 +117,10 @@ impl SessionEntry {
         self.name.lock().expect("name lock").clone()
     }
 
+    pub fn proxy(&self) -> Option<Arc<cairn_http_proxy::ProxySession>> {
+        self.proxy.clone()
+    }
+
     fn set_name(&self, new: String) {
         *self.name.lock().expect("name lock") = Some(new);
     }
@@ -130,6 +137,7 @@ pub struct SessionRegistry {
     /// it carries only ids, and overflow is recoverable via subscribers'
     /// `Lagged` → resync path.
     events: broadcast::Sender<RegistryEvent>,
+    proxy_manager: ProxyManager,
 }
 
 impl Default for SessionRegistry {
@@ -145,6 +153,7 @@ impl SessionRegistry {
             sessions: RwLock::new(HashMap::new()),
             next_client_id: AtomicU64::new(0),
             events,
+            proxy_manager: ProxyManager::new(crate::config::runtime_dir()),
         }
     }
 
@@ -203,7 +212,26 @@ impl SessionRegistry {
             }
             None => Some(self.inferred_unique_name(&spec, default_shell, &id)),
         };
-        let opts = options_from(spec.clone(), default_shell, id.clone());
+        let (proxy, proxy_environment) = match spec.http_proxy.as_ref() {
+            Some(proxy_spec) => {
+                let (proxy, environment) =
+                    self.proxy_manager
+                        .start(proxy_spec)
+                        .await
+                        .map_err(|error| {
+                            tracing::warn!(%error, "session proxy startup failed");
+                            DaemonError::ProxyFailed
+                        })?;
+                (Some(proxy), Some(environment))
+            }
+            None => (None, None),
+        };
+        let opts = options_from(
+            spec.clone(),
+            default_shell,
+            id.clone(),
+            proxy_environment.as_ref(),
+        );
         let handle = GhosttyPty::spawn(opts).map_err(|e| {
             tracing::warn!(
                 error = %e,
@@ -224,6 +252,8 @@ impl SessionRegistry {
                 handle: handle.clone(),
                 pid,
             }),
+            proxy,
+            proxy_environment,
             attached: Mutex::new(HashMap::new()),
             events: self.events.clone(),
         });
@@ -301,7 +331,12 @@ impl SessionRegistry {
         if old.try_exit_status().is_none() && !force {
             return Err(DaemonError::Running);
         }
-        let opts = options_from(entry.spec.clone(), default_shell, entry.id.clone());
+        let opts = options_from(
+            entry.spec.clone(),
+            default_shell,
+            entry.id.clone(),
+            entry.proxy_environment.as_ref(),
+        );
         let handle = GhosttyPty::spawn(opts).map_err(|e| {
             tracing::warn!(
                 error = %e,
@@ -395,7 +430,7 @@ pub async fn session_info(entry: &SessionEntry) -> SessionInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cairn_protocol::cairn::daemon::types::SessionSpec;
+    use cairn_protocol::cairn::daemon::types::{HttpProxySpec, HttpRoute, SessionSpec};
 
     fn spec(name: Option<&str>) -> SessionSpec {
         SessionSpec {
@@ -408,6 +443,7 @@ mod tests {
             stdin: true,
             idle_timeout_secs: None,
             scrollback_lines: 100,
+            http_proxy: None,
         }
     }
 
@@ -649,6 +685,7 @@ mod tests {
             stdin: true,
             idle_timeout_secs: None,
             scrollback_lines: 100,
+            http_proxy: None,
         };
         let info = reg.create(short_lived, "/bin/sh").await.expect("create");
         // Drain the create() event so we're waiting specifically for the
@@ -657,5 +694,32 @@ mod tests {
 
         let ev = next_event(&mut events).await;
         assert!(matches!(ev, RegistryEvent::Changed { id } if id == info.id));
+    }
+
+    #[tokio::test]
+    async fn proxy_enabled_session_reuses_its_listener_on_restart() {
+        let reg = SessionRegistry::new();
+        let mut session_spec = spec(Some("proxied"));
+        session_spec.http_proxy = Some(HttpProxySpec {
+            routes: vec![HttpRoute {
+                methods: vec!["GET".into()],
+                host: Some("example.com".into()),
+                path_prefix: Some("/api".into()),
+            }],
+        });
+        let info = reg.create(session_spec, "/bin/sh").await.expect("create");
+        let entry = reg.resolve(&info.id).expect("resolve");
+        let before = entry.proxy().expect("proxy");
+        let addr = before.addr();
+
+        reg.restart(&info.id, true, "/bin/sh").expect("restart");
+        let after = reg
+            .resolve(&info.id)
+            .expect("resolve after restart")
+            .proxy()
+            .expect("proxy after restart");
+        assert!(Arc::ptr_eq(&before, &after));
+        assert_eq!(after.addr(), addr);
+        after.shutdown().await;
     }
 }

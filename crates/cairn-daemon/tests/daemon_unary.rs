@@ -18,6 +18,7 @@ fn spec(name: &str, cmd: &[&str]) -> SessionSpec {
         stdin: true,
         idle_timeout_secs: None,
         scrollback_lines: 100,
+        http_proxy: None,
     }
 }
 

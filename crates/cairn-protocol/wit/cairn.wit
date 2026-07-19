@@ -4,6 +4,16 @@ interface types {
     type session-id = string;     // UUIDv7
     type client-id = string;
 
+    record http-route {
+        methods: list<string>,
+        host: option<string>,
+        path-prefix: option<string>,
+    }
+
+    record http-proxy-spec {
+        routes: list<http-route>,
+    }
+
     record session-spec {
         name: option<string>,
         command: list<string>,
@@ -14,6 +24,7 @@ interface types {
         stdin: bool,
         idle-timeout-secs: option<u64>,
         scrollback-lines: u32,
+        http-proxy: option<http-proxy-spec>,
     }
 
     record session-info {
@@ -88,6 +99,114 @@ interface types {
     }
 }
 
+interface http-proxy {
+    use types.{session-id, error, call-context};
+
+    type exchange-id = u64;
+    type header = tuple<string, list<u8>>;
+
+    record request-head {
+        method: string,
+        uri: string,
+        version: string,
+        headers: list<header>,
+    }
+
+    record response-head {
+        status: u16,
+        version: string,
+        headers: list<header>,
+    }
+
+    record intercepted-request {
+        id: exchange-id,
+        head: request-head,
+        body: list<u8>,
+    }
+
+    record response-start {
+        id: exchange-id,
+        head: response-head,
+    }
+
+    record body-chunk {
+        id: exchange-id,
+        bytes: list<u8>,
+    }
+
+    variant interceptor-action {
+        forward(exchange-id),
+        response-start(response-start),
+        response-body(body-chunk),
+        response-end(exchange-id),
+        fail(tuple<exchange-id, error>),
+    }
+
+    variant interceptor-event {
+        request(intercepted-request),
+        cancelled(exchange-id),
+        error(error),
+    }
+
+    record observed-body {
+        bytes: list<u8>,
+        total-bytes: u64,
+        truncated: bool,
+        complete: bool,
+    }
+
+    record observed-exchange {
+        id: exchange-id,
+        request: request-head,
+        request-body: observed-body,
+        response: option<response-head>,
+        response-body: observed-body,
+        started-at-unix-ms: u64,
+        completed-at-unix-ms: option<u64>,
+        failure: option<error>,
+    }
+
+    record request-started {
+        id: exchange-id,
+        head: request-head,
+        unix-ms: u64,
+    }
+
+    record body-ended {
+        id: exchange-id,
+        total-bytes: u64,
+        truncated: bool,
+    }
+
+    record response-started {
+        id: exchange-id,
+        head: response-head,
+    }
+
+    record exchange-failed {
+        id: exchange-id,
+        error: error,
+    }
+
+    variant observation-event {
+        snapshot(list<observed-exchange>),
+        request-start(request-started),
+        request-body(body-chunk),
+        request-end(body-ended),
+        response-start(response-started),
+        response-body(body-chunk),
+        response-end(body-ended),
+        completed(tuple<exchange-id, u64>),
+        failed(exchange-failed),
+        error(error),
+    }
+
+    intercept: func(ctx: option<call-context>, id: session-id,
+                    actions: stream<interceptor-action>) -> stream<interceptor-event>;
+
+    watch: func(ctx: option<call-context>, id: session-id) -> stream<observation-event>;
+}
+
 interface sessions {
     use types.{
         session-id, client-id, session-spec, session-info, signal,
@@ -135,6 +254,7 @@ interface meta {
 world daemon {
     export sessions;
     export meta;
+    export http-proxy;
 }
 
 // Client world used for testing and CLI integration.
@@ -143,4 +263,5 @@ world daemon {
 world daemon-client {
     import sessions;
     import meta;
+    import http-proxy;
 }

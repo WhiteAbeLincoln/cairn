@@ -1,0 +1,1 @@
+{"tag":"requestStart","val":{"id":5,"head":{"method":"POST","uri":"https://api.example.com/v1/items","version":"HTTP/1.1","headers":[["content-type",[97,112,112,108,105,99,97,116,105,111,110,47,106,115,111,110]]]},"unixMs":1700000000777}}

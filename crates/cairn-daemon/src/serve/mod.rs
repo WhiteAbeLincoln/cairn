@@ -74,12 +74,55 @@ pub async fn serve(
     // processes deserve the SIGTERM grace path regardless of why we're
     // shutting down.
     drain_sessions(&daemon, daemon.cfg.shutdown_grace).await;
+    drain_proxies(&daemon).await;
     tasks.shutdown().await;
 
     match transport_error {
         Some(error) => Err(error),
         None => Ok(()),
     }
+}
+
+/// Drain live proxy sessions with a bounded grace period. hudsucker's
+/// graceful shutdown waits unboundedly for in-flight connections to finish,
+/// so a wedged exchange (a synthetic response whose interceptor never sends
+/// `ResponseEnd`, or a child ignoring SIGTERM) can otherwise hang daemon
+/// shutdown forever. If `grace` elapses first we log and move on — the
+/// subsequent `ProxySession` drop (token-cancel) and `tasks.shutdown()` force
+/// teardown of whatever's left.
+async fn drain_proxies(daemon: &crate::daemon::Daemon) {
+    let proxies: Vec<_> = daemon
+        .registry
+        .list()
+        .into_iter()
+        .filter_map(|entry| entry.proxy())
+        .collect();
+    if proxies.is_empty() {
+        return;
+    }
+    let grace = daemon.cfg.shutdown_grace;
+    let completed = drain_with_timeout(proxies.iter().map(|proxy| proxy.shutdown()), grace).await;
+    if !completed {
+        tracing::warn!(
+            grace_secs = grace.as_secs_f64(),
+            proxy_count = proxies.len(),
+            "proxy shutdown did not complete within the shutdown grace period; \
+             proceeding with forced teardown"
+        );
+    }
+}
+
+/// Await `shutdowns` concurrently, bounded by `grace`. Returns `true` if every
+/// future resolved within the grace period, `false` if `grace` elapsed with
+/// futures still pending (in which case the caller should proceed and let a
+/// forcible teardown path take over — this helper never blocks past `grace`).
+async fn drain_with_timeout(
+    shutdowns: impl IntoIterator<Item = impl std::future::Future<Output = ()>>,
+    grace: std::time::Duration,
+) -> bool {
+    tokio::time::timeout(grace, futures::future::join_all(shutdowns))
+        .await
+        .is_ok()
 }
 
 #[derive(Clone, Debug)]
@@ -200,5 +243,29 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("path did not appear in time: {}", path.display());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_with_timeout_completes_when_all_shutdowns_finish() {
+        let grace = std::time::Duration::from_secs(1);
+        let completed = drain_with_timeout(
+            vec![futures::future::ready(()), futures::future::ready(())],
+            grace,
+        )
+        .await;
+        assert!(
+            completed,
+            "expected drain to report completion, not a timeout"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn drain_with_timeout_times_out_on_a_stuck_future() {
+        let grace = std::time::Duration::from_millis(50);
+        let completed = drain_with_timeout(vec![futures::future::pending::<()>()], grace).await;
+        assert!(
+            !completed,
+            "a future that never resolves must not block the drain past `grace`"
+        );
     }
 }
