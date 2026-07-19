@@ -2,14 +2,15 @@ use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context as _;
-use base64::Engine as _;
-use hudsucker::certificate_authority::RcgenAuthority;
+use hudsucker::certificate_authority::{CertificateAuthority, RcgenAuthority};
 use hudsucker::rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
 };
+use hudsucker::rustls::ServerConfig;
 use hudsucker::rustls::crypto::aws_lc_rs;
 
 pub struct ProxyAuthority {
@@ -18,6 +19,26 @@ pub struct ProxyAuthority {
     ca_path: PathBuf,
     bundle_path: PathBuf,
     runtime_dir: PathBuf,
+    /// The built `RcgenAuthority` (and its leaf-cert cache), memoized so every
+    /// `ProxySession` sharing this `ProxyAuthority` reuses one CA instead of
+    /// re-parsing the PEM and paying for a cold leaf-cert cache each time.
+    shared_ca: OnceLock<SharedCa>,
+}
+
+/// A cheaply-cloneable handle to a single, shared [`RcgenAuthority`].
+///
+/// `RcgenAuthority` is not `Clone`, so this newtype wraps it in an `Arc` and
+/// forwards [`CertificateAuthority`] to the shared inner instance. Rust's
+/// orphan rules forbid `impl CertificateAuthority for Arc<RcgenAuthority>`
+/// directly (both the trait and `RcgenAuthority` are foreign), hence the
+/// local wrapper type.
+#[derive(Clone)]
+pub struct SharedCa(Arc<RcgenAuthority>);
+
+impl CertificateAuthority for SharedCa {
+    async fn gen_server_config(&self, authority: &http::uri::Authority) -> Arc<ServerConfig> {
+        self.0.gen_server_config(authority).await
+    }
 }
 
 static NEXT_AUTHORITY_ID: AtomicU64 = AtomicU64::new(0);
@@ -59,18 +80,29 @@ impl ProxyAuthority {
             ca_path,
             bundle_path,
             runtime_dir,
+            shared_ca: OnceLock::new(),
         })
     }
 
-    pub fn authority(&self) -> anyhow::Result<RcgenAuthority> {
+    /// Returns a cheaply-cloneable handle to this authority's `RcgenAuthority`.
+    ///
+    /// The underlying CA (and its leaf-cert cache) is built once and memoized
+    /// in `shared_ca`, so every call — and every `ProxySession` created from
+    /// this `ProxyAuthority` — shares the same instance instead of re-parsing
+    /// the CA PEM and starting from a cold leaf-cert cache each time.
+    pub fn authority(&self) -> anyhow::Result<SharedCa> {
+        if let Some(ca) = self.shared_ca.get() {
+            return Ok(ca.clone());
+        }
         let key = KeyPair::from_pem(&self.key_pem).context("parsing proxy CA key")?;
         let issuer = Issuer::from_ca_cert_pem(&self.cert_pem, key)
             .context("parsing proxy CA certificate")?;
-        Ok(RcgenAuthority::new(
+        let ca = SharedCa(Arc::new(RcgenAuthority::new(
             issuer,
             1_000,
             aws_lc_rs::default_provider(),
-        ))
+        )));
+        Ok(self.shared_ca.get_or_init(|| ca).clone())
     }
 
     pub fn ca_path(&self) -> &Path {
@@ -104,34 +136,144 @@ fn write_private_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
         .with_context(|| format!("writing {}", path.display()))
 }
 
+/// IO-performing wrapper: loads native root certs and env-provided bundles,
+/// hands them to the pure [`build_bundle`] assembler, and surfaces any
+/// native-cert loading errors via a `tracing::warn!` (loudly, but without
+/// failing session creation — an empty/partial native store is plausible in
+/// dev environments and the cairn CA is included regardless).
 fn native_bundle(cairn_ca: &str) -> String {
-    let mut output = String::new();
     let native = rustls_native_certs::load_native_certs();
-    for cert in native.certs {
-        output.push_str("-----BEGIN CERTIFICATE-----\n");
-        let encoded = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
-        for line in encoded.as_bytes().chunks(64) {
-            output.push_str(std::str::from_utf8(line).unwrap_or_default());
-            output.push('\n');
-        }
-        output.push_str("-----END CERTIFICATE-----\n");
+    let native_der_certs: Vec<Vec<u8>> = native
+        .certs
+        .iter()
+        .map(|cert| cert.as_ref().to_vec())
+        .collect();
+    let native_errors: Vec<String> = native.errors.iter().map(ToString::to_string).collect();
+    let env_bundles = read_env_ca_bundles();
+
+    let bundle = build_bundle(&native_der_certs, &native_errors, cairn_ca, &env_bundles);
+
+    if !bundle.errors.is_empty() {
+        tracing::warn!(
+            loaded = bundle.loaded,
+            errors = ?bundle.errors,
+            "loading native root certificates reported errors; injected CA bundle may be missing system trust roots"
+        );
     }
-    for key in [
+
+    bundle.pem
+}
+
+/// Reads whatever PEM bundles are already pointed to by the CA-bundle env
+/// vars a proxied child might inherit, so they get folded into the bundle we
+/// inject rather than dropped when we override those vars.
+fn read_env_ca_bundles() -> Vec<String> {
+    [
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
         "GIT_SSL_CAINFO",
         "NODE_EXTRA_CA_CERTS",
-    ] {
-        if let Some(path) = std::env::var_os(key)
-            && let Ok(contents) = std::fs::read_to_string(path)
-        {
-            output.push_str(&contents);
-            if !contents.ends_with('\n') {
-                output.push('\n');
-            }
+    ]
+    .into_iter()
+    .filter_map(std::env::var_os)
+    .filter_map(|path| std::fs::read_to_string(path).ok())
+    .collect()
+}
+
+/// Outcome of assembling the trust bundle: the final PEM text, how many
+/// native root certs were loaded, and any errors reported while loading them.
+struct NativeBundle {
+    pem: String,
+    loaded: usize,
+    errors: Vec<String>,
+}
+
+/// Pure assembly of the injected CA bundle from already-loaded inputs: native
+/// root certs (as DER), any errors reported while loading them, PEM bundles
+/// collected from the environment, and finally the cairn proxy's own CA
+/// certificate. Kept separate from the IO in [`native_bundle`] so the
+/// error-surfacing and PEM-encoding behavior can be tested without touching
+/// the real platform certificate store.
+fn build_bundle(
+    native_der_certs: &[Vec<u8>],
+    native_errors: &[String],
+    cairn_ca: &str,
+    env_bundles: &[String],
+) -> NativeBundle {
+    let mut pem_out = String::new();
+    for der in native_der_certs {
+        pem_out.push_str(&pem::encode(&pem::Pem::new("CERTIFICATE", der.clone())));
+    }
+    for contents in env_bundles {
+        pem_out.push_str(contents);
+        if !contents.ends_with('\n') {
+            pem_out.push('\n');
         }
     }
-    output.push_str(cairn_ca);
-    output
+    pem_out.push_str(cairn_ca);
+
+    NativeBundle {
+        pem: pem_out,
+        loaded: native_der_certs.len(),
+        errors: native_errors.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two calls to `authority()` on the same `ProxyAuthority` must be backed
+    /// by the same `RcgenAuthority` instance (and therefore the same
+    /// leaf-cert cache), not a freshly parsed/constructed one each time.
+    #[test]
+    fn authority_reuses_shared_ca_across_calls() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let proxy_authority = ProxyAuthority::create(dir.path()).expect("create authority");
+
+        let first = proxy_authority.authority().expect("first authority build");
+        let second = proxy_authority.authority().expect("second authority build");
+
+        assert!(
+            std::sync::Arc::ptr_eq(&first.0, &second.0),
+            "authority() must return a handle to the same shared RcgenAuthority, not rebuild it"
+        );
+    }
+
+    /// When native root-certificate loading reports errors, the pure bundle
+    /// builder must surface them (rather than silently discarding them like
+    /// the original implementation), while still including the cairn CA in
+    /// the resulting bundle so session TLS trust isn't left empty.
+    #[test]
+    fn build_bundle_surfaces_native_errors_but_keeps_cairn_ca() {
+        let native_der_certs: Vec<Vec<u8>> = Vec::new();
+        let native_errors = vec!["permission denied reading system keychain".to_string()];
+        let cairn_ca = "-----BEGIN CERTIFICATE-----\nQ0FJUk5DQQ==\n-----END CERTIFICATE-----\n";
+
+        let bundle = build_bundle(&native_der_certs, &native_errors, cairn_ca, &[]);
+
+        assert_eq!(bundle.loaded, 0);
+        assert_eq!(bundle.errors, native_errors);
+        assert!(bundle.pem.contains(cairn_ca));
+    }
+
+    /// The bundle assembled from native DER certs must be valid, parseable
+    /// PEM (using the `pem` crate rather than hand-rolled base64 chunking).
+    #[test]
+    fn build_bundle_produces_valid_pem_blocks() {
+        let der = vec![0x30, 0x82, 0x01, 0x02, 0x03, 0x04];
+        let cairn_ca = "-----BEGIN CERTIFICATE-----\nQ0FJUk5DQQ==\n-----END CERTIFICATE-----\n";
+
+        let bundle = build_bundle(std::slice::from_ref(&der), &[], cairn_ca, &[]);
+
+        let parsed = pem::parse_many(&bundle.pem).expect("bundle should be valid concatenated PEM");
+        assert_eq!(
+            parsed.len(),
+            2,
+            "expected one PEM block for the native cert and one for the cairn CA"
+        );
+        assert_eq!(parsed[0].contents(), der.as_slice());
+        assert!(bundle.errors.is_empty());
+    }
 }
